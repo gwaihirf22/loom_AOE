@@ -14,6 +14,16 @@ advances itself. It knows when you have fallen behind.
 Loom does not modify, inject into, or read the memory of the game process. It
 only reads pixels from the screen and draws a window on top.
 
+### Why "Loom"?
+
+Forgetting to research **Loom** — the cheap Town Centre technology that stops
+your villagers dying to a boar or an early rush — is one of the oldest running
+jokes in the Age of Empires II community. "Did you forget Loom?" is what you say
+to someone who just lost a villager they did not need to.
+
+This tool exists so I stop forgetting Loom, and everything else in the build I
+mean to do and do not. The name is the bug it was written to fix.
+
 ---
 
 ## Status
@@ -27,7 +37,7 @@ overlay is next.
 | 2 | New-game reset (done); config + calibration deferred | partial |
 | 3 | Build-order engine (pure logic) | **done** |
 | 4 | Transparent click-through overlay | **done** |
-| 5 | Build editor, per-resource display, polish | not started |
+| 5 | Per-resource villager reading (done); icons, stats to come | in progress |
 
 **Working so far:** Loom finds the game window, locates the HUD at any
 resolution, reads the game clock and villager count several times a second, and
@@ -305,6 +315,7 @@ loom/                   everything that gets imported
   build_order.py        loading builds, current step, pace
   overlay.py            the on-screen panel
   pace.py               how far behind the build order you are
+  resources.py          villagers-per-resource, read off the HUD
   config.py             saved settings, e.g. where the overlay sits
 tools/                  development scripts, never imported
   grab_frames.py        screenshot grabber for building a test corpus
@@ -375,7 +386,7 @@ game.
 
 Built by **Paul Blake** as a CS50 final project.
 
-Credits to Claude by anthropic for being a tutor and assistant.
+Credits to Claude by Anthropic for code sugestions, review and organization. Learned a lot from reviewing AI code.sweep it. 
 Credits to RTS Overlay for inspiration and being able to mirror the .json files for potential player to make use of. 
 
 The reasoning behind each of these, including the wrong turns, is written up in

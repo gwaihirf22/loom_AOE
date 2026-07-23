@@ -11,8 +11,8 @@ Reads the game and draws the current build order step on top of it.
 Ctrl+C in the terminal to stop.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import os
 
@@ -99,6 +99,7 @@ class LiveController:
             self.build.active_step(villagers, game_time),
             self.build.following_step(villagers, game_time),
             self.pace.update(villagers, game_time),
+            reading.per_resource,
         )
 
 

@@ -13,8 +13,8 @@ Deriving paths from __file__ instead means they are anchored to the source
 tree, so they are correct no matter where Loom is started from.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 from pathlib import Path
 
@@ -28,3 +28,8 @@ DIGIT_TEMPLATES_DIR = TEMPLATES_DIR / "digits"
 
 BUILDS_DIR = PROJECT_ROOT / "builds"
 CAPTURES_DIR = PROJECT_ROOT / "captures"
+
+# Optional resource icons the player can drop in (wood.png, food.png, ...).
+# Loom ships none - they are game art - so this folder may not exist, and the
+# overlay falls back to words when an icon is missing.
+ICONS_DIR = PROJECT_ROOT / "icons"

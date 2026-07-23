@@ -10,10 +10,10 @@ This exists so that more than one front end can use it. The terminal coach and
 copy of it.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
-from . import anchor, capture, digits, filters, session
+from . import anchor, capture, digits, filters, resources, session
 
 # Below this template-match score I assume the HUD is not visible - a menu, a
 # loading screen, or the fade at the start of a match.
@@ -27,7 +27,7 @@ class Reading:
     """What one poll of the screen produced."""
 
     def __init__(self, villagers, game_time, event, hud_visible,
-                 raw_villagers=None, raw_clock=None):
+                 raw_villagers=None, raw_clock=None, per_resource=None):
         # What Loom believes, after filtering.
         self.villagers = villagers
         self.game_time = game_time
@@ -37,6 +37,11 @@ class Reading:
 
         # Whether the digits could be read at all this poll.
         self.hud_visible = hud_visible
+
+        # Villagers on each resource this poll: {name: count}. Advisory only -
+        # shown to the player, never used to decide the build-order step. May be
+        # missing resources, or empty, and that is fine.
+        self.per_resource = per_resource or {}
 
         # The unfiltered readings, useful for debugging.
         self.raw_villagers = raw_villagers
@@ -57,6 +62,8 @@ class HudReader:
         self._display = None
         self._icon_template = None
         self._digit_templates = None
+        self._resource_templates = None
+        self._resource_regions = {}
 
         self._villager_filter = filters.StableCount(required_repeats=2)
         self._clock_filter = filters.StableClock(max_step=30, required_repeats=2)
@@ -75,6 +82,7 @@ class HudReader:
 
         self._icon_template = anchor.load_template()
         self._digit_templates = digits.load_digit_templates()
+        self._resource_templates = resources.load_resource_templates()
         return True
 
     def window_size(self):
@@ -103,6 +111,13 @@ class HudReader:
             # or a digit?" width test has to shrink with it.
             "min_glyph_width": max(4, int(6 * found["scale"])),
         }
+
+        # The resource icons sit in the same bar and do not move either, so
+        # locate their number regions once too. A failure here is not fatal:
+        # per-resource counts are a nicety, and the rest of Loom works without
+        # them.
+        self._resource_regions = resources.locate_regions(
+            frame, self._resource_templates, found["scale"])
         return True
 
     # ---- reading -------------------------------------------------------
@@ -123,6 +138,19 @@ class HudReader:
         villagers = self._villager_filter.update(raw_villagers)
         game_time = self._clock_filter.update(raw_clock)
 
+        # Read each resource's yellow number. Advisory only, and unfiltered:
+        # they change slowly enough that a rare misread is corrected on the
+        # next poll, and nothing important depends on them.
+        per_resource = {}
+        for name, region in self._resource_regions.items():
+            count = resources.read_one(
+                self._read_region(region),
+                self._digit_templates,
+                self.hud["min_glyph_width"],
+            )
+            if count is not None:
+                per_resource[name] = count
+
         # Tell the session tracker the truth about this poll. Passing on a
         # stale value would stop it ever noticing that the game went away.
         event = self._session.update(
@@ -142,7 +170,7 @@ class HudReader:
                 self._failures_in_a_row = 0
 
         return Reading(villagers, game_time, event, hud_visible,
-                       raw_villagers, raw_clock)
+                       raw_villagers, raw_clock, per_resource)
 
     def _read_region(self, region):
         x1, y1, x2, y2 = region

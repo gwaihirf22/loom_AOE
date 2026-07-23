@@ -11,8 +11,8 @@ Run it as a module from the project root, so that `loom` can be imported:
 Each run writes into its own timestamped folder under captures/.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import os
 import sys

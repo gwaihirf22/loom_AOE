@@ -10,8 +10,8 @@ possible shapes, so comparing ten small images is both more accurate and much
 faster than a general-purpose engine trained on prose.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import glob
 import os
@@ -127,7 +127,16 @@ def read_digits(region_bgr, templates, threshold, min_glyph_width, max_runs=None
     and abandon an otherwise good reading.
     """
     binary = to_binary(region_bgr, threshold)
+    return read_binary(binary, templates, min_glyph_width, max_runs)
 
+
+def read_binary(binary, templates, min_glyph_width, max_runs=None):
+    """Read digits from an already black-and-white image.
+
+    Split out from read_digits so callers that need a different way of turning
+    colour into black-and-white - the yellow per-resource numbers, say - can do
+    their own thresholding and still share the segmentation and matching.
+    """
     runs = find_column_runs(binary)
     if max_runs is not None:
         runs = runs[:max_runs]

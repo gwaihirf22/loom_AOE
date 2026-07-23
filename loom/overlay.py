@@ -14,12 +14,14 @@ like a mistake to tidy up later:
 See the design notes for the full story.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QWidget
+
+from . import paths
 
 # Colors. Kept dark and low-contrast on purpose: this sits on top of a game
 # and must be readable without dragging the eye away from it.
@@ -33,6 +35,52 @@ ON_PACE_COLOR = QColor(120, 220, 130)
 AHEAD_COLOR = QColor(120, 200, 235)
 SLIGHTLY_BEHIND_COLOR = QColor(235, 200, 100)
 BEHIND_COLOR = QColor(240, 120, 110)
+
+# Each resource in its own game color, so the numbers need no text labels - the
+# color says which resource it is, the way the game's own HUD does.
+RESOURCE_COLORS = {
+    "food": QColor(230, 120, 120),   # red meat
+    "wood": QColor(150, 200, 130),   # green
+    "gold": QColor(235, 200, 90),    # yellow
+    "stone": QColor(180, 185, 195),  # grey
+}
+RESOURCE_ORDER = ("wood", "food", "gold", "stone")
+
+# The full word shown when there is no icon for a resource. Verbose on purpose:
+# with no icon, a single letter would be ambiguous.
+RESOURCE_LABELS = {"wood": "Wood", "food": "Food", "gold": "Gold", "stone": "Stone"}
+
+# How tall to draw a resource icon, in pixels - roughly the height of the text
+# it sits beside.
+ICON_HEIGHT = 16
+
+
+def load_resource_icons():
+    """Load whatever resource icons the player has put in icons/.
+
+    Returns {name: QPixmap} for the icons that loaded. A resource with no icon
+    is simply absent from the result, and the overlay shows its word instead.
+
+    Qt does not raise when an image file is missing or unreadable - it returns
+    a "null" pixmap - so each one has to be checked with isNull().
+    """
+    icons = {}
+    for name in RESOURCE_LABELS:
+        for extension in (".png", ".webp", ".jpg"):
+            path = paths.ICONS_DIR / f"{name}{extension}"
+            if not path.exists():
+                continue
+            pixmap = QPixmap(str(path))
+            if not pixmap.isNull():
+                icons[name] = pixmap.scaledToHeight(
+                    ICON_HEIGHT, Qt.TransformationMode.SmoothTransformation)
+                break
+    return icons
+
+# A resource is only "off" the build if it is wrong by more than this. Being
+# one villager out is not worth flagging.
+RESOURCE_TOLERANCE = 1
+OFF_TARGET_COLOR = QColor(240, 120, 110)
 
 # How far off pace counts as fine, and as only slightly late. Villagers arrive
 # about every 25 seconds, so that is the finest resolution this measurement
@@ -48,11 +96,11 @@ class Overlay(QWidget):
     """The panel itself. Told what to show; never reads the game directly."""
 
     def __init__(self, placing=False):
-        """placing=True gives an ordinary, movable window instead of an
-        overlay, so the player can drag it where they want it.
+        """placing=True gives an ordinary movable window instead of an
+        overlay so the player can drag it where they want it.
 
-        The overlay proper is click-through, which means it can never receive a
-        mouse drag - so there is no way to move it directly. Rather than invent
+        The overlay proper is clic-through, which means it can never receive a
+        mouse drag - so there is no way to move it dirctly. Rather than invent
         a hotkey, placement mode just makes it a normal window and lets the
         window manager move it, like anything else on the desktop.
         """
@@ -86,6 +134,11 @@ class Overlay(QWidget):
         # Only what I paint is visible; the rest of the rectangle is see-through.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
+        # Resource icons, if the player supplied any. Loaded once - reading the
+        # disk on every repaint would be wasteful, and the icons never change
+        # while Loom is running.
+        self._icons = load_resource_icons()
+
         self.resize(PANEL_WIDTH, PANEL_HEIGHT)
 
         # Everything the panel draws. Updated by the entry point each poll.
@@ -95,6 +148,7 @@ class Overlay(QWidget):
         self.footnotes = []
         self.headline_when = ""
         self.targets = None
+        self.actual = {}
         self.next_text = ""
         self.next_when = ""
         self.pace_text = ""
@@ -109,15 +163,20 @@ class Overlay(QWidget):
         self.status_line = message
         self.update()
 
-    def show_step(self, build, villagers, game_time, active, following, delta):
+    def show_step(self, build, villagers, game_time, active, following, delta,
+                  per_resource=None):
         """Update the panel from one poll's worth of state.
 
         `active` is the step to be working on NOW - the first one not yet
         finished - not the last one completed. Showing the completed step puts
         the player an instruction behind their own hands.
+
+        `per_resource` is what the game shows for villagers-on-each-resource,
+        for comparison against the target. May be None or partial.
         """
         self.have_reading = True
         self.build_name = build.name
+        self.actual = per_resource or {}
 
         minutes, seconds = divmod(int(game_time), 60)
         self.status_line = f"{minutes}:{seconds:02d}   {villagers} villagers"
@@ -217,11 +276,12 @@ class Overlay(QWidget):
             y += 18
 
     def _draw_targets(self, painter):
-        """Where the build order wants the villagers working.
+        """Villagers on each resource: what the build wants, and what you have.
 
-        Shown as plain counts for now. Once Loom reads the per-resource numbers
-        off the HUD as well, this becomes "4/6" style with the ones that are
-        wrong picked out - the layout is the same either way.
+        Each resource leads with its icon if the player supplied one, or its
+        full word if not - so it is always clear which resource is which. When
+        Loom can read the actual counts off the HUD it shows "have/want" and
+        flags anything off the build; otherwise it shows just the target.
         """
         if not self.targets:
             return
@@ -229,19 +289,46 @@ class Overlay(QWidget):
         y = self.height() - 56
         painter.setFont(QFont("sans", 9, QFont.Weight.Bold))
         painter.setPen(FAINT_TEXT)
-        painter.drawText(16, y, "ON")
+        painter.drawText(16, y, "VILLS")
 
-        painter.setFont(QFont("sans", 10))
-        x = 62
-        for name in ("food", "wood", "gold", "stone"):
-            count = self.targets.get(name, 0)
+        painter.setFont(QFont("sans", 11, QFont.Weight.Bold))
+        x = 66
+        for name in RESOURCE_ORDER:
+            want = self.targets.get(name, 0)
+            have = self.actual.get(name)
 
-            # Resources the build does not want anyone on are dimmed rather
-            # than hidden, so the row does not jump about as the build changes.
-            painter.setPen(DIM_TEXT if count else QColor(90, 90, 98))
-            label = f"{name} {count}"
-            painter.drawText(x, y, label)
-            x += painter.fontMetrics().horizontalAdvance(label) + 22
+            off = have is not None and abs(have - want) > RESOURCE_TOLERANCE
+            dim = have is None and want == 0     # nothing wanted here yet
+            resource_color = QColor(90, 90, 98) if dim else RESOURCE_COLORS[name]
+
+            # Say which resource this is: an icon if the player has one, its
+            # full word if not. The word is deliberately spelled out rather
+            # than abbreviated, so there is no doubt which resource it is.
+            icon = self._icons.get(name)
+            if icon is not None:
+                painter.drawPixmap(x, y - ICON_HEIGHT + 3, icon)
+                x += icon.width() + 6
+            else:
+                painter.setPen(resource_color)
+                label = RESOURCE_LABELS[name]
+                painter.drawText(x, y, label)
+                x += painter.fontMetrics().horizontalAdvance(label) + 6
+
+            # The count. Color normally says which resource - but "off the
+            # build" cannot also be a color, because food's own color is red
+            # and a correct food count would then look like a warning. So an
+            # off-target number is white with a red underline instead, which
+            # reads as an alert against every resource color, food included.
+            text = str(want) if have is None else f"{have}/{want}"
+            painter.setPen(TEXT if off else resource_color)
+            painter.drawText(x, y, text)
+            width = painter.fontMetrics().horizontalAdvance(text)
+
+            if off:
+                painter.setPen(OFF_TARGET_COLOR)
+                painter.drawLine(x, y + 3, x + width, y + 3)
+
+            x += width + 18
 
     def _draw_next(self, painter):
         baseline = self.height() - 18

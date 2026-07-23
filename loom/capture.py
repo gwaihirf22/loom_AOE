@@ -11,8 +11,8 @@ Why not capture the whole screen? Two reasons:
      and which monitor it is on, never matter.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import numpy as np
 from Xlib import display, X

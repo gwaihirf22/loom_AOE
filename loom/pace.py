@@ -21,9 +21,8 @@ behind" forever. Measuring the arrival *events* instead of sampling the gap
 removes that entirely.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
-
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 class PaceTracker:
     """Follows one game and reports how far behind the build order it is."""

@@ -6,8 +6,8 @@ tests keep meaning what they say even if the shipped builds are edited. The
 one exception checks that the build actually shipped is valid.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import pytest
 

@@ -20,8 +20,8 @@ XWayland client, so running the overlay through XWayland too puts both windows
 in one X server where "keep above" still means something.
 """
 
-# Developed with AI assistance (Claude), used as a pair programmer, tutor
-# and debugger. Design, architecture, testing and integration by Paul Blake.
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
 
 import argparse
 import os
