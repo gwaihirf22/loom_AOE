@@ -7,6 +7,9 @@ turns a noisy yellow crop into readable digits - which is where the reading
 went wrong first time, so it is worth pinning down.
 """
 
+# I used Anthropic's Claude to help with proper syntax, code organisation,
+# debugging and review. The design and code are my own work.
+
 import numpy as np
 
 from loom import resources

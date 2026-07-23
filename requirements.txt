@@ -1,0 +1,7 @@
+mss==10.2.0
+numpy==2.5.1
+opencv-python==5.0.0.93
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+pytest==9.1.1
+python-xlib==0.33
