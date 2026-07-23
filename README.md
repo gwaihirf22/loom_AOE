@@ -231,7 +231,7 @@ python loom_coach.py --simulate --scenario stall --speed 40
 
 The three scenarios are `perfect` (exactly on schedule), `behind` (villagers
 arriving late throughout) and `stall` (production stops dead, as if the Town
-Centre were forgotten). Simulation makes "does it show the right step at the
+Center were forgotten). Simulation makes "does it show the right step at the
 right time?" a ten-second check rather than a sixteen-minute game.
 
 ### `loom_read.py` — the raw reader
@@ -327,29 +327,56 @@ anywhere.
 
 ---
 
+## Acknowledgements
+
+Loom leans on work the Age of Empires II community has already done. It reads
+the game and draws a panel; almost everything it knows about *what a good
+opening looks like* came from elsewhere.
+
+**[RTS Overlay](https://github.com/CraftySalamander/RTS_Overlay)** by
+CraftySalamander (GPL-3.0) — Loom uses its build-order JSON format, which is
+what the community already shares build orders in. Choosing it over a format of
+my own is why a build downloaded from the community library plays in Loom
+unchanged. I implemented the format by reading published build orders; no code
+from that project is used here.
+
+**[rtsbuilds](https://github.com/CraftySalamander/rtsbuilds)** (GPL-3.0) — the
+library of community build orders in that format, and the thing that proved the
+interoperability actually works rather than merely being claimed. Those builds
+are **not redistributed here**; download them yourself and drop them into
+`builds/`.
+
+**Hera** — the Arena Fast Castle Boom credited to them in the community library
+was the build I tested against, and the one that showed a real community build
+loads and runs with no conversion. The build order names this video as its
+source: <https://youtu.be/JsTNM7j6fs4>
+
+**[buildorderguide.com](https://www.buildorderguide.com/)** — where a great
+many community build orders are written and shared.
+
+**[Sage of Empires](https://github.com/Mulliman/sage-of-empires)** by Mulliman
+— an earlier second-screen build-order helper. Its per-step schema shaped
+Loom's first draft, before I moved to the RTS Overlay format for the sake of
+compatibility with builds people actually trade.
+
+The build orders shipped in `builds/` are my own, with timings modelled on
+standard villager production and age-up research times rather than copied from
+any published build.
+
+Age of Empires II: Definitive Edition is developed by Forgotten Empires and
+published by Xbox Game Studios. Loom is an unofficial fan-made tool, not
+affiliated with or endorsed by them. It reads pixels from the screen and draws
+a window on top; it does not modify, inject into, or read the memory of the
+game.
+
+---
+
 ## Credits
 
 Built by **Paul Blake** as a CS50 final project.
 
-Developed with AI assistance (Claude), used as a pair programmer, tutor and
-debugger. CS50 permits this for the final project provided it is cited, and it
-is cited at the top of every source file as well as here.
-
-The architecture, design decisions, testing and direction are mine. Every
-significant choice in this project came out of testing it against a real game
-and deciding what the results meant — among them:
-
-- reading the game's own window rather than the screen, after screen capture
-  turned out to return black under Wayland
-- keeping total villager count as the only signal that advances the build,
-  because per-resource counts swing wildly whenever villagers are re-tasked
-- removing a read filter that rejected "impossible" jumps, once it turned out
-  to freeze the villager count for an entire session
-- reporting how far behind the player is only when a villager arrives, rather
-  than recomputing it continuously, so the number holds still instead of
-  creeping
-- treating the age text on the HUD as the moment the player *clicks* an age
-  up, not the moment they arrive in it
+Credits to Claude by anthropic for being a tutor and assistant.
+Credits to RTS Overlay for inspiration and being able to mirror the .json files for potential player to make use of. 
 
 The reasoning behind each of these, including the wrong turns, is written up in
 my working notes.
