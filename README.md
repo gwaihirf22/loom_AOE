@@ -9,7 +9,7 @@ food, wood, gold and stone versus what the build wants.
 
 #### Video demo: [https://youtu.be/gRb23-qxOxw](https://youtu.be/gRb23-qxOxw)
 
-Loom's overlay running over a live game
+![Loom's overlay running over a live game](images/overlay-in-game.jpg)
 
 *Loom's panel sitting on top of a real match — the current step, whether you're
 on pace, and your villagers-per-resource versus what the build wants, all read
@@ -46,7 +46,7 @@ It does this **without touching the game**. Loom reads pixels from the screen
 and draws a window on top. It never injects into, modifies, or reads the memory
 of the game process — so it is not a cheat and cannot be mistaken for one.
 
-A close-up of the overlay panel
+![A close-up of the overlay panel](images/overlay-panel.png)
 
 *The panel reads at a glance: the step to do now, the one after it, and a
 villagers-per-resource row where each resource is its own colour. Here the build
