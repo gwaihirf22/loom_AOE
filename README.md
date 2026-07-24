@@ -7,7 +7,7 @@ those two numbers to drive a build order — showing the step to do now, the ste
 after it, whether you are on pace, and how your villagers are spread across
 food, wood, gold and stone versus what the build wants.
 
-#### Video demo: [https://youtu.be/gRb23-qxOxw](https://youtu.be/gRb23-qxOxw)
+#### Video demo: [https://youtu.be/IjrvbCo6lIQ](https://youtu.be/IjrvbCo6lIQ)
 
 ![Loom's overlay running over a live game](images/overlay-in-game.jpg)
 
