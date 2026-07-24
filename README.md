@@ -7,7 +7,13 @@ those two numbers to drive a build order — showing the step to do now, the ste
 after it, whether you are on pace, and how your villagers are spread across
 food, wood, gold and stone versus what the build wants.
 
-#### Video demo: <!-- PASTE YOUR YOUTUBE URL HERE -->
+#### Video demo: [https://youtu.be/gRb23-qxOxw](https://youtu.be/gRb23-qxOxw)
+
+Loom's overlay running over a live game
+
+*Loom's panel sitting on top of a real match — the current step, whether you're
+on pace, and your villagers-per-resource versus what the build wants, all read
+off the HUD while you play.*
 
 ### Why "Loom"?
 
@@ -20,6 +26,8 @@ This tool exists so I stop forgetting Loom, and everything else in the build I
 mean to do and do not. The name is the bug it was written to fix.
 
 ---
+
+
 
 ## What makes it different
 
@@ -38,14 +46,22 @@ It does this **without touching the game**. Loom reads pixels from the screen
 and draws a window on top. It never injects into, modifies, or reads the memory
 of the game process — so it is not a cheat and cannot be mistaken for one.
 
+A close-up of the overlay panel
+
+*The panel reads at a glance: the step to do now, the one after it, and a
+villagers-per-resource row where each resource is its own colour. Here the build
+wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
+
 ---
+
+
 
 ## Trying it without the game
 
-Age of Empires II runs on Linux under Proton, and this project was built and
-tested on a fairly specific setup (see *Running it for real*). Because a marker
-almost certainly will not have the game installed, **every front end runs in a
-demo or simulated mode with no game required**:
+Age of Empires II traditionally runs on Windows, but I run on Linux under Proton.
+This project was built and tested on a fairly specific setup (see *Running it for real*).
+Because a marker almost certainly will not have the game installed, **every front
+end runs in a demo or simulated mode with no game required**:
 
 ```bash
 python3 -m venv .venv
@@ -72,6 +88,8 @@ python -m pytest tests/ -q
 ```
 
 ---
+
+
 
 ## How it works
 
@@ -135,10 +153,10 @@ OCR misfires occasionally. The filters stop one bad reading from poisoning the
 rest of the game, and the two numbers need different rules:
 
 - The **villager count** changes rarely, so a value must be seen twice in a row
-  before it is believed.
+before it is believed.
 - The **clock** changes every poll, so requiring two identical readings would
-  freeze it. Instead it accepts sensible forward movement and demands
-  confirmation only for a surprise (a big jump, or the clock going backwards).
+freeze it. Instead it accepts sensible forward movement and demands
+confirmation only for a surprise (a big jump, or the clock going backwards).
 
 Crucially the count filter does **not** reject large jumps. An earlier version
 did, and it froze the villager count at 22 for a whole session when a new game
@@ -213,26 +231,30 @@ readout of the two numbers kept as a diagnostic for when something looks wrong.
 
 ---
 
+
+
 ## Design decisions worth calling out
 
 - **Screen capture, not memory reading or replay parsing.** Memory reading is
-  Windows-centric, breaks every patch, and looks like a cheat. Replays are not
-  live and do not even store villager counts. Reading the HUD works on any OS and
-  touches nothing in the game.
+Windows-centric, breaks every patch, and looks like a cheat. Replays are not
+live and do not even store villager counts. Reading the HUD works on any OS and
+touches nothing in the game.
 - **Total villager count is the only signal that advances the build.**
-  Per-resource counts are advisory; game time is read from the screen and never
-  counted with a wall clock, because game speed is 1.7× in multiplayer and the
-  game can pause.
+Per-resource counts are advisory; game time is read from the screen and never
+counted with a wall clock, because game speed is 1.7× in multiplayer and the
+game can pause.
 - **Never guess a reading.** If confidence is low, Loom reports no reading rather
-  than a wrong one. A wrong villager count silently desynchronises everything; an
-  admitted gap does not.
+than a wrong one. A wrong villager count silently desynchronises everything; an
+admitted gap does not.
 - **Use the community's build-order format**, so builds people already share load
-  unchanged, rather than inventing a schema.
+unchanged, rather than inventing a schema.
 
 More of the reasoning, including the wrong turns, is in my working notes, and the
 tests below encode the specific bugs these decisions were made to prevent.
 
 ---
+
+
 
 ## Build orders
 
@@ -268,12 +290,14 @@ which resource is which.
 
 ---
 
+
+
 ## Running it for real
 
 - Python 3.10+
 - Linux with XWayland (verified on Bazzite / KDE Plasma / Wayland)
-- Age of Empires II: Definitive Edition, in **Full screen** mode
-- No mods that replace the resource-bar icons (Loom matches their artwork)
+- Age of Empires II: Definitive Edition, in **Full screen** mode, running through proton.
+- No mods installed that replace the resource-bar icons (Loom matches their artwork)
 
 ```bash
 pip install -r requirements.txt
@@ -285,6 +309,8 @@ Resolution and the HUD-scale slider do not need configuring — Loom detects the
 HUD at whatever size it is drawn.
 
 ---
+
+
 
 ## Tests
 
@@ -307,6 +333,8 @@ Capture and the Qt drawing are not unit tested — they need a live X server and
 running game, and `loom_read.py` serves as the manual check.
 
 ---
+
+
 
 ## Project layout
 
@@ -334,6 +362,7 @@ templates/              reference images used for matching
   pop_icon.png          the population icon artwork
   digits/               labelled 0-9 glyphs
 builds/                 build orders as JSON
+images/                 resource icons for overlay
 tests/                  the test suite
 ```
 
@@ -342,6 +371,8 @@ directly. Paths come from `loom/paths.py`, derived from the source location
 rather than the working directory, so Loom runs from anywhere.
 
 ---
+
+
 
 ## Acknowledgements
 
@@ -360,7 +391,7 @@ library of community build orders in that format, which proved the
 interoperability really works. Those builds are not redistributed here.
 
 **Hera** — the Arena Fast Castle Boom credited to them in that library was the
-build I tested against. Its source video: <https://youtu.be/JsTNM7j6fs4>
+build I tested against. Its source video: [https://youtu.be/JsTNM7j6fs4](https://youtu.be/JsTNM7j6fs4)
 
 **[buildorderguide.com](https://www.buildorderguide.com/)** and
 **[Sage of Empires](https://github.com/Mulliman/sage-of-empires)** — where many
@@ -373,13 +404,16 @@ affiliated with or endorsed by them.
 
 ---
 
+
+
 ## Credits
 
 Built by **Paul Blake** as a CS50 final project.
 
-Developed with AI assistance (Claude by Anthropic), used as a pair programmer,
-tutor and debugger — cited at the top of every source file, as CS50 permits for
-the final project. The architecture, design decisions, testing and direction are
-mine; I learned a great deal by reviewing and reworking the code as it was
-written. Every significant choice came out of testing the tool against a real
-game and deciding what the results meant.
+I used Anthropic's Claude to help with proper syntax, code organisation,
+debugging, auditing and review. The design and code are my own work.
+I cited at the top of every source file, as CS50 permits for
+the final project. The code, architecture, design decisions, testing and direction are
+mine; Every significant choice came out of testing the tool against a real
+game and deciding what the results meant. Yet, many thousands of questions were asked
+of Claude for finding documentation and showing me how to write snippets of code.
