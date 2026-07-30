@@ -1,0 +1,123 @@
+{
+  "name": "MON 15 Pop Scouts",
+  "civilization": "Mongols",
+  "author": "Morley Games",
+  "source": "https://youtu.be/3qS0FD3Lozs",
+  "build_order": [
+    {
+      "villager_count": 4,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 4,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 2 @other/House_aoe2DE.webp@ | First 4 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"
+      ],
+      "time": "0:25"
+    },
+    {
+      "villager_count": 5,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 5,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Lure 1st @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "0:50"
+    },
+    {
+      "villager_count": 7,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 5,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build @lumber_camp/Lumber_camp_aoe2de.webp@) | Start pushing @animal/Deer_aoe2DE.webp@"
+      ],
+      "time": "1:40"
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 9,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 4 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@ | Lure 2nd @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "3:20"
+    },
+    {
+      "villager_count": 12,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 10,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds @mill/Mill_aoe2de.webp@ on @resource/BerryBushDE.webp@"
+      ],
+      "time": "3:45"
+    },
+    {
+      "villager_count": 14,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 12,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@ | Research @town_center/LoomDE.webp@ | 15 pop @age/FeudalAgeIconDE.webp@"
+      ],
+      "time": "5:00"
+    },
+    {
+      "villager_count": 14,
+      "age": 2,
+      "resources": {
+        "wood": 7,
+        "food": 6,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Before @age/FeudalAgeIconDE.webp@ | 8 from @resource/Aoe2de_food.webp@ to @resource/Aoe2de_wood.webp@ (4 + 3 straggler) & @other/House_aoe2DE.webp@+@barracks/Barracks_aoe2DE.webp@ (1)",
+        "At 175 @resource/Aoe2de_wood.webp@, send 2 @resource/Aoe2de_wood.webp@@resource/MaleVillDE.webp@ (straggler) back to @resource/Aoe2de_food.webp@"
+      ],
+      "time": "7:10"
+    },
+    {
+      "villager_count": 17,
+      "age": 2,
+      "resources": {
+        "wood": 6,
+        "food": 11,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "In @age/FeudalAgeIconDE.webp@ | Build @stable/Stable_aoe2DE.webp@ with 2 @resource/MaleVillDE.webp@ (@resource/Aoe2de_hammer.webp@ + @resource/Aoe2de_wood.webp@), then to @resource/BerryBushDE.webp@",
+        "Next 3 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@ | Reach 15 @mill/FarmDE.webp@ | Train @stable/Scoutcavalry_aoe2DE.webp@ | Build @other/House_aoe2DE.webp@"
+      ],
+      "time": "8:25"
+    }
+  ]
+}

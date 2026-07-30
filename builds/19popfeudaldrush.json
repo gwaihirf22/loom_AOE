@@ -1,0 +1,139 @@
+{
+  "name": "19 Pop Feudal Drush",
+  "civilization": "Generic",
+  "author": "Hera",
+  "source": "https://youtu.be/R9IFzyYMAjA",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 2 @other/House_aoe2DE.webp@ | First 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"
+      ],
+      "time": "1:15"
+    },
+    {
+      "villager_count": 9,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 3 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build 1st @lumber_camp/Lumber_camp_aoe2de.webp@)"
+      ],
+      "time": "2:30"
+    },
+    {
+      "villager_count": 10,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ lures 1st @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "2:55"
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 8,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds 1 @other/House_aoe2DE.webp@, then to @animal/Boar_aoe2DE.webp@ | Lure @animal/Deer_aoe2DE.webp@"
+      ],
+      "time": "3:20"
+    },
+    {
+      "villager_count": 16,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 13,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 5 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@/@animal/Deer_aoe2DE.webp@ | Lure 2nd @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "5:25"
+    },
+    {
+      "villager_count": 17,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 13,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds @barracks/Barracks_aoe2DE.webp@ + 1 @other/House_aoe2DE.webp@ in front"
+      ],
+      "time": "5:50"
+    },
+    {
+      "villager_count": 18,
+      "age": 1,
+      "resources": {
+        "wood": 4,
+        "food": 13,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ goes to @resource/Aoe2de_wood.webp@ | Research @town_center/LoomDE.webp@ | 19 pop @age/FeudalAgeIconDE.webp@"
+      ],
+      "time": "6:40"
+    },
+    {
+      "villager_count": 18,
+      "age": 2,
+      "resources": {
+        "wood": 8,
+        "food": 9,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Before @age/FeudalAgeIconDE.webp@ | Scout opponent | Make 2 @barracks/MilitiaDE.webp@, send forward",
+        "Move 5 @town_center/Towncenter_aoe2DE.webp@@resource/MaleVillDE.webp@ to 1st @lumber_camp/Lumber_camp_aoe2de.webp@ (4) & @resource/BerryBushDE.webp@ (1, build @mill/Mill_aoe2de.webp@)"
+      ],
+      "time": "8:50"
+    },
+    {
+      "villager_count": 18,
+      "age": 2,
+      "resources": {
+        "wood": -1,
+        "food": -1,
+        "gold": -1,
+        "stone": -1
+      },
+      "notes": [
+        "In @age/FeudalAgeIconDE.webp@ | Harass & adapt | Build @defensive_structures/Palisade_wall_aoe2de.webp@",
+        "Research @lumber_camp/DoubleBitAxe_aoe2DE.webp@ & @mill/HorseCollarDE.webp@ (optional)"
+      ],
+      "time": "8:51"
+    }
+  ]
+}

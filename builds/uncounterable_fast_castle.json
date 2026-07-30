@@ -1,0 +1,91 @@
+{
+  "name": "Uncounterable Fast Castle",
+  "civilization": "Generic",
+  "author": "Red_ (Phosphoru adaptation)",
+  "source": "https://aoecompanion.com/b/kxnt2j50mm — transcribed for Loom. Timings modelled on 25-second villager production, 130s Feudal and 160s Castle research; the guide itself gives no times.",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "time": "1:15",
+      "resources": { "food": 6, "wood": 0, "gold": 0, "stone": 0 },
+      "notes": ["Build 2 Houses | First 6 Villagers to Sheep | Queue Villagers non-stop"]
+    },
+    {
+      "villager_count": 7,
+      "age": 1,
+      "time": "1:40",
+      "resources": { "food": 7, "wood": 0, "gold": 0, "stone": 0 },
+      "notes": ["Villager 7 lures 1st Boar"]
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "time": "3:20",
+      "resources": { "food": 7, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": [
+        "Villagers 8-11 to Wood | Villager 8 builds Lumber Camp",
+        "Villager 9 builds 2 Houses, palisades gaps to the TC (max 5 tiles), then Wood"
+      ]
+    },
+    {
+      "villager_count": 16,
+      "age": 1,
+      "time": "5:25",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": [
+        "Villagers 12-16 to food under the TC (Boar, Deer or Sheep)",
+        "Lure 2nd Boar around Villager 11"
+      ]
+    },
+    {
+      "villager_count": 18,
+      "age": 1,
+      "time": "6:15",
+      "resources": { "food": 14, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": [
+        "Villager 17 builds Mill on Berries | Villager 18 to Berries",
+        "Move 4 from under the TC to Berries | Keep at least 6 on dead Boar, 3 on dead Deer"
+      ]
+    },
+    {
+      "villager_count": 22,
+      "age": 1,
+      "time": "7:55",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
+      "notes": [
+        "Villagers 19-22 to Stone | Villager 19 builds Mining Camp on the safest Stone",
+        "Move 2 from under the TC to Stone (delay if it causes decay)"
+      ]
+    },
+    {
+      "villager_count": 22,
+      "age": 1,
+      "time": "8:20",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
+      "notes": ["Research Loom | Click Feudal Age at 22 pop"]
+    },
+    {
+      "villager_count": 22,
+      "age": 2,
+      "time": "10:30",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
+      "notes": [
+        "In Feudal: build Market with 2 Villagers, Blacksmith with 1",
+        "Sell 100 Stone and 100 Wood, click Castle Age",
+        "Against an enemy Fast Castle: sell 300 Stone, buy 100 Food instead",
+        "If pressured, stop Villager production until safe"
+      ]
+    },
+    {
+      "villager_count": 22,
+      "age": 3,
+      "time": "13:30",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
+      "notes": [
+        "In Castle Age: build a Castle with the Stone miners | Train your Unique Unit",
+        "Resume Villager production and add economy behind it"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,179 @@
+{
+  "name": "Arena Fast Castle Boom",
+  "civilization": "Generic",
+  "author": "Hera",
+  "source": "https://youtu.be/JsTNM7j6fs4",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 2 @other/House_aoe2DE.webp@ | First 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"
+      ],
+      "time": "1:15"
+    },
+    {
+      "villager_count": 9,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 3 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build @lumber_camp/Lumber_camp_aoe2de.webp@)"
+      ],
+      "time": "2:30"
+    },
+    {
+      "villager_count": 10,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Lure 1st @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "2:55"
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 8,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 1 @other/House_aoe2DE.webp@, then @mill/Mill_aoe2de.webp@ (@resource/BerryBushDE.webp@) | Start pushing @animal/Deer_aoe2DE.webp@"
+      ],
+      "time": "3:20"
+    },
+    {
+      "villager_count": 13,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 10,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ on @animal/Boar_aoe2DE.webp@/@animal/Deer_aoe2DE.webp@ | Lure 2nd @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "4:10"
+    },
+    {
+      "villager_count": 17,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 14,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 4 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@ | Seed 4 @mill/FarmDE.webp@ after @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "5:50"
+    },
+    {
+      "villager_count": 21,
+      "age": 1,
+      "resources": {
+        "wood": 7,
+        "food": 14,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 4 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (same @lumber_camp/Lumber_camp_aoe2de.webp@) | Build 1 @other/House_aoe2DE.webp@"
+      ],
+      "time": "7:30"
+    },
+    {
+      "villager_count": 23,
+      "age": 1,
+      "time": "8:20",
+      "resources": {
+        "wood": 7,
+        "food": 14,
+        "gold": 2,
+        "stone": 0
+      },
+      "notes": [
+        "Send 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_gold.webp@ (build @mining_camp/Mining_camp_aoe2de.webp@) | 24 pop @age/FeudalAgeIconDE.webp@"
+      ]
+    },
+    {
+      "villager_count": 23,
+      "age": 2,
+      "resources": {
+        "wood": 7,
+        "food": 14,
+        "gold": 2,
+        "stone": 0
+      },
+      "notes": [
+        "Before @age/FeudalAgeIconDE.webp@ | Build 1 @other/House_aoe2DE.webp@ | Straggler after @animal/Sheep_aoe2DE.webp@/@animal/Deer_aoe2DE.webp@/@animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "10:30"
+    },
+    {
+      "villager_count": 25,
+      "age": 2,
+      "time": "11:20",
+      "resources": {
+        "wood": 9,
+        "food": 14,
+        "gold": 2,
+        "stone": 0
+      },
+      "notes": [
+        "In @age/FeudalAgeIconDE.webp@ | Next 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (still only 1 @lumber_camp/Lumber_camp_aoe2de.webp@) | Build @blacksmith/Blacksmith_aoe2de.webp@ (1 @resource/MaleVillDE.webp@)",
+        "Build @market/Market_aoe2DE.webp@ (2 @resource/MaleVillDE.webp@, e.g. from straggler) | 26 pop @age/CastleAgeIconDE.webp@"
+      ]
+    },
+    {
+      "villager_count": 25,
+      "age": 3,
+      "resources": {
+        "wood": 10,
+        "food": 13,
+        "gold": 2,
+        "stone": 0
+      },
+      "notes": [
+        "Before @age/CastleAgeIconDE.webp@ | @lumber_camp/DoubleBitAxe_aoe2DE.webp@ & @mill/HorseCollarDE.webp@ | 1 straggler @resource/MaleVillDE.webp@ to 1st @lumber_camp/Lumber_camp_aoe2de.webp@",
+        "Seed @mill/FarmDE.webp@ with remaining straggler @resource/MaleVillDE.webp@"
+      ],
+      "time": "14:00"
+    },
+    {
+      "villager_count": 26,
+      "age": 3,
+      "resources": {
+        "wood": 10,
+        "food": 14,
+        "gold": 2,
+        "stone": 0
+      },
+      "notes": [
+        "In @age/CastleAgeIconDE.webp@ | Build 1 @town_center/Towncenter_aoe2DE.webp@ on @resource/Aoe2de_wood.webp@, far from @lumber_camp/Lumber_camp_aoe2de.webp@ | Research @lumber_camp/BowSawDE.webp@",
+        "Build 1 @town_center/Towncenter_aoe2DE.webp@ on @resource/Aoe2de_gold.webp@/@resource/Aoe2de_stone.webp@ | Use @market/Market_aoe2DE.webp@ if needed | Get @mill/HeavyPlowDE.webp@ later"
+      ],
+      "time": "14:25"
+    }
+  ]
+}

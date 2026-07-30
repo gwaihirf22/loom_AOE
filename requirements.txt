@@ -1,0 +1,14 @@
+mss==10.2.0
+numpy==2.5.1
+opencv-python==5.0.0.93
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+pytest==9.1.1
+
+# Capture is per-OS, so its dependencies are too. The markers keep a macOS
+# install from dragging in X11 bindings it can never use, and a Linux install
+# from trying to build Objective-C bridges that do not apply.
+#
+# python-xlib is pure Python and would install harmlessly anywhere, but the
+# marker states the intent: it belongs to the x11 backend.
+python-xlib==0.33 ; sys_platform == "linux"

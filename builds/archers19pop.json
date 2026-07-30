@@ -1,0 +1,181 @@
+{
+  "name": "Archers 19 pop",
+  "civilization": "Generic",
+  "author": "Morley Games",
+  "source": "https://youtu.be/p4U2Eznqn7A",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 2 @other/House_aoe2DE.webp@ | Send 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"
+      ],
+      "time": "1:15"
+    },
+    {
+      "villager_count": 7,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Lures 1st @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "1:40"
+    },
+    {
+      "villager_count": 10,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 3 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build @lumber_camp/Lumber_camp_aoe2de.webp@) | Start pushing @animal/Deer_aoe2DE.webp@"
+      ],
+      "time": "2:55"
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 8,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds 1 @other/House_aoe2DE.webp@, then lures 2nd @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "3:20"
+    },
+    {
+      "villager_count": 13,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 10,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "4:10"
+    },
+    {
+      "villager_count": 14,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 11,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds @mill/Mill_aoe2de.webp@ on @resource/BerryBushDE.webp@"
+      ],
+      "time": "4:35"
+    },
+    {
+      "villager_count": 16,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 13,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "5:25"
+    },
+    {
+      "villager_count": 18,
+      "age": 1,
+      "resources": {
+        "wood": 5,
+        "food": 13,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ | Research @town_center/LoomDE.webp@ | 19 pop @age/FeudalAgeIconDE.webp@"
+      ],
+      "time": "6:40"
+    },
+    {
+      "villager_count": 18,
+      "age": 2,
+      "resources": {
+        "wood": 10,
+        "food": 5,
+        "gold": 2,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Before @age/FeudalAgeIconDE.webp@ | Move 5 @resource/MaleVillDE.webp@ from @town_center/Towncenter_aoe2DE.webp@ to @resource/Aoe2de_wood.webp@ (2 on straggler)",
+        "Move 3 @resource/MaleVillDE.webp@ from @town_center/Towncenter_aoe2DE.webp@ to @resource/Aoe2de_gold.webp@ (2) & @other/House_aoe2DE.webp@ + @barracks/Barracks_aoe2DE.webp@ building (1)"
+      ],
+      "time": "8:50"
+    },
+    {
+      "villager_count": 19,
+      "age": 2,
+      "resources": {
+        "wood": 10,
+        "food": 6,
+        "gold": 2,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "In @age/FeudalAgeIconDE.webp@ | 1 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@ | Research @lumber_camp/DoubleBitAxe_aoe2DE.webp@ | Build @archery_range/Archery_range_aoe2DE.webp@, @other/House_aoe2DE.webp@/@defensive_structures/Palisade_wall_aoe2de.webp@"
+      ],
+      "time": "9:15"
+    },
+    {
+      "villager_count": 21,
+      "age": 2,
+      "resources": {
+        "wood": 8,
+        "food": 9,
+        "gold": 4,
+        "stone": 0
+      },
+      "notes": [
+        "Move 2 @resource/MaleVillDE.webp@ from straggler to @resource/BerryBushDE.webp@ | Build @blacksmith/Blacksmith_aoe2de.webp@",
+        "Add 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_gold.webp@ | Builder back to @resource/Aoe2de_food.webp@",
+        "Research @blacksmith/FletchingDE.webp@ | Build 1 @other/House_aoe2DE.webp@ | Train @archery_range/Archer_aoe2DE.webp@"
+      ],
+      "time": "10:05"
+    },
+    {
+      "villager_count": 23,
+      "age": 2,
+      "resources": {
+        "wood": 10,
+        "food": 9,
+        "gold": 4,
+        "stone": 0
+      },
+      "notes": [
+        "Add 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build 2nd @lumber_camp/Lumber_camp_aoe2de.webp@)"
+      ],
+      "time": "10:55"
+    }
+  ]
+}

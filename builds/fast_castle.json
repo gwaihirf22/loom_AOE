@@ -1,0 +1,99 @@
+{
+  "name": "Fast Castle",
+  "civilization": "Generic",
+  "author": "Loom",
+  "source": "Generic build. Timings modelled on 25-second villager production, 130s Feudal and 160s Castle research.",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "time": "1:15",
+      "resources": { "food": 6, "wood": 0, "gold": 0, "stone": 0 },
+      "notes": ["Build 2 Houses | First 6 Villagers to Sheep"]
+    },
+    {
+      "villager_count": 10,
+      "age": 1,
+      "time": "2:55",
+      "resources": { "food": 6, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": ["Next 4 Villagers to Wood (build Lumber Camp)"]
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "time": "3:20",
+      "resources": { "food": 7, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": ["Lure 1st Boar | Eat it under the Town Centre"]
+    },
+    {
+      "villager_count": 13,
+      "age": 1,
+      "time": "4:10",
+      "resources": { "food": 9, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": ["Build 2 Houses, then Mill at Berries | Next 2 Villagers to Berries"]
+    },
+    {
+      "villager_count": 16,
+      "age": 1,
+      "time": "5:25",
+      "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 0 },
+      "notes": ["Next 3 Villagers to Berries and Boar | Lure 2nd Boar"]
+    },
+    {
+      "villager_count": 19,
+      "age": 1,
+      "time": "6:40",
+      "resources": { "food": 12, "wood": 7, "gold": 0, "stone": 0 },
+      "notes": ["Next 3 Villagers to Wood (build 2nd Lumber Camp)"]
+    },
+    {
+      "villager_count": 22,
+      "age": 1,
+      "time": "7:55",
+      "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
+      "notes": ["Next 3 Villagers to Gold (build Mining Camp) | Research Loom"]
+    },
+    {
+      "villager_count": 22,
+      "age": 1,
+      "time": "9:00",
+      "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
+      "notes": ["Before Feudal Age | Click up at 22 Villagers | Needs 500 Food"]
+    },
+    {
+      "villager_count": 22,
+      "age": 2,
+      "time": "11:10",
+      "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
+      "notes": ["In Feudal Age | Build Market and Blacksmith with 2 Wood Villagers, then send them back"]
+    },
+    {
+      "villager_count": 25,
+      "age": 2,
+      "time": "12:25",
+      "resources": { "food": 15, "wood": 7, "gold": 3, "stone": 0 },
+      "notes": ["Next 3 Villagers to Farms"]
+    },
+    {
+      "villager_count": 27,
+      "age": 2,
+      "time": "13:15",
+      "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
+      "notes": ["Next 2 Villagers to Gold"]
+    },
+    {
+      "villager_count": 27,
+      "age": 2,
+      "time": "13:40",
+      "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
+      "notes": ["Before Castle Age | Click up at 27 Villagers | Needs 800 Food and 200 Gold"]
+    },
+    {
+      "villager_count": 27,
+      "age": 3,
+      "time": "16:20",
+      "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
+      "notes": ["In Castle Age | Add Town Centres and keep making Villagers"]
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+{
+  "name": "Scouts rush - 18 pop",
+  "civilization": "Generic",
+  "author": "Morley Games",
+  "source": "https://youtu.be/PcKxbQKlZH8",
+  "build_order": [
+    {
+      "villager_count": 6,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 6,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Build 2 @other/House_aoe2DE.webp@ | First 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"
+      ],
+      "time": "1:15"
+    },
+    {
+      "villager_count": 7,
+      "age": 1,
+      "resources": {
+        "wood": 0,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Lure 1st @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "1:40"
+    },
+    {
+      "villager_count": 9,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 7,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build @lumber_camp/Lumber_camp_aoe2de.webp@) | Start pushing @animal/Deer_aoe2DE.webp@"
+      ],
+      "time": "2:30"
+    },
+    {
+      "villager_count": 11,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 9,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 2 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "3:20"
+    },
+    {
+      "villager_count": 12,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 10,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds 1 @other/House_aoe2DE.webp@, then lures 2nd @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "3:45"
+    },
+    {
+      "villager_count": 13,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 11,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ builds @mill/Mill_aoe2de.webp@ on @resource/BerryBushDE.webp@"
+      ],
+      "time": "4:10"
+    },
+    {
+      "villager_count": 16,
+      "age": 1,
+      "resources": {
+        "wood": 2,
+        "food": 14,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next 3 @resource/MaleVillDE.webp@ to @animal/Boar_aoe2DE.webp@"
+      ],
+      "time": "5:25"
+    },
+    {
+      "villager_count": 17,
+      "age": 1,
+      "resources": {
+        "wood": 3,
+        "food": 14,
+        "gold": 0,
+        "stone": 0
+      },
+      "notes": [
+        "Next @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ | Research @town_center/LoomDE.webp@ | Research 18 pop @age/FeudalAgeIconDE.webp@"
+      ],
+      "time": "6:15"
+    },
+    {
+      "villager_count": 17,
+      "age": 2,
+      "resources": {
+        "wood": 10,
+        "food": 6,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "Before @age/FeudalAgeIconDE.webp@ | Move 1 @resource/MaleVillDE.webp@ from @animal/Sheep_aoe2DE.webp@ to build @barracks/Barracks_aoe2DE.webp@ & @other/House_aoe2DE.webp@",
+        "Move 7 @resource/MaleVillDE.webp@ from @animal/Sheep_aoe2DE.webp@ to @resource/Aoe2de_wood.webp@ (2 straggler, 5 to 1st @lumber_camp/Lumber_camp_aoe2de.webp@)"
+      ],
+      "time": "8:25"
+    },
+    {
+      "villager_count": 20,
+      "age": 2,
+      "resources": {
+        "wood": 8,
+        "food": 11,
+        "gold": 0,
+        "stone": 0,
+        "builder": 1
+      },
+      "notes": [
+        "In @age/FeudalAgeIconDE.webp@ | 3 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@ | Research @lumber_camp/DoubleBitAxe_aoe2DE.webp@ | Build @stable/Stable_aoe2DE.webp@, then @other/House_aoe2DE.webp@/@defensive_structures/Palisade_wall_aoe2de.webp@",
+        "Move 2 @resource/MaleVillDE.webp@ from @resource/Aoe2de_wood.webp@ (straggler) to @animal/Sheep_aoe2DE.webp@ | New @resource/MaleVillDE.webp@ to @mill/FarmDE.webp@"
+      ],
+      "time": "9:40"
+    }
+  ]
+}
