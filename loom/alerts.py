@@ -105,7 +105,11 @@ def production_alerts(tracker, villagers, policy, game_time=None,
                 if toggles.housed:
                     found.append(("HOUSED — build a house", FULL))
             elif toggles.house_warning:
-                found.append((f"HOUSE NOW — {headroom} pop space left", FULL))
+                # SOON, not NOW: a build order already tells the player when
+                # to build a house, so shouting NOW at somebody following the
+                # plan is a nag, not a warning. The headroom number is theirs
+                # to tune in the launcher.
+                found.append((f"HOUSE SOON — {headroom} pop space left", FULL))
 
     if toggles.idle_tc and tracker.idle_tcs > 0:
         severity = policy.severity(villagers)

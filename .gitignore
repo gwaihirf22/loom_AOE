@@ -5,19 +5,19 @@ stats/
 
 # My explainer doc and other personal working notes, kept out of the repo
 # deliberately.
-.loom-notes.md
-.loom-roadmap.md
+#.loom-notes.md
+#.loom-roadmap.md
 .video-checklist.md
-.agent-onboarding.md
+#.agent-onboarding.md
 
 # Local AI assistant state.
-.claude/
+#.claude/
 
 # Scratch frame written by the debug tools.
 _debug.png
 
 # The personal icon library: ~400 game images, which are game art.
-master_aoe2_images/
+#.master_aoe2_images/
 
 # Saved settings are per-machine - mine should not become anyone's default.
 config.json
@@ -31,3 +31,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .DS_Store
+
+# PyInstaller output - rebuilt from loom.spec, never committed.
+dist/
+build/
+*.spec.bak

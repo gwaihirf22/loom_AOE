@@ -8,7 +8,7 @@ becomes "find the line where belief diverges from the picture, then open that
 one frame" - and re-running the same capture after a fix proves the fix
 against identical input.
 
-    python -m tools.replay_queue captures/run_20260724_182337
+    python -m tools.replay_queue captures/run_20260724_182337_annehk_...
     python -m tools.replay_queue captures/run_.../ --events-only
 
 The output is plain text on stdout, made to be piped, grepped, and pasted.
@@ -23,19 +23,25 @@ import os
 
 import cv2
 
-from loom import (alerts, anchor, build_order, config, digits, filters,
-                  notifications, pace, production, queue, report)
+from loom import (alerts, anchor, build_order, config, digits, filters, hud,
+                  notifications, pace, production, queue, reader as hud_reader,
+                  report)
 from loom.build_order import BuildOrder
 
 
-def find_scale(frame_paths, pop_template):
-    """Anchor once, like the live reader does at find_hud time."""
+def find_scale(frame_paths, pop_templates, wood_templates):
+    """Anchor once, like the live reader does at find_hud time.
+
+    This settles the HUD skin as well as the scale, so a stock capture run
+    replays against stock geometry without being told which it is.
+    """
     for path in frame_paths:
         frame = cv2.imread(path)
         if frame is None:
             continue
-        found = anchor.locate_regions(frame, pop_template)
-        if found is not None and found["score"] >= 0.8:
+        found = anchor.identify_hud(frame, pop_templates,
+                                    wood_templates=wood_templates)
+        if found is not None and found["score"] >= hud_reader.MIN_ANCHOR_SCORE:
             return found
     return None
 
@@ -78,16 +84,21 @@ def main():
         print(f"No frame_*.png in {args.run_dir}")
         return
 
-    pop_template = anchor.load_template()
-    regions = find_scale(frame_paths, pop_template)
+    pop_templates = {profile: anchor.load_template(profile)
+                     for profile in hud.PROFILES}
+    wood_templates = {profile: queue.load_wood_template(profile)
+                      for profile in hud.PROFILES}
+    regions = find_scale(frame_paths, pop_templates, wood_templates)
     if regions is None:
         print("No frame with a readable HUD anchor in this run.")
         return
     scale = regions["scale"]
+    profile = regions["profile"]
+    print(f"hud={profile.name} scale={scale:.2f} score={regions['score']:.3f}")
     digit_templates = digits.load_digit_templates()
-    min_glyph_width = max(4, int(6 * scale))
+    min_glyph_width = hud_reader.min_glyph_width(scale, profile)
 
-    reader = queue.QueueReader()
+    reader = queue.QueueReader(profile)
     tracker = production.ProductionTracker()
     watcher = notifications.NotificationWatcher()
     policy = alerts.IdleTcPolicy()

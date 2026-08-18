@@ -14,6 +14,7 @@ import glob
 import os
 
 import cv2
+import numpy as np
 import pytest
 
 from loom import digits, paths
@@ -92,3 +93,186 @@ def test_population_plausibility():
     assert not digits._plausible_population(21, 0)
     assert not digits._plausible_population(21, 505)
     assert not digits._plausible_population(501, 200)
+
+
+# ---- a "1" is a bar, and a bar defeats template matching -------------------
+#
+# The live bug: on the stock HUD, "21/30" was read as "2/30" with total
+# confidence. The "1" comes back three pixels wide against a width gate of
+# four, so it was skipped - and skipping is silent. Widening the gate is not
+# the fix either: extract_glyph stretches every run to one 14x20 box, and a
+# 3px bar stretched to 14 columns becomes a solid block that _normalize
+# divides by a standard deviation of nearly zero. Measured, such a run scores
+# 0.27 against the "1" template, less than half of MIN_MATCH_SCORE.
+#
+# So a "1" is recognised by shape, exactly as the slash already was.
+
+def bar_mask(width, height, band_height=20, gap=2):
+    """A solid vertical bar in a band, like the game's "1"."""
+    mask = np.zeros((band_height, width + 2 * gap), np.uint8)
+    top = (band_height - height) // 2
+    mask[top:top + height, gap:gap + width] = 255
+    return mask
+
+
+def test_a_three_pixel_bar_is_recognised_as_a_one():
+    """The exact geometry that was being dropped."""
+    mask = bar_mask(width=3, height=13)
+    runs = digits.find_column_runs(mask)
+    boxes, tallest = digits._bar_context(mask, runs)
+
+    assert digits._is_bar(boxes[runs[0]], tallest)
+
+
+def test_a_wide_glyph_is_not_a_bar():
+    """Every other digit is wider than it is bar-shaped, and mostly hollow."""
+    mask = np.zeros((20, 12), np.uint8)
+    mask[4:17, 2:10] = 255
+    mask[7:14, 4:8] = 0            # hollow it out, like a 0 or an 8
+    runs = digits.find_column_runs(mask)
+    boxes, tallest = digits._bar_context(mask, runs)
+
+    assert not digits._is_bar(boxes[runs[0]], tallest)
+
+
+def test_a_slash_is_not_a_bar():
+    """A slash is narrow too, and must stay the separator rather than become
+    a digit. Measured on live frames its ink fraction is 0.22-0.27 against a
+    bar's 0.77-0.97, so ink is what tells them apart."""
+    mask = np.zeros((20, 8), np.uint8)
+    for step in range(13):
+        mask[16 - step, 1 + step // 3] = 255
+    runs = digits.find_column_runs(mask)
+    boxes, tallest = digits._bar_context(mask, runs)
+
+    assert not digits._is_bar(boxes[runs[0]], tallest)
+
+
+def test_a_speck_of_noise_is_not_a_one():
+    """The rule compares a run against the tallest run BESIDE it rather than
+    against a pixel count - a fixed number here would be the pixel-constant
+    bug again, wrong at some HUD scale nobody tested."""
+    mask = np.zeros((20, 14), np.uint8)
+    mask[4:17, 2:5] = 255          # a real bar
+    mask[9:11, 9:10] = 255         # a two-pixel speck beside it
+    runs = digits.find_column_runs(mask)
+    boxes, tallest = digits._bar_context(mask, runs)
+
+    assert digits._is_bar(boxes[runs[0]], tallest), "the bar"
+    assert not digits._is_bar(boxes[runs[1]], tallest), "the speck"
+
+
+def test_the_bar_rule_scales_with_the_hud():
+    """A bar twice the size is still a bar; the rule is all ratios."""
+    for height, width in ((13, 3), (26, 6), (7, 2)):
+        mask = bar_mask(width=width, height=height, band_height=height + 6)
+        runs = digits.find_column_runs(mask)
+        boxes, tallest = digits._bar_context(mask, runs)
+        assert digits._is_bar(boxes[runs[0]], tallest), (height, width)
+
+
+# The live bands this was found on, cut straight out of a 2560x1440 stock
+# capture at the scale the game actually drew them - not rescaled, because
+# rescaled fixtures are what taught this project that fixture evidence is not
+# live evidence. Read at the stock profile's own gate of 4, which is the
+# configuration that produced the wrong answer.
+STOCK_POP_BANDS = {
+    "pop_stock_21_30": (21, 30),      # read as 2/30 before the bar rule
+    "pop_stock_11_15": (11, 15),      # read as 1/15
+}
+
+
+@pytest.mark.parametrize("name,expected", STOCK_POP_BANDS.items())
+def test_a_narrow_one_is_not_dropped(name, expected):
+    """The end-to-end regression, on real pixels.
+
+    Both of these contain a "1" three pixels wide, under a gate of four. The
+    old reader skipped it silently and reported the rest with total
+    confidence, so "21/30" became "2/30" - a plausible number, which is what
+    made it dangerous. It also came and went with the value on screen, since
+    the same glyph renders 3px or 4px depending on sub-pixel position, so it
+    looked like the HUD flickering rather than like a bug.
+    """
+    band = cv2.imread(str(paths.PROJECT_ROOT / "tests" / "data" / "queue"
+                          / f"{name}.png"))
+    assert band is not None, "missing regression fixture"
+    templates = digits.load_digit_templates()
+
+    assert digits.read_population(band, templates, 4, 10) == expected
+
+
+# ---- a hollow digit is not two "1"s ----------------------------------------
+#
+# The bar rule's own regression, found live one day after the rule shipped:
+# the last-resort brightness pass eroded a "0" to its two side strokes, the
+# bar rule read each stroke as a "1", and "10/15" became "111/15" - which
+# passed the old unbounded plausibility check and announced HOUSED five
+# villagers before the wall.
+
+def test_a_hollow_zero_is_not_read_as_two_ones():
+    """The offending band, cut straight from the live frame. With the pair
+    merged back into one run it classifies as the outline it is, and the
+    band reads its true value."""
+    band = cv2.imread(str(paths.PROJECT_ROOT / "tests" / "data" / "queue"
+                          / "pop_stock_hollow_10_15.png"))
+    assert band is not None, "missing regression fixture"
+    templates = digits.load_digit_templates()
+
+    assert digits.read_population(band, templates, 3, 10) == (10, 15)
+
+
+def test_two_real_ones_do_not_merge():
+    """The rule must narrow, not blunt: adjacent "1"s in a real "11" stand a
+    whole digit-spacing apart and stay two digits. This is yesterday's
+    fixture, whose leading "1" the bar rule exists to keep."""
+    band = cv2.imread(str(paths.PROJECT_ROOT / "tests" / "data" / "queue"
+                          / "pop_stock_11_15.png"))
+    assert band is not None
+    templates = digits.load_digit_templates()
+
+    assert digits.read_population(band, templates, 4, 10) == (11, 15)
+
+
+def test_bars_a_digit_spacing_apart_stay_separate():
+    """The merge gate in isolation: gap below the threshold merges, gap at
+    real digit spacing does not."""
+    mask = np.zeros((20, 30), np.uint8)
+    mask[4:17, 4:6] = 255          # bar
+    mask[4:17, 8:10] = 255         # bar, gap 2: one hollow digit's sides
+    mask[4:17, 20:22] = 255        # bar, far away: its own digit
+    runs = digits.find_column_runs(mask)
+    _, tallest = digits._bar_context(mask, runs)
+
+    merged = digits._merge_hollow_pairs(mask, runs, tallest)
+
+    assert merged == [(4, 10), (20, 22)]
+
+
+def test_a_bar_next_to_a_wide_glyph_does_not_merge():
+    """Only PAIRS of bars merge: a "1" standing close to a real digit must
+    not be swallowed into it."""
+    mask = np.zeros((20, 30), np.uint8)
+    mask[4:17, 4:6] = 255          # a bar
+    mask[4:17, 9:17] = 255         # a wide solid block right beside it
+    runs = digits.find_column_runs(mask)
+    _, tallest = digits._bar_context(mask, runs)
+
+    merged = digits._merge_hollow_pairs(mask, runs, tallest)
+
+    assert merged == runs
+
+
+# ---- the plausibility overshoot bound ---------------------------------------
+
+def test_current_may_exceed_cap_by_a_burned_house_or_three():
+    """21/20 is REAL - houses burn down - and must keep passing."""
+    assert digits._plausible_population(21, 20)
+    assert digits._plausible_population(30, 20)
+
+
+def test_a_phantom_digit_overshoot_is_a_misread():
+    """The live number: 111/15. No quantity of burned houses explains a
+    current seven times the cap; that is a phantom digit, and believing it
+    announced HOUSED five villagers early."""
+    assert not digits._plausible_population(111, 15)
+    assert not digits._plausible_population(200, 25)

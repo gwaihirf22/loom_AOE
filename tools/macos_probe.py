@@ -49,7 +49,7 @@ from AppKit import NSApplication, NSScreen, NSWorkspace
 from Foundation import NSRunLoop, NSDate
 import ScreenCaptureKit as SCK
 
-from loom import anchor, digits, notifications, paths, reader
+from loom import anchor, digits, hud, notifications, paths, queue, reader
 
 # Teach pyobjc what the screenshot callback actually hands back.
 #
@@ -383,22 +383,28 @@ def report_anchor(image):
     different renderer and a different scaler.
     """
     try:
-        template = anchor.load_template()
+        templates = {profile: anchor.load_template(profile)
+                     for profile in hud.PROFILES}
+        wood = {profile: queue.load_wood_template(profile)
+                for profile in hud.PROFILES}
     except FileNotFoundError as missing:
         print(f"anchor: {missing} - cannot test the HUD.")
         return None
 
-    # locate_regions runs find_icon and keeps the derived read regions, so the
-    # thirty-one-scale sweep happens once here and the debug image reuses it.
-    found = anchor.locate_regions(image, template)
+    # Every HUD skin gets a try, so a weak score means "none of the art Loom
+    # knows fits this" rather than "the one skin it knew did not".
+    # identify_hud keeps the derived read regions, so the thirty-one-scale
+    # sweep happens once here and the debug image reuses it.
+    found = anchor.identify_hud(image, templates,
+                                wood_templates=wood)
     if found is None:
         print("anchor: NO MATCH at all.")
         return None
 
     score, scale = found["score"], found["scale"]
     verdict = "good" if score >= 0.8 else "WEAK - templates likely need re-cutting"
-    print(f"anchor: score={score:.3f} scale={scale:.2f} at {found['icon'][:2]}  "
-          f"[{verdict}]")
+    print(f"anchor: hud={found['profile'].name} score={score:.3f} "
+          f"scale={scale:.2f} at {found['icon'][:2]}  [{verdict}]")
 
     if scale >= 1.95:
         print("        scale is at the top of anchor.COARSE_SCALES (2.0) - the")

@@ -16,17 +16,50 @@ Why not capture the whole screen? Two reasons:
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import functools
+
 import numpy as np
-from Xlib import display, X
+from Xlib import display, error, X
+
+from .errors import CaptureError
 
 WINDOW_NAME_FRAGMENT = "Age of Empires II"
 
+# Everything python-xlib raises when the server says no or goes away. Listed
+# rather than catching Exception, so a genuine bug in this module still
+# surfaces as itself instead of being relabelled a capture failure.
+XLIB_ERRORS = (error.XError, error.DisplayError, error.ConnectionClosedError,
+               error.ResourceIDError)
 
+
+def _translates_errors(function):
+    """Re-raise this function's Xlib failures as CaptureError.
+
+    The contract promises one error type whatever the backend, so callers can
+    degrade to "no reading" without importing Xlib to know what went wrong.
+    That matters most for the failure this makes survivable: the game exits
+    mid-session, its window id stops resolving, and every later capture raises
+    BadWindow. Before this it climbed straight out of the poll timer and took
+    the overlay with it.
+    """
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except XLIB_ERRORS as problem:
+            raise CaptureError(
+                f"X11 capture failed in {function.__name__}: "
+                f"{type(problem).__name__}: {problem}") from problem
+    return wrapper
+
+
+@_translates_errors
 def open_display():
     """Connect to the X server."""
     return display.Display()
 
 
+@_translates_errors
 def find_game_window(dpy, fragment=WINDOW_NAME_FRAGMENT):
     """Search the X window tree for the game window.
 
@@ -56,12 +89,14 @@ def find_game_window(dpy, fragment=WINDOW_NAME_FRAGMENT):
     return walk(dpy.screen().root)
 
 
+@_translates_errors
 def window_size(window):
     """Return (width, height) of a window."""
     geometry = window.get_geometry()
     return geometry.width, geometry.height
 
 
+@_translates_errors
 def window_geometry(window, display):
     """Absolute position and size of the window on the desktop.
 
@@ -85,6 +120,7 @@ def window_geometry(window, display):
     return (-translated.x, -translated.y, geometry.width, geometry.height)
 
 
+@_translates_errors
 def capture_region(window, x, y, width, height):
     """Capture part of a window and return it as a BGR image.
 
@@ -105,6 +141,7 @@ def capture_region(window, x, y, width, height):
     return pixels[:, :, :3]
 
 
+@_translates_errors
 def capture_window(window):
     """Capture a whole window as a BGR image."""
     width, height = window_size(window)

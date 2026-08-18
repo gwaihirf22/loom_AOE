@@ -43,13 +43,10 @@ import importlib
 import os
 import sys
 
-
-class CaptureError(RuntimeError):
-    """A frame could not be captured, with a reason worth printing.
-
-    Defined here rather than in a backend so callers can catch it without
-    knowing which backend is loaded.
-    """
+# Re-exported so `capture.CaptureError` resolves as it always has. It lives in
+# its own module because the backends raise it and this file imports them,
+# which would otherwise be a circular import.
+from .errors import CaptureError
 
 
 # Which backend belongs to which platform. Windows joins this table and
@@ -57,6 +54,7 @@ class CaptureError(RuntimeError):
 BACKENDS = {
     "linux": "x11",
     "darwin": "macos",
+    "win32": "windows",
 }
 
 # The names every backend must define, and which this module re-exports.

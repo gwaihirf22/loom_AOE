@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/loom_logo.png" alt="Loom" width="280">
+</p>
+
 # Loom
 
 A live, on-screen build-order assistant for **Age of Empires II: Definitive
@@ -42,6 +46,13 @@ instruction without being told. It knows the clock says 9:05 when the build
 wanted you in Feudal Age by 9:00, so it tells you that you are behind. Nobody has
 to press anything.
 
+There *are* hotkeys, and they are the exception that proves the point: they nudge
+the step when a reading has drifted, and then Loom goes back to following the game
+on its own after ten seconds. You can also switch following off entirely if you
+would rather drive — and then the panel says **MANUAL** across the top for as long
+as it lasts, because an overlay that has quietly stopped tracking your game while
+looking exactly as it always does is the one thing this must never do.
+
 It does this **without touching the game**. Loom reads pixels from the screen
 and draws a window on top. It never injects into, modifies, or reads the memory
 of the game process — so it is not a cheat and cannot be mistaken for one.
@@ -56,16 +67,36 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
 
 
 
+## Which platforms it runs on
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Reading the HUD | ✅ | ✅ | ⚠️ ~1–2s behind |
+| Overlay | ✅ | ✅ | ❌ not over fullscreen |
+| Statistics + graphs | ✅ | ✅ | ✅ |
+| APM tracking | ✅ | ✅ | ❌ not yet |
+
+Install guides: **[Linux](docs/install-linux.md)** ·
+**[Windows](docs/install-windows.md)** · **[macOS](docs/install-macos.md)**.
+The detail behind every cell, and why, is in
+[docs/platform-support.md](docs/platform-support.md).
+
+Everything that is not capture or overlay — the build-order engine, pace, the
+queue reader, notifications, statistics — is plain Python and OpenCV and
+behaves identically everywhere.
+
+---
+
+
+
 ## Trying it without the game
 
-Age of Empires II traditionally runs on Windows, but I run on Linux under Proton.
-This project was built and tested on a fairly specific setup (see *Running it for real*).
 You do not need the game to see Loom work: **every front end runs in a demo or
 simulated mode with no game required**:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv          # Windows: py -m venv .venv
+source .venv/bin/activate      # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
 # The overlay, replaying a whole match on your desktop in about a minute:
@@ -140,6 +171,34 @@ resolution-independent. One subtlety: the search is coarse-then-fine, because th
 clock is far from the anchor and a small scale error there becomes a large
 position error — offset error grows with distance.
 
+### Which HUD is on screen (`hud.py`)
+
+The game's own bar and a UI mod's bar draw the same numbers in different art at
+different spacings, so a template cut from one does not find the other — Loom
+spent a while insisting a perfectly visible stock HUD was not there, because the
+anchor scored 0.74 against a 0.80 gate. A **HUD profile** is one skin's anchor
+templates plus the offsets and glyph metrics that belong with them; Loom tries
+each at startup and keeps whichever the pixels choose. Both the stock HUD and
+the Anne_HK Better UI mod are supported, and a third skin is one entry plus two
+small images.
+
+Two things that were not obvious. An anchor may contain **nothing that changes**
+— and that includes the *civilization*, because the resource bar's border art is
+drawn per civ. A first attempt included the bar texture around the icon to make
+the two skins easier to tell apart; it scored 1.00 on the civ it was measured on
+and 0.59 on Portuguese, whose bar is pale stone where the other was dark wood.
+The icons and their black boxes are shared art and identical across civs; the
+scenery around them is not.
+
+And because every skin draws that same shared art, one icon is a **weak**
+discriminator: the two anchors sit about 0.02 apart on each other's HUDs, which
+is a coin toss, not a decision. So Loom asks a second icon — it checks the wood
+icon at the scale the population icon proposes and scores the pair by its weaker
+half. A skin genuinely on screen has both icons where it expects them at one
+size; a wrong skin has to explain one and then finds nothing where the other
+should be. That takes the margin from 0.02 to at least 0.27 on every frame
+measured.
+
 ### Recognising the digits (`digits.py`)
 
 Rather than an OCR engine like Tesseract, Loom matches each digit against ten
@@ -207,9 +266,16 @@ it. Loom reads those too and compares them to the build's target, so a beginner
 can see "the build wants 4 on wood, you have 1" — something no manual overlay can
 do. These counts are **advisory only**: they never decide the build-order step,
 because per-resource numbers swing wildly the instant villagers are re-tasked.
-Reading them needed a colour mask (the numbers are yellow, and the wooden HUD bar
-is bright enough to fool a plain brightness threshold) plus a connected-component
-cleanup to drop the bar's highlight lines.
+Reading them needed a colour mask plus a connected-component cleanup to drop the
+bar's highlight lines — a plain brightness threshold is no use, because the HUD
+bar's own highlights are bright too.
+
+*Which* colour mask turned out to be a property of the HUD skin rather than of
+the game: the mod prints these numbers in yellow **below** each icon, while the
+stock bar stamps them in white **inside** the icon's box, over the artwork. So
+the number's position comes from the profile, and the reader tries yellow first
+and then a "white and colourless" test — the second one works over artwork
+because skin tones are warm and cloth is saturated, while a digit is neither.
 
 ### The production queue (`queue.py`, `production.py`, `alerts.py`)
 
@@ -346,12 +412,37 @@ which resource is which.
 
 ## Running it for real
 
+The same everywhere:
+
 - Python 3.10+
-- Linux with XWayland (verified on Bazzite / KDE Plasma / Wayland)
-- Age of Empires II: Definitive Edition, in **Full screen** mode, running through proton.
+- Age of Empires II: Definitive Edition
 - In-game **HUD scale at 100%** (Options → Interface) — Loom warns if it
-  measures otherwise; recognition degrades away from 100%.
-- No mods installed that replace the resource-bar icons (Loom matches their artwork)
+  measures otherwise; recognition degrades away from 100%, and below about 90%
+  the HUD may not be found at all. (The slider tends to report 99% however it
+  is set; that 1% is well inside the tolerance.)
+- The **stock HUD** or the **Anne_HK Better UI** mod. Loom knows both and works
+  out which is on screen by itself — see "Which HUD is on screen" above. Another
+  UI mod that replaces the resource-bar artwork needs its own profile; Loom says
+  so rather than waiting silently, naming the closest skin and its score.
+
+  The launcher's **How to use** button says the same thing inside the app.
+
+  Two mods pair well with Loom (recommended, never required):
+  [Anne_HK — Better UI](https://www.ageofempires.com/mods/details/3762), the
+  layout Loom was built against, and
+  [the transparent-UI mod](https://www.ageofempires.com/mods/details/2532),
+  which clears the per-civ border artwork that causes most reading trouble —
+  though it does not yet cover every civ, the newest least of all.
+
+Per platform — the display mode the game needs, where settings are kept, and
+what is not supported yet — follow the guide for yours:
+
+- **[Linux](docs/install-linux.md)** — XWayland, Proton, **Full screen** mode.
+  Verified on Bazzite / KDE Plasma / Wayland.
+- **[Windows](docs/install-windows.md)** — Windows 10 1903+, **Windowed
+  Fullscreen** recommended.
+- **[macOS](docs/install-macos.md)** — paused and known-degraded; read the
+  limitations first.
 
 ```bash
 pip install -r requirements.txt
@@ -372,9 +463,9 @@ One window instead of four terminal tabs: pick a build order from the library
 in `builds/` (each row shows the build's own name, civilisation, author and
 step count), start and stop the overlay, and adjust the alerts — the villager
 counts where the idle-TC warning softens and silences, and on/off switches
-for the TC-idle, housed and pre-emptive HOUSE NOW warnings. Settings are
+for the TC-idle, housed and pre-emptive HOUSE SOON warnings. Settings are
 saved to `config.json` the moment they change, and apply the next time the
-overlay starts. The HOUSE NOW threshold is also settable: how much population
+overlay starts. The HOUSE SOON threshold is also settable: how much population
 space remaining should raise the pre-emptive warning — raise it if you boom
 hard enough to keep getting housed at the default 4.
 
@@ -486,8 +577,10 @@ loom_overlay.py         the overlay (main entry point)
 loom_coach.py           the same coaching logic, in a terminal
 loom_read.py            raw readout of the two HUD numbers (diagnostic)
 loom/                   everything that gets imported
-  paths.py              file locations, derived from the source tree
-  capture.py            reading pixels out of the game window
+  paths.py              file locations: shipped assets, and the player's own
+  capture/              reading pixels out of the game window, per OS
+    x11.py              Linux, macos.py macOS, windows.py Windows
+  hud.py                HUD skins: which templates and offsets belong together
   anchor.py             finding the HUD by template matching
   digits.py             digit recognition by template matching
   filters.py            rejecting misreads
@@ -505,30 +598,39 @@ loom/                   everything that gets imported
   gamestats.py          per-game statistics, one JSON file per match
   apm.py                aligning APM buckets to the game clock
   overlay.py            the on-screen panel
-  passthrough.py        asks X whether the overlay really is click-through
+  passthrough.py        asks the OS whether the overlay really is click-through
   launcher.py           the launcher window
   browser.py            the launcher's build preview: a stack of step cards
   statsview.py          the statistics window: past games, tabs, graphs
+  follow.py             is the panel following the game, and where it looks
+  hotkeys/              registering global hotkeys, per OS
   statefeed.py          overlay state as sentinel lines on its own stdout
+  stopline.py           the launcher's "please stop", back down on stdin
   runner.py             running the other Loom programs as children
   config.py             saved settings: overlay position, alerts, build
 tools/                  development scripts, never imported
-  grab_frames.py        screenshot grabber for building a test corpus
+  grab_frames.py        screenshot grabber: run_<time>_<skin>[_<label>]/
+  index_captures.py     rewrites captures/INDEX.md from the folder names
   capture_smoketest.py  the Wayland capture test (documents why mss is unused)
   overlay_test.py       does always-on-top survive a fullscreen game, and is
                         the panel really click-through?
   apm_counter.py        counts keys and clicks per bucket - never which key
+  windows_probe.py      which Windows capture path actually returns pixels
   replay_queue.py       replays captured frames through the full stack
+  tc_debug.py           live view of what the Town Centre tracker believes
   build_queue_templates.py  cuts queue icon templates from game artwork
 templates/              reference images used for matching
-  pop_icon.png          the population icon artwork
-  digits/               labelled 0-9 glyphs
+  pop_icon.png          the population icon, as the Anne_HK mod draws it
+  stock/                the same anchors as the unmodded game draws them
+  digits/               labelled 0-9 glyphs (shared: it is the game's font)
   queue/                unit icons for reading the production queue
 builds/                 build orders as JSON
 stats/                  per-game statistics files (gitignored)
+captures/               frames grabbed while playing (gitignored); INDEX.md
+                        is generated, so rename a folder to describe it
 images/                 resource icons for overlay
 tests/                  the test suite
-CHANGELOG.md            version history; 1.0.0 is reserved for Windows
+CHANGELOG.md            version history; 1.0.0 is the Windows release
 ```
 
 Anything under `loom/` is imported; anything under `tools/` is only run
@@ -581,5 +683,4 @@ I cited at the top of every source file, as CS50 permits for
 the final project. The code, architecture, design decisions, testing and direction are
 mine; Every significant choice came out of testing the tool against a real
 game and deciding what the results meant. Yet, many thousands of questions were asked
-of Claude for finding documentation and showing me how to write snippets of code.# loom_AOE-private
-# loom_AOE-private
+of Claude for finding documentation and showing me how to write snippets of code.

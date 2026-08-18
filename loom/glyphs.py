@@ -40,6 +40,16 @@ FONT_DIR = paths.TEMPLATES_DIR / "notification_font"
 # reading as plausible garbage (one did, at 0.57, before this was raised).
 MIN_GLYPH_SCORE = 0.8
 
+# One glyph per line may fall short of MIN_GLYPH_SCORE, down to this floor,
+# without killing the line. A HUD rendered a hair off the harvest scale
+# softens every glyph a little and occasionally drops exactly one below the
+# gate (measured at a 2% resample: eighteen glyphs at 0.83-0.97, one at
+# 0.76) - all-or-nothing turned that into a whole game of unread lines.
+# The tolerated glyph still enters as its best-scoring label, and
+# parse_event's KNOWN_WORDS vocabulary is the backstop: a wrong letter
+# makes a non-word, and the line refuses at the event stage instead.
+WEAK_GLYPH_FLOOR = 0.65
+
 # A candidate and a template must have roughly similar shapes to compare at
 # all: extract_glyph squashes everything to one box, which would make a
 # stretched "i" impersonate an "l" - so the natural width/height ratio is
@@ -115,10 +125,43 @@ def load_font(directory=None):
         if image is None:
             continue
         aspect = image.shape[1] / image.shape[0]
-        boxed = cv2.resize(image, (digits.GLYPH_WIDTH, digits.GLYPH_HEIGHT),
-                           interpolation=cv2.INTER_AREA)
-        font.setdefault(label, []).append((digits._normalize(boxed), aspect))
+        # Each glyph also enters at a few slightly resampled sizes. The
+        # harvested pixels are one exact rendering; the game at any other
+        # HUD scale antialiases the same character differently, and that
+        # alone drops match scores from 1.00 to below the 0.8 gate -
+        # measured on the very line the font was harvested from, resampled
+        # by 2%. Blurring the variants into the set keeps the gate strict
+        # while letting a slightly softer rendering through.
+        for factor in (0.96, 0.98, 1.0, 1.02, 1.04):
+            source = image
+            if factor != 1.0:
+                source = cv2.resize(image, None, fx=factor, fy=factor,
+                                    interpolation=cv2.INTER_AREA)
+                if source.size == 0:
+                    continue
+            boxed = cv2.resize(source,
+                               (digits.GLYPH_WIDTH, digits.GLYPH_HEIGHT),
+                               interpolation=cv2.INTER_AREA)
+            _admit(font.setdefault(label, []),
+                   digits._normalize(boxed), aspect)
     return font
+
+
+def _admit(variants, normalized, aspect):
+    """Add a variant unless the label already holds a near-twin.
+
+    Many resamples of the same source glyph collapse to almost the same
+    normalized box, and every kept variant is paid for on every classify
+    of every run of every line - the whole variant set went 5x when the
+    resampled sizes were added, and reading one busy panel crossed 150ms.
+    Templates are normalized, so a true twin correlates near 1.0; keeping
+    only sufficiently different variants preserves the tolerance the
+    resamples exist for at a fraction of their cost.
+    """
+    for kept, _ in variants:
+        if float((kept * normalized).mean()) >= 0.985:
+            return
+    variants.append((normalized, aspect))
 
 
 # ---- isolating the text ----------------------------------------------------
@@ -142,8 +185,10 @@ def text_mask(line_bgr):
 
 # One rendered notification line is about this tall. Bands much taller
 # than it are stacked or wrapped lines that must be split apart before
-# reading - a fused band can never read.
-NOMINAL_LINE_HEIGHT = 26
+# reading - a fused band can never read. Measured 28 on live panels (the
+# notification feed's line pitch); the 26 it used to be made the splitter
+# over-count lines in tall fused bands and cut real lines in half.
+NOMINAL_LINE_HEIGHT = 28
 
 # The fraction of a band's pixels that must be near-black for it to count
 # as text-on-the-notification-box. Bright terrain has highlights that pass
@@ -168,7 +213,16 @@ def find_lines(panel_bgr, min_height=10):
     """
     mask = text_mask(panel_bgr)
     gray = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2GRAY)
-    rows = mask.sum(axis=1) // 255
+    # Only ink NEXT TO the font's near-black outline counts toward a line.
+    # Brightness alone is not text: sunlit terrain showing past the panel
+    # clears the relative threshold easily, and a whole game of "lines"
+    # found this way read as nothing but saved junk crops. A dark-adjacency
+    # test is how the phrase watcher's band finder stays clean, and it is
+    # the same trick here - terrain highlights have no outline behind them.
+    dark = (gray < DARK_LEVEL).astype(np.uint8)
+    near_dark = cv2.dilate(dark, np.ones((3, 3), np.uint8))
+    outlined = mask & (near_dark * 255)
+    rows = outlined.sum(axis=1) // 255
     coarse = []
     start = None
     for y, count in enumerate(rows):
@@ -362,6 +416,7 @@ def read_line(line_bgr, font):
     space_gap = height * SPACE_FRACTION
     characters = []
     weakest = 1.0
+    weak_used = False
     previous_end = None
     for start, end in runs:
         if previous_end is not None and start - previous_end >= space_gap:
@@ -378,12 +433,22 @@ def read_line(line_bgr, font):
             # piece classifies - or an "m" would read as "ln" (it did,
             # once, in a real game: "colnplete").
             pieces = _read_split(mask, start, end, font)
-            if pieces is None:
-                return None, 0.0        # never guess: one bad glyph, no line
-            chars, piece_weakest = pieces
-            characters.extend(chars)
-            weakest = min(weakest, piece_weakest)
-            continue
+            if pieces is not None:
+                chars, piece_weakest = pieces
+                characters.extend(chars)
+                weakest = min(weakest, piece_weakest)
+                continue
+            # Not touching letters either. One slightly-soft glyph per
+            # line is forgiven (see WEAK_GLYPH_FLOOR); a second means the
+            # rendering is genuinely off, and the line dies rather than
+            # guess. Never guess: one BAD glyph still kills the line.
+            if (char is not None and score >= WEAK_GLYPH_FLOOR
+                    and not weak_used):
+                weak_used = True
+                characters.append(char)
+                weakest = min(weakest, score)
+                continue
+            return None, 0.0
         characters.append(char)
         weakest = min(weakest, score)
 
@@ -527,6 +592,13 @@ class TextWatcher:
         self._last_signature = None
         self._last_unread_save = None
         self.save_unread = save_unread
+        # Digest -> read result. A line lingers ~10 seconds and gets
+        # re-read on every look; with the resampled font variants a busy
+        # panel costs ~100ms to read, so each distinct rendering pays
+        # that once and lingering is free. The digest is the same coarse
+        # fingerprint the stack signature uses, so anything stable enough
+        # to track is stable enough to cache.
+        self._read_cache = {}
 
     def watch(self, panel_bgr, game_time):
         """Read the feed once. Returns event names newly sighted.
@@ -555,9 +627,19 @@ class TextWatcher:
         stack = []
         for (y1, y2) in bands:
             line = panel_bgr[y1:y2]
-            text, _score = read_line(line, self.font)
+            digest = _band_digest(line)
+            if digest in self._read_cache:
+                text = self._read_cache[digest]
+            else:
+                text, _score = read_line(line, self.font)
+                # The cache maps renderings, not game state, so dropping
+                # it wholesale now and then costs one re-read per visible
+                # line and caps the footprint for a whole session.
+                if len(self._read_cache) >= 256:
+                    self._read_cache.clear()
+                self._read_cache[digest] = text
             if text is None:
-                stack.append(("pixels", _band_digest(line)))
+                stack.append(("pixels", digest))
             else:
                 stack.append(("text", text))
         signature = tuple(stack)

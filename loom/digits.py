@@ -82,6 +82,22 @@ WHITE_PASSES = (WHITE_STRICT, WHITE_SOFT)
 WHITE_MAX_SPREAD = 45
 
 
+def _white_pixels(band_bgr, min_channel=WHITE_STRICT):
+    """The raw white test alone: which pixels are bright AND colorless.
+
+    Split from white_mask so a caller can see the ink BEFORE the shape
+    filter runs - _fit_clock_rows needs that, because it exists to repair
+    the reference height that very filter uses.
+    """
+    blue = band_bgr[:, :, 0].astype(int)
+    green = band_bgr[:, :, 1].astype(int)
+    red = band_bgr[:, :, 2].astype(int)
+
+    lowest = np.minimum(np.minimum(blue, green), red)
+    spread = np.maximum(np.maximum(blue, green), red) - lowest
+    return (lowest >= min_channel) & (spread <= WHITE_MAX_SPREAD)
+
+
 def white_mask(band_bgr, min_channel=WHITE_STRICT):
     """White-on-black image of just the WHITE pixels in a crop.
 
@@ -94,13 +110,7 @@ def white_mask(band_bgr, min_channel=WHITE_STRICT):
     bright AND colorless, and the stone is bright but warm - so test both,
     the same move the per-resource reader makes for its yellow digits.
     """
-    blue = band_bgr[:, :, 0].astype(int)
-    green = band_bgr[:, :, 1].astype(int)
-    red = band_bgr[:, :, 2].astype(int)
-
-    lowest = np.minimum(np.minimum(blue, green), red)
-    spread = np.maximum(np.maximum(blue, green), red) - lowest
-    is_white = (lowest >= min_channel) & (spread <= WHITE_MAX_SPREAD)
+    is_white = _white_pixels(band_bgr, min_channel)
     return _keep_text_shapes((is_white * 255).astype(np.uint8))
 
 
@@ -229,10 +239,35 @@ def digits_to_int(digits):
     return value
 
 
+# The villager badge on the STOCK bar is not in a dark box - it is stamped on
+# the population icon's own portrait, so the crop around it holds skin, cloth
+# and player colour as well as digits. A plain brightness gate cannot separate
+# those: it keeps the bright parts of the portrait, they touch the digits, and
+# the whole thing reads as one unsplittable run.
+#
+# The white-and-colourless test can, because it is the same problem the
+# population band already solves on civ border art - skin is warm and cloth is
+# saturated, digits are neither. It needs its own threshold, though: measured
+# on a live stock bar, WHITE_SOFT (190) eats the base off a "2" and leaves a
+# shape that classifies as a confident "7". The badge font is smaller than the
+# bar's and its anti-aliasing runs dimmer, so 170 is where the whole glyph
+# survives. Anything at or below 170 read "12" correctly; 190 and above did
+# not.
+BADGE_WHITE = 170
+
+
 def read_count(region_bgr, templates, min_glyph_width):
-    """Read a villager count from inside a dark HUD icon box."""
+    """Read a villager count from a HUD icon's corner.
+
+    The dark-box pass runs first and unchanged, so a HUD it already reads is
+    read exactly as before. The portrait pass exists for skins that stamp the
+    number straight onto the art.
+    """
     digits, score = read_digits(region_bgr, templates,
                                ICON_BOX_THRESHOLD, min_glyph_width)
+    if digits is None:
+        digits, score = read_binary(white_mask(region_bgr, BADGE_WHITE),
+                                    templates, min_glyph_width)
     if digits is None:
         return None, 0.0
     return digits_to_int(digits), score
@@ -259,16 +294,132 @@ def _diagonality(glyph):
     return (centroid_y(left) - centroid_y(right)) / height
 
 
+# A "1" is a bar, and a bar defeats template matching outright.
+#
+# extract_glyph stretches every run to one 14x20 box, which is exactly what
+# makes the other digits comparable - but a three-pixel-wide bar stretched to
+# fourteen columns becomes a SOLID BLOCK, and _normalize then divides by a
+# standard deviation of almost nothing. Measured on live stock frames, those
+# runs score 0.27 against the "1" template, less than half of
+# MIN_MATCH_SCORE. The digit is not merely matched poorly; the normalisation
+# has thrown away the one feature that identifies it.
+#
+# So a "1" is recognised by SHAPE, the same way the slash above already is.
+# Measured across ~1,600 glyph runs from two live stock games:
+#
+#              width/height     ink fraction
+#     "1"      0.23 - 0.31      0.77 - 0.97
+#     slash    0.31 - 0.38      0.22 - 0.27
+#     others   0.46 - 0.73      0.35 - 0.62
+#
+# Ink alone separates a bar from every other glyph with a margin of 0.15, and
+# the aspect test is a second opinion rather than the deciding one - the same
+# corroborate-with-a-second-measurement habit identify_hud uses.
+BAR_ASPECT = 0.45
+BAR_INK = 0.70
+
+# How tall a bar must be relative to the tallest run beside it. Deliberately
+# a FRACTION of a measured neighbour rather than a pixel count: a constant
+# here would be the pixel-constant bug all over again, failing at some HUD
+# scale nobody tested. Its job is only to stop a speck of noise being called
+# a "1", and every real digit in a band shares one text height.
+BAR_MIN_HEIGHT_FRACTION = 0.6
+
+
+def _run_box(binary, start, end):
+    """(width, height, ink fraction) of one run's inked box, or None."""
+    column_slice = binary[:, start:end]
+    inked_rows = np.nonzero(column_slice.max(axis=1))[0]
+    if len(inked_rows) == 0:
+        return None
+    trimmed = column_slice[inked_rows.min():inked_rows.max() + 1, :]
+    height, width = trimmed.shape
+    if height == 0 or width == 0:
+        return None
+    return width, height, float((trimmed > 0).mean())
+
+
+def _is_bar(box, tallest):
+    """Is this run a solid vertical bar - which is to say, a "1"?"""
+    if box is None or not tallest:
+        return False
+    width, height, ink = box
+    return (height >= BAR_MIN_HEIGHT_FRACTION * tallest
+            and width / height <= BAR_ASPECT
+            and ink >= BAR_INK)
+
+
+# Two bars this close together are one hollow digit's SIDES, not two "1"s.
+# Measured on the frame that taught it: a "0" eroded by the last-resort
+# brightness pass to its two side strokes, gaps of 2-3px against a text
+# height of 12 - while two REAL adjacent "1"s sit 5-6px apart, a full
+# digit-spacing away. A fraction of the measured text height rather than a
+# pixel count, per the pixel-constant rule.
+HOLLOW_GAP_FRACTION = 0.3
+
+
+def _merge_hollow_pairs(binary, runs, tallest):
+    """Rejoin a hollow digit that a harsh threshold split into two bars.
+
+    Without this, the bar rule reads each side of an eroded "0" as a "1" -
+    live, "10/15" became "111/15", which passed every plausibility check and
+    announced HOUSED five villagers early. Merged back into one run, the
+    pair classifies as the outline it is (a skeletal "0" scored 0.77 against
+    the 0 template on the same frame) or fails the match gate and reads as
+    nothing - either of which beats a confident wrong number.
+
+    Only PAIRS of bars merge, and only across a sliver of a gap: two real
+    "1"s stand a whole digit-spacing apart and are untouched.
+    """
+    threshold = max(2, round(tallest * HOLLOW_GAP_FRACTION))
+    merged = []
+    index = 0
+    while index < len(runs):
+        if index + 1 < len(runs):
+            start_a, end_a = runs[index]
+            start_b, end_b = runs[index + 1]
+            if (start_b - end_a <= threshold
+                    and _is_bar(_run_box(binary, start_a, end_a), tallest)
+                    and _is_bar(_run_box(binary, start_b, end_b), tallest)):
+                merged.append((start_a, end_b))
+                index += 2
+                continue
+        merged.append(runs[index])
+        index += 1
+    return merged
+
+
+def _bar_context(binary, runs):
+    """The boxes of every run, and the tallest of them.
+
+    Measured once per band so _is_bar can compare a run against its
+    neighbours instead of against a fixed number of pixels.
+    """
+    boxes = {(start, end): _run_box(binary, start, end)
+             for start, end in runs}
+    heights = [box[1] for box in boxes.values() if box is not None]
+    return boxes, (max(heights) if heights else 0)
+
+
+# How far current may exceed cap before the pair is called a misread.
+# Current over cap is REAL - houses burn down, and the game shows 21/20 -
+# but each burned house frees only 5, so a large overshoot is a phantom
+# digit, not a fire. Live, "10/15" misread as "111/15" sailed through the
+# old unbounded check and announced HOUSED five villagers early.
+BURNED_HOUSE_ALLOWANCE = 15
+
+
 def _plausible_population(current, cap):
     """Could this pair actually appear on the HUD?
 
     Pop cap only ever comes from houses (+5), Town Centres and castles (also
     multiples of 5), or the lobby's population limit (multiples of 25) - so a
-    cap that is not a multiple of 5 is necessarily a misread. Current is NOT
-    required to fit under the cap: houses burn down, and the game then shows
-    something like 21/20.
+    cap that is not a multiple of 5 is necessarily a misread. Current may
+    exceed the cap - houses burn down - but only by a few burned houses'
+    worth; see BURNED_HOUSE_ALLOWANCE.
     """
-    return cap % 5 == 0 and 5 <= cap <= 500 and 0 <= current <= 500
+    return (cap % 5 == 0 and 5 <= cap <= 500
+            and 0 <= current <= cap + BURNED_HOUSE_ALLOWANCE)
 
 
 # When the player is housed the game recolours the population display:
@@ -298,13 +449,18 @@ def yellow_pop_mask(band_bgr):
     return _keep_text_shapes((is_yellow * 255).astype(np.uint8))
 
 
-def read_population(band_bgr, templates, min_glyph_width):
+def read_population(band_bgr, templates, min_glyph_width,
+                    max_glyph_width=None):
     """Read the "current/cap" population display. Returns (current, cap).
 
     Three passes for the three styles the game actually uses: white text
     (normal), warning-yellow text (headroom running out), and the bright
     housed box (at the wall). Each pass keeps the same strict parsing
     rules, so a fallback can fill a gap but never invent a reading.
+
+    max_glyph_width is how wide a run may be before it is treated as two
+    characters touching. It must track the HUD scale - see _split_merged_runs
+    - and callers that know the scale should pass reader.max_glyph_width().
     """
     # white_mask, not a plain threshold: this band sits on the civ's
     # border artwork, and light architecture sets glint past any
@@ -312,12 +468,13 @@ def read_population(band_bgr, templates, min_glyph_width):
     # frames - see white_mask and WHITE_PASSES for the whole story.
     for min_channel in WHITE_PASSES:
         white = white_mask(band_bgr, min_channel)
-        result = _parse_population(white, templates, min_glyph_width)
+        result = _parse_population(white, templates, min_glyph_width,
+                                   max_glyph_width)
         if result[0] is not None:
             return result
 
     result = _parse_population(yellow_pop_mask(band_bgr), templates,
-                               min_glyph_width)
+                               min_glyph_width, max_glyph_width)
     if result[0] is not None:
         return result
 
@@ -325,7 +482,8 @@ def read_population(band_bgr, templates, min_glyph_width):
     # for a plain gate, and too desaturated for the yellow mask above.
     housed = ((band_bgr.max(axis=2) > HOUSED_STYLE_THRESHOLD)
               .astype("uint8") * 255)
-    return _parse_population(housed, templates, min_glyph_width)
+    return _parse_population(housed, templates, min_glyph_width,
+                             max_glyph_width)
 
 
 # No digit in the HUD's population font is wider than this; a wider run is
@@ -334,16 +492,24 @@ def read_population(band_bgr, templates, min_glyph_width):
 MAX_POP_GLYPH_WIDTH = 13
 
 
-def _split_merged_runs(binary, runs):
+def _split_merged_runs(binary, runs, max_glyph_width=None):
     """Split any run too wide to be one character at its thinnest column.
 
     Touching characters still pinch to a one-or-two pixel bridge where they
     meet; the column with the least ink inside the run is that bridge. One
     split per run is enough here - the failure mode is a pair, not a train.
+
+    max_glyph_width has to grow with the HUD or it starts cutting real digits
+    in half. Measured at HUD scale 1.48: a "4" is 15px and a "5" is 14px, so
+    the fixed 13 split both and "4/5" read as nothing at all. Callers that
+    know the scale pass a scaled value; the default keeps the reference figure
+    for callers that do not.
     """
+    if max_glyph_width is None:
+        max_glyph_width = MAX_POP_GLYPH_WIDTH
     split = []
     for start, end in runs:
-        if end - start <= MAX_POP_GLYPH_WIDTH:
+        if end - start <= max_glyph_width:
             split.append((start, end))
             continue
         ink = (binary[:, start:end] > 0).sum(axis=0)
@@ -358,25 +524,40 @@ def _split_merged_runs(binary, runs):
     return split
 
 
-def _parse_population(binary, templates, min_glyph_width):
+def _parse_population(binary, templates, min_glyph_width,
+                      max_glyph_width=None):
     """Parse an already-thresholded band into (current, cap).
 
     Returns (None, None) if it does not read cleanly. The slash's *position*
     matters: it is the split between the two numbers, so there must be
     exactly one, with digits on both sides.
     """
-    runs = _split_merged_runs(binary, find_column_runs(binary))
+    runs = _split_merged_runs(binary, find_column_runs(binary),
+                              max_glyph_width)
+    _boxes, tallest = _bar_context(binary, runs)
+    runs = _merge_hollow_pairs(binary, runs, tallest)
+    boxes, tallest = _bar_context(binary, runs)
 
     labels = []
     separators = []
     for start, end in runs:
-        if end - start < min_glyph_width:
+        # A bar is exempt from the width gate, and has to be: a "1" is
+        # NARROWER than the gate by nature. Measured on live stock frames the
+        # "1" comes back 3px against a gate of 4, so it was being skipped -
+        # and skipping is silent, so "21/30" was read as "2/30" with total
+        # confidence. Widening the gate instead would let noise through; the
+        # shape test is what makes the exemption safe.
+        bar = _is_bar(boxes.get((start, end)), tallest)
+        if end - start < min_glyph_width and not bar:
             continue
         glyph = extract_glyph(binary, start, end)
         if glyph is None:
             continue
         if _diagonality(glyph) > SLASH_DIAGONALITY:
             separators.append(len(labels))
+            continue
+        if bar:
+            labels.append(1)
             continue
         label, score = classify_glyph(glyph, templates)
         if score < MIN_MATCH_SCORE:
@@ -395,6 +576,46 @@ def _parse_population(binary, templates, min_glyph_width):
     return current, cap
 
 
+def _fit_clock_rows(band_bgr):
+    """Trim a clock band to the rows its text actually occupies.
+
+    The band's crop is derived from the anchor 590 reference-pixels away, so
+    at large HUD scales it arrives much taller than the text - measured, a
+    55px band around 21px digits. That is not merely waste: _keep_text_shapes
+    keeps a component only if it spans 35% of the BAND height, and 35% of 55
+    is 19.25px, which sits exactly at glyph height. Whichever digits eroded a
+    pixel short that frame were silently deleted - a "5" vanished from
+    "00:07:51" and the whole read refused, on a fifth of live polls.
+
+    Fitting the band to its densest contiguous ink rows makes the ratio safe
+    by construction: 35% of a fitted ~25px band is 9px, far under any digit.
+    The row profile comes from the raw color test, NOT white_mask, because
+    white_mask ends with the very shape filter whose reference this exists to
+    fix. On a band that is already tight the fit changes nothing.
+    """
+    is_white = _white_pixels(band_bgr, WHITE_SOFT)
+    rows = is_white.sum(axis=1)
+    peak = int(rows.max())
+    if peak < 3:
+        return band_bgr
+
+    inked = rows >= max(3, int(peak * 0.35))
+    best = current = None
+    for y, on in enumerate(inked):
+        if on:
+            current = (current[0], y) if current else (y, y)
+            if best is None or current[1] - current[0] > best[1] - best[0]:
+                best = current
+        else:
+            current = None
+
+    top = max(0, best[0] - 2)
+    bottom = min(band_bgr.shape[0], best[1] + 3)
+    if bottom - top < 8:
+        return band_bgr                  # too thin to be a text line
+    return band_bgr[top:bottom]
+
+
 def read_clock_seconds(band_bgr, templates, min_glyph_width):
     """Read the HH:MM:SS clock and return it as total seconds.
 
@@ -410,6 +631,7 @@ def read_clock_seconds(band_bgr, templates, min_glyph_width):
     new-game detection. White is bright AND colorless; stone is bright
     but warm.
     """
+    band_bgr = _fit_clock_rows(band_bgr)
     for min_channel in WHITE_PASSES:
         value, score = _parse_clock(white_mask(band_bgr, min_channel),
                                     templates, min_glyph_width)
@@ -419,9 +641,17 @@ def read_clock_seconds(band_bgr, templates, min_glyph_width):
 
 
 def _parse_clock(binary, templates, min_glyph_width):
-    """Parse an already-masked clock band into total seconds."""
-    runs = find_column_runs(binary)
+    """Parse an already-masked clock band into total seconds.
 
+    Strictly left to right, aborting on the first run that classifies badly.
+    A retry that skipped leading junk runs lived here briefly - border
+    decoration ahead of the digits was aborting a fifth of live reads - but
+    once _fit_clock_rows landed, replaying every saved live band showed the
+    retry rescuing exactly nothing the fitted band did not already rescue, so
+    it went. It carried a real cost for that nothing: each dropped run was a
+    chance for well-scoring junk to head a valid-looking time.
+    """
+    runs = find_column_runs(binary)
     digits = []
     weakest = 1.0
     for start, end in runs:

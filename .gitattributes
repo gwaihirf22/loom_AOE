@@ -1,0 +1,34 @@
+# Loom — line endings and what counts as text.
+#
+# Loom is developed on Linux and Windows, on the same machine, dual-booted.
+# Without this file every checkout's line endings depend on that machine's
+# core.autocrlf setting, so one clone configured differently shows the whole
+# tree as modified on the other OS. Here the rule travels with the repository
+# instead of living in a config I have to remember to set.
+#
+# text=auto: git decides text-vs-binary by content, and stores every text file
+# with LF. The working tree gets whatever the platform wants (CRLF on Windows
+# under autocrlf, LF on Linux), which is why there is no eol= here - forcing
+# eol=lf would rewrite the entire Windows working tree for no gain.
+* text=auto
+
+# The image formats, stated rather than sniffed. Git's heuristic already gets
+# these right, but a template is a reference image that digit recognition
+# matches pixel-for-pixel: if one were ever treated as text and had its bytes
+# "converted", the failure would be a silent misread, not an error. That is
+# the worst failure mode this project has, so the rule is written down.
+*.png  binary
+*.webp binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+
+# Build orders are the user's data in someone else's format (RTS Overlay).
+# Marking them text is what keeps a build authored on Windows from arriving
+# on Linux with CRLF baked into the committed file.
+*.json text
+*.md   text
+*.py   text
+*.txt  text
+*.yml  text
+*.yaml text

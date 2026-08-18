@@ -1,0 +1,28 @@
+# Loom — what I need to WORK on Loom, over and above what it needs to RUN.
+# Install this instead of requirements.txt when developing:
+#     pip install -r requirements-dev.txt
+-r requirements.txt
+
+# python-xlib with no platform marker, on purpose - note that requirements.txt
+# markers it to Linux, and that is still right for a user installing Loom.
+#
+# The reason it is unconditional here is tests/test_capture_selector.py's
+# test_x11_backend_imports_off_linux. That test imports loom/capture/x11.py on
+# whatever machine is running, to answer "did I break the Linux backend?" from
+# a machine that is not Linux. python-xlib is a pure-Python wheel, so the
+# module loads anywhere; only opening a display needs an X server.
+#
+# Since Linux and Windows are now a dual boot on one machine, rebooting to ask
+# that question costs a real interruption, and this test is the cheap answer.
+# Skipping it on Windows instead would remove the guard exactly where it has
+# become most valuable, so the dependency is installed rather than the test
+# turned off.
+python-xlib==0.33
+
+# For tools/make_icon.py only: regenerating images/loom.ico from the logo.
+# The .ico is committed, so Loom itself never needs this installed.
+pillow==12.3.0
+
+# For building the Windows bundle (pyinstaller loom.spec). Dev-only: the
+# artifact ships, the builder does not.
+pyinstaller==6.22.2

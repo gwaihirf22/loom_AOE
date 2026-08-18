@@ -281,7 +281,16 @@ class BuildOrder:
     @classmethod
     def load_by_name(cls, name):
         """Load builds/<name>.json."""
-        return cls.load(paths.BUILDS_DIR / f"{name}.json")
+        found = paths.find_asset("builds", f"{name}.json")
+        if found is None:
+            # Name the place a build order can be ADDED, not the place Loom
+            # keeps its own - somebody looking for this message wants to know
+            # where to put a file, and in an installed copy the shipped
+            # folder is read-only.
+            raise FileNotFoundError(
+                f"no build order called {name!r}. Build orders live in "
+                f"{paths.DATA_DIR / 'builds'} or beside Loom's own.")
+        return cls.load(found)
 
     # ---- where am I ----------------------------------------------------
 
@@ -332,6 +341,33 @@ class BuildOrder:
         """The step after the active one, so the player can read ahead."""
         index = self.current_index(villager_count, game_time) + 2
         return self.steps[index] if index < len(self.steps) else None
+
+    # ---- the same three, from an index somebody else worked out ---------
+    #
+    # These exist because the step shown is no longer always the step the
+    # reading implies: a player can nudge it with a hotkey, and loom/follow.py
+    # owns that decision. Taking the index as an argument keeps that decision
+    # OUT of here - this module still knows nothing but the build order, and
+    # holds no state, which is what makes it testable with fake numbers.
+
+    def step_at(self, index):
+        """The step at an index, or None outside the build.
+
+        Indices are in current_index() semantics: -1 means "before the first
+        step", which is a real position rather than an error - it is where a
+        match starts.
+        """
+        if index is None or index < 0 or index >= len(self.steps):
+            return None
+        return self.steps[index]
+
+    def active_step_at(self, index):
+        """The step to work on, given the last completed one. See active_step."""
+        return self.step_at(None if index is None else index + 1)
+
+    def following_step_at(self, index):
+        """The step after the active one, given the last completed one."""
+        return self.step_at(None if index is None else index + 2)
 
     # ---- am I on pace --------------------------------------------------
 
@@ -454,7 +490,7 @@ def available_builds():
     """
     builds = []
     problems = []
-    for path in sorted(paths.BUILDS_DIR.glob("*.json")):
+    for path in sorted(paths.asset_files("builds", "*.json").values()):
         try:
             builds.append((path.stem, BuildOrder.load(path)))
         except (OSError, json.JSONDecodeError, AttributeError, KeyError,

@@ -44,6 +44,18 @@ def templates():
     ("red_dark_theme_10.png", 10, 4),      # dark border, always worked
     ("yellow_stone_27.png", 27, 4),        # light stone: the bug
     ("yellow_stone_21.png", 21, 4),        # light stone: the bug
+    # Live macOS bands at HUD scale 1.46, saved by the lag probe when the
+    # reader refused them. Two defects, one corpus: the over-tall band put
+    # the shape filter's height bar at exactly glyph height, so digits
+    # vanished frame to frame (_fit_clock_rows is the fix), and the 4K "5"
+    # scored 0.54 against templates cut from another renderer (the 5_3
+    # variant is the fix). One in five live polls refused a legible clock
+    # until both landed. A leading-junk retry was also tried and removed:
+    # with the fitted band it rescued nothing these fixtures don't cover.
+    ("mac_border_junk_420.png", 420, 6),   # read even before the fixes
+    ("mac_border_junk_471.png", 471, 6),   # the vanished "5"
+    ("mac_border_junk_473.png", 473, 6),   # ditto, neighbouring frame
+    ("mac_border_junk_475.png", 475, 6),   # ditto
 ])
 def test_clock_reads_on_every_theme(templates, name, expected, glyph):
     value, score = digits.read_clock_seconds(band(name), templates, glyph)

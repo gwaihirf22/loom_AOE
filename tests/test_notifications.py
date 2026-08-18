@@ -147,3 +147,68 @@ def test_no_clock_no_events(phrase):
     # stays quiet rather than risking double counts.
     watcher = notifications.NotificationWatcher()
     assert watcher.watch(panel_with(phrase), 1.0, None) == []
+
+
+def test_reprint_after_absence_fires_inside_the_cooldown(phrase):
+    # The game never reprints a line that is already on screen, so a
+    # reprint after real absence IS a new event - TCs built ~18 game
+    # seconds apart each reprint, and the cooldown alone swallowed them
+    # (measured live: 3 built, 1 counted). Three absent looks rearm.
+    watcher = notifications.NotificationWatcher()
+    seen = panel_with(phrase)
+    empty = panel_with(None)
+    assert watcher.watch(seen, 1.0, 100) == ["town_center_built"]
+    watcher.watch(seen, 1.0, 102)               # lingers, refreshes
+    for t in (104, 105, 106):                   # gone three looks: rearm
+        watcher.watch(empty, 1.0, t)
+    # Well inside the 15s cooldown of the t=102 sighting - fires anyway.
+    assert watcher.watch(seen, 1.0, 107) == ["town_center_built"]
+
+
+def test_lingering_line_still_fires_exactly_once(phrase):
+    # Rearm must never help a line that stays on screen: it is sighted
+    # every look, its absence streak stays zero, and however long it
+    # lingers it is one event (the 0.3s-cooldown experiment refired one
+    # line thirteen times; absence-rearm must not recreate that).
+    watcher = notifications.NotificationWatcher()
+    seen = panel_with(phrase)
+    assert watcher.watch(seen, 1.0, 100) == ["town_center_built"]
+    for t in range(101, 140, 2):
+        assert watcher.watch(seen, 1.0, t) == []
+
+
+def test_echo_sightings_hold_the_rearm_off(phrase):
+    # A history echo means the phrase's pixels are still on screen, so
+    # the game would not reprint it - an echo sighting must reset the
+    # absence streak (no rearm), while still never firing itself.
+    watcher = notifications.NotificationWatcher()
+    seen = panel_with(phrase)
+    empty = panel_with(None)
+    echo = panel_with(phrase, newer_line())
+    assert watcher.watch(seen, 1.0, 100) == ["town_center_built"]
+    watcher.watch(empty, 1.0, 104)              # one absent look...
+    for t in (105, 106, 107):                   # ...echo interrupts it
+        assert watcher.watch(echo, 1.0, t) == []
+    for t in (108, 109, 110):                   # true absence at last
+        watcher.watch(empty, 1.0, t)
+    assert watcher.watch(seen, 1.0, 111) == ["town_center_built"]
+
+
+def test_rolled_up_line_cannot_rearm_or_refire(phrase):
+    # A busy feed pushes a line above the bands it may fire from. It is
+    # still ON SCREEN: it must neither tick the absence streak (which
+    # would rearm the cooldown) nor look like a fresh arrival when churn
+    # brings it back into range - a sandbox game minted four phantom TCs
+    # exactly this way, one every ~10 seconds of one line's lifetime.
+    watcher = notifications.NotificationWatcher()
+    assert watcher.watch(panel_with(phrase), 1.0, 100) \
+        == ["town_center_built"]
+    watcher.watch(panel_with(phrase, newer_line()), 1.0, 103)
+    # Two newer lines: the phrase sits third from the bottom, unsearchable
+    # for firing but plainly visible. Long enough to outlive the cooldown.
+    deep = panel_with(phrase, newer_line(), newer_line())
+    for t in (106, 109, 112, 115, 118, 121):
+        assert watcher.watch(deep, 1.0, t) == []
+    # The churn brings it back to one-up: NOT fresh - it never left.
+    assert watcher.watch(panel_with(phrase, newer_line()), 1.0, 124) == []
+    assert watcher.watch(panel_with(phrase, newer_line()), 1.0, 127) == []

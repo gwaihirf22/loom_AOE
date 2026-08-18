@@ -109,7 +109,7 @@ def test_house_warning_fires_before_the_wall():
     text, severity = alerts.production_alert(
         tracker, 20, IdleTcPolicy(), 106, population=(21, 25))
     assert severity == FULL
-    assert text == "HOUSE NOW — 4 pop space left"
+    assert text == "HOUSE SOON — 4 pop space left"
 
 
 def test_ample_pop_space_stays_quiet():
@@ -162,14 +162,14 @@ def test_house_warning_and_idle_tc_stack():
     found = alerts.production_alerts(
         idle_tracker(), 20, IdleTcPolicy(), 230, population=(22, 25))
     assert len(found) == 2
-    assert found[0][0].startswith("HOUSE NOW")   # pop trouble nearest the panel
+    assert found[0][0].startswith("HOUSE SOON")  # pop trouble nearest the panel
     assert found[1][0].startswith("TC IDLE")
 
 
 def test_singular_wrapper_returns_the_most_urgent():
     text, severity = alerts.production_alert(
         idle_tracker(), 20, IdleTcPolicy(), 230, population=(22, 25))
-    assert text.startswith("HOUSE NOW")
+    assert text.startswith("HOUSE SOON")
     assert severity == FULL
 
 
@@ -185,7 +185,7 @@ def test_toggles_silence_each_family_independently():
         idle_tracker(), 20, IdleTcPolicy(), 230, population=(22, 25),
         toggles=quiet_tc)
     assert len(found) == 1
-    assert found[0][0].startswith("HOUSE NOW")
+    assert found[0][0].startswith("HOUSE SOON")
 
 
 # --- switching alert families off ------------------------------------------
@@ -257,7 +257,7 @@ def test_house_headroom_is_the_players_number():
     text, severity = alerts.production_alert(
         tracker, 20, IdleTcPolicy(), 106, population=(17, 25),
         house_headroom=8)
-    assert (text, severity) == ("HOUSE NOW — 8 pop space left", FULL)
+    assert (text, severity) == ("HOUSE SOON — 8 pop space left", FULL)
 
 
 def test_house_headroom_can_also_tighten():
@@ -270,7 +270,7 @@ def test_house_headroom_can_also_tighten():
     text, _ = alerts.production_alert(
         tracker, 20, IdleTcPolicy(), 106, population=(24, 25),
         house_headroom=1)
-    assert text == "HOUSE NOW — 1 pop space left"
+    assert text == "HOUSE SOON — 1 pop space left"
 
 
 def test_toggles_build_from_config_dict(tmp_path, monkeypatch):

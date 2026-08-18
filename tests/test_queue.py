@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from loom import queue
+from loom import hud, queue
 from loom.production import (ProductionTracker, PRODUCTION_IDLE,
                              PRODUCTION_RESUMED, HOUSED, POP_CAPPED, UNBLOCKED)
 
@@ -87,7 +87,7 @@ def test_count_reads_or_abstains(count_templates):
     # an unreadable one must be None - never a wrong value.
     expectations = {
         "amber_villager_x3": 3,
-        "amber_ram_x7": 7,
+        "amber_hussite_wagon_x7": 7,
         "red_housed": 1,
         "dark_waiting_x1": 1,
         "green_villager": 2,
@@ -106,20 +106,26 @@ def icon_templates():
 
 def test_identifies_villager(icon_templates):
     gray = cv2.cvtColor(fixture("green_villager"), cv2.COLOR_BGR2GRAY)
-    name, score = queue.identify(gray, icon_templates)
+    name, score, _ = queue.identify(gray, icon_templates)
     assert name in ("villager_male", "villager_female")
     assert score >= queue.MIN_IDENTITY_SCORE
 
 
-def test_identifies_ram_through_amber(icon_templates):
-    gray = cv2.cvtColor(fixture("amber_ram_x7"), cv2.COLOR_BGR2GRAY)
-    name, _ = queue.identify(gray, icon_templates)
-    assert name == "battering_ram"
+def test_identifies_hussite_wagon_through_amber(icon_templates):
+    # This fixture spent a week mislabelled as a battering ram, and a
+    # parade of unrelated techs kept "outscoring the ram" on it - because
+    # nothing in the set matched what it actually shows. The author
+    # identified it: an amber Hussite Wagon, seven queued. A cell no
+    # template matches well is a naming bug waiting to be found, not a
+    # threshold to tune around.
+    gray = cv2.cvtColor(fixture("amber_hussite_wagon_x7"), cv2.COLOR_BGR2GRAY)
+    name, _, _ = queue.identify(gray, icon_templates)
+    assert name == "hussite_wagon"
 
 
 def test_identifies_masonry_tech(icon_templates):
     gray = cv2.cvtColor(fixture("green_tech_masonry"), cv2.COLOR_BGR2GRAY)
-    name, _ = queue.identify(gray, icon_templates)
+    name, _, _ = queue.identify(gray, icon_templates)
     assert name == "masonry"
 
 
@@ -142,7 +148,7 @@ def compose_frame(occupied_cells):
 
 def test_counts_occupied_prefix():
     names = ["green_villager", "amber_villager_x3", "red_housed",
-             "dark_waiting_x1", "amber_ram_x7"]
+             "dark_waiting_x1", "amber_hussite_wagon_x7"]
     frame, boxes = compose_frame(names)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     assert queue.count_occupied(gray, boxes) == 5
@@ -209,9 +215,12 @@ def test_decor_shows_edges_but_no_content(icon_templates, count_templates):
     assert tint is None
     assert queue.read_count(decor, count_templates) is None
     # A flat panel can luck past the matcher's floor against one of many
-    # templates; what it must never do is look CONVINCING.
-    _, score = queue.identify(gray, icon_templates)
-    assert score < queue.CONTENT_IDENTITY_SCORE
+    # templates - with five hundred of them it always will - so the
+    # occupancy gate keys on the vetted identity instead: the clear-win
+    # and margin gates must turn this into an honest None.
+    identity, _, _ = queue.QueueReader()._identify_cached(
+        0, gray, has_content=False)
+    assert identity is None
 
 
 def test_terrain_cell_is_not_occupied():
@@ -228,7 +237,9 @@ def test_terrain_cell_is_not_occupied():
 # --- the production tracker ----------------------------------------------
 
 def slot(tint=None, identity=None):
-    return queue.SlotReading(0, tint, None, None, identity, 0.0)
+    # Confident identity by default: these tests exercise the tracker's
+    # logic, not the evidence gate (which has its own tests below).
+    return queue.SlotReading(0, tint, None, None, identity, 0.9, 0.3)
 
 
 def vill(tint="green"):
@@ -286,13 +297,19 @@ def test_housed_and_unblocked():
     assert tracker.blocked is None
 
 
-def test_amber_is_routine_not_an_event():
-    # The frame audit showed amber on any merely-WAITING item (behind a
-    # villager, behind an age research), so it must never fire an event.
+def test_amber_never_blocks_and_never_produces():
+    # Amber is either waiting behind an in-progress item or stuck at the
+    # population cap - it must never fire a BLOCKED event, and it must
+    # never count as production either: an amber-alone queue is an idle
+    # TC, whatever the reason (the author's rule, proven live when three
+    # amber-behind-wheelbarrow items masked a genuinely idle second TC).
     tracker = ProductionTracker()
     tracker.update(100, [vill("amber")])
-    assert tracker.update(103, [vill("amber")]) == []
+    events = tracker.update(103, [vill("amber")])
     assert tracker.blocked is None
+    assert HOUSED not in events and POP_CAPPED not in events
+    assert tracker.tc_busy == 0
+    assert TC_IDLE in events
 
 
 def test_red_still_means_housed():
@@ -336,54 +353,56 @@ def test_age_identities_have_regional_variants():
 
 def test_second_tc_raises_the_high_water_mark():
     tracker = ProductionTracker()
-    tracker.update(100, [vill()])
+    tracker.update(100.0, [vill()])
     assert tracker.tcs_seen == 1
-    # Queue evidence needs three CONTINUOUS game-seconds above the mark -
-    # persistent misreads fooled shorter streaks into minting phantom TCs.
-    tracker.update(103, [vill(), vill()])
-    assert tracker.tcs_seen == 1
-    tracker.update(104, [vill(), vill()])
-    assert tracker.tcs_seen == 1          # only 1s sustained so far
-    tracker.update(106, [vill(), vill()])
-    assert tracker.tcs_seen == 2          # 3s continuous: believed
+    # Queue evidence needs three CONTINUOUS game-seconds across three
+    # reads above the mark - a misread or a tech-handover artifact
+    # flickers for a glance or two, a real in-progress item stays.
+    tracker.update(100.3, [vill(), vill()])
+    assert tracker.tcs_seen == 1          # first glance opens the window
+    tracker.update(101.5, [vill(), vill()])
+    assert tracker.tcs_seen == 1          # two reads, ~1s: not yet
+    tracker.update(103.4, [vill(), vill()])
+    assert tracker.tcs_seen == 2          # 3 reads across 3.1s: believed
     # The mark never falls during a game - one TC going quiet is exactly
     # what the idle-TC warning exists to catch.
-    tracker.update(109, [vill()])
+    tracker.update(106, [vill()])
     assert tracker.tcs_seen == 2
 
 
 def test_a_blip_of_double_greens_does_not_mint_a_tc():
     tracker = ProductionTracker()
-    tracker.update(100, [vill()])
-    tracker.update(101, [vill(), vill()])   # misread flickers in...
-    tracker.update(102, [vill(), vill()])
-    tracker.update(103, [vill()])           # ...and out before 3s
-    tracker.update(106, [vill(), vill()])   # a fresh window must restart
-    tracker.update(107, [vill(), vill()])
+    tracker.update(100.0, [vill()])
+    tracker.update(100.3, [vill(), vill()])   # misread flickers in...
+    tracker.update(100.6, [vill()])           # ...and out again
+    tracker.update(101.2, [vill(), vill()])   # a fresh window must restart
+    tracker.update(102.4, [vill(), vill()])   # two reads spanning 1.2s...
+    tracker.update(103.0, [vill()])           # ...still dies with the dip
     assert tracker.tcs_seen == 1
 
 
 def test_shrinking_evidence_proves_the_lower_count():
-    # Three greens sustaining, dipping to two, still proves two: the
+    # Three items sustaining, dipping to two, still proves two: the
     # candidate tracks the lowest count held throughout the window.
     tracker = ProductionTracker()
-    tracker.update(100, [vill(), vill(), vill()])
-    tracker.update(102, [vill(), vill()])
-    tracker.update(103, [vill(), vill()])
+    tracker.update(100.0, [vill(), vill(), vill()])
+    tracker.update(101.5, [vill(), vill()])
+    tracker.update(103.1, [vill(), vill()])
     assert tracker.tcs_seen == 2
 
 
-def test_queue_evidence_closes_after_the_opening():
-    # Queue evidence exists to catch a multi-TC START. Past two minutes
-    # every new TC announces itself in the notification feed, and only
-    # that channel may raise the count - a live Turks game minted three
-    # phantom TCs from sustained queue misreads before this window.
+def test_queue_evidence_works_all_game():
+    # The notification feed cannot carry the TC count alone: the game
+    # never reprints a line that is already on screen, so a TC completing
+    # while "--Town Center Built--" lingers announces nothing (measured
+    # live: a seven-TC game produced three line appearances). In-progress
+    # queue items are a floor on the TC count at ANY game time - the old
+    # 120-second window undercounted every boom.
     tracker = ProductionTracker()
-    tracker.update(200, [vill(), vill()])
-    tracker.update(202, [vill(), vill()])
-    tracker.update(204, [vill(), vill()])
-    tracker.update(210, [vill(), vill()])
-    assert tracker.tcs_seen == 1
+    tracker.update(1000.0, [vill(), vill()])
+    tracker.update(1001.5, [vill(), vill()])
+    tracker.update(1003.1, [vill(), vill()])
+    assert tracker.tcs_seen == 2
 
 
 def test_notification_raises_the_count_at_any_time():
@@ -396,13 +415,14 @@ def test_notification_raises_the_count_at_any_time():
 def test_idle_tc_detected_when_one_of_two_stops():
     tracker = ProductionTracker()
     tracker.update(100, [vill(), vill()])
-    tracker.update(103, [vill(), vill()])
-    tracker.update(106, [vill()])
-    events = tracker.update(109, [vill()])
+    tracker.update(102, [vill(), vill()])
+    tracker.update(104, [vill(), vill()])   # third read: 2 TCs believed
+    tracker.update(107, [vill()])
+    events = tracker.update(110, [vill()])
     assert TC_IDLE in events
     assert tracker.idle_tcs == 1
-    tracker.update(112, [vill(), vill()])
-    assert TC_RECOVERED in tracker.update(115, [vill(), vill()])
+    tracker.update(113, [vill(), vill()])
+    assert TC_RECOVERED in tracker.update(116, [vill(), vill()])
     assert tracker.idle_tcs == 0
 
 
@@ -428,15 +448,30 @@ def test_blocked_tc_is_not_idle():
     assert tracker.idle_tcs == 0
 
 
-def test_waiting_villager_group_proves_nothing():
-    # One TC with [tech, villagers] queued shows two groups, but the
-    # untinted waiting group must not count as a second TC.
+def test_amber_and_red_prove_nothing():
+    # A different-type item waits AMBER behind its building's front and
+    # turns RED when the population cannot fit it (measured in game,
+    # 2026-07-31) - neither is being produced, so neither may prove a TC.
     tracker = ProductionTracker()
-    seen = [slot("green", "loom"), vill(None)]
-    tracker.update(100, seen)
-    tracker.update(103, seen)
+    seen = [slot("green", "loom"), vill("amber"), vill("red")]
+    tracker.update(100.0, seen)
+    tracker.update(101.5, seen)
+    tracker.update(103.1, seen)
     assert tracker.tcs_seen == 1    # the researching TC, and nothing more
     assert tracker.idle_tcs == 0
+
+
+def test_untinted_item_proves_a_tc():
+    # A just-placed item is untinted before its wash grows enough to
+    # classify - it IS producing (author-verified, 2026-08-01), so a
+    # confident untinted villager beside a researching TC confirms the
+    # second TC seconds before the green would.
+    tracker = ProductionTracker()
+    seen = [slot("green", "loom"), vill(None)]
+    tracker.update(100.0, seen)
+    tracker.update(101.5, seen)
+    tracker.update(103.1, seen)
+    assert tracker.tcs_seen == 2
 
 
 def test_the_starting_tc_is_assumed():
@@ -447,16 +482,18 @@ def test_the_starting_tc_is_assumed():
     assert tracker.tcs_seen == 1
 
 
-def test_researching_does_not_raise_the_high_water_mark():
-    # The tech icons are dark silhouettes that mis-match military groups -
-    # letting them prove TCs invented phantoms in a one-TC game. Only green
-    # villager groups (and the notification feed) create TCs.
+def test_researching_tech_proves_a_second_tc():
+    # A green tech IS a TC's one in-progress item: a villager group and a
+    # researching tech on screen together can only come from two TCs. The
+    # old rule ignored techs for existence and undercounted every boom
+    # that aged up while training.
     tracker = ProductionTracker()
     seen = [vill(), slot("green", "town_watch")]
-    tracker.update(100, seen)
-    tracker.update(103, seen)
-    assert tracker.tcs_seen == 1
-    assert tracker.idle_tcs == 0    # the "tech" still counts as busy work
+    tracker.update(100.0, seen)
+    tracker.update(101.5, seen)
+    tracker.update(103.1, seen)
+    assert tracker.tcs_seen == 2
+    assert tracker.idle_tcs == 0
 
 
 def test_fresh_age_up_counts_busy_instantly():
@@ -490,3 +527,171 @@ def test_reset_forgets_the_old_game():
     assert tracker.tcs_seen == 1    # back to the assumed starting TC
     assert tracker.idle_tcs == 0
     assert not tracker.idle
+
+
+def test_decor_cell_is_not_a_queue_item():
+    # Some civs drape artwork straight through the queue grid; this red
+    # tapestry's saturated pattern read as a BLOCKED villager group and
+    # marked one TC busy forever (a live six-TC game showed "5 TCs IDLE").
+    # A known decoration must never be a queue item.
+    reader = queue.QueueReader()
+    cell = fixture("decor_red_tapestry")
+    gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    assert reader._is_decor(gray, 0.98)
+
+
+def test_real_cards_are_not_decor():
+    # A card drawn over the decoration covers its pattern - real queue
+    # items must keep reading normally on decorated HUDs.
+    reader = queue.QueueReader()
+    for name in ("green_villager", "red_housed", "amber_villager_x3",
+                 "dark_waiting_x1"):
+        gray = cv2.cvtColor(fixture(name), cv2.COLOR_BGR2GRAY)
+        assert not reader._is_decor(gray, 1.0), name
+
+
+def test_uncorroborated_junk_identity_is_refused():
+    # Terrain that sneaks past the occupancy edge test matches everything
+    # a little and nothing well - this cell read "galley" at 0.5 in a
+    # landlocked Dark Age game. With no wash and no count numeral to
+    # corroborate, a flat ranking must read as None, which ends the queue.
+    reader = queue.QueueReader()
+    gray = cv2.cvtColor(fixture("junk_terrain_galley"), cv2.COLOR_BGR2GRAY)
+    identity, _, _ = reader._identify_cached(0, gray, has_content=False)
+    assert identity is None
+
+
+def test_corroborated_flat_ranking_keeps_its_identity():
+    # A genuine amber villager batch wins by only ~0.05 - but its wash
+    # already proves something real is drawn there, so the best guess
+    # stands and the busy accounting keeps its villager group.
+    reader = queue.QueueReader()
+    gray = cv2.cvtColor(fixture("amber_villager_x3"), cv2.COLOR_BGR2GRAY)
+    identity, _, _ = reader._identify_cached(0, gray, has_content=True)
+    assert identity in ("villager_male", "villager_female")
+
+
+def test_weak_tech_claim_is_refused(monkeypatch):
+    # Real tech icons read 0.91+; a "tech" in the 0.4-0.6 range is a
+    # misread unit batch or junk, and once credited a TC with wheelbarrow
+    # research while a halberdier batch trained. Weak tech claims fall to
+    # None whatever else the cell shows.
+    reader = queue.QueueReader()
+    monkeypatch.setattr(queue, "identify",
+                        lambda cell, templates: ("wheelbarrow", 0.5, 0.2))
+    identity, _, _ = reader._identify_cached(0, None, has_content=True)
+    assert identity is None
+
+
+def test_identity_hysteresis_stops_flapping(monkeypatch):
+    # Weak cells re-rank every poll; two similar portraits trading
+    # hair's-breadth wins must not flap the identity (and the TC busy
+    # count) poll to poll. The challenger takes the slot only by beating
+    # the incumbent decisively.
+    reader = queue.QueueReader()
+    gray = cv2.cvtColor(fixture("green_villager"), cv2.COLOR_BGR2GRAY)
+    name, _, _ = reader._identify_cached(0, gray, has_content=True)
+    assert name in ("villager_male", "villager_female")
+    # The cell now scores weakly for everyone (below CLEAR, so the fast
+    # path falls through) and a rival "wins" by a hair: the cached name
+    # holds rather than flapping.
+    monkeypatch.setattr(queue, "_match_variants",
+                        lambda cell, variants: 0.49)
+    monkeypatch.setattr(queue, "identify",
+                        lambda cell, templates: ("monk", 0.52, 0.02))
+    name, _, _ = reader._identify_cached(0, gray, has_content=True)
+    assert name in ("villager_male", "villager_female")
+
+
+def test_identity_hysteresis_yields_to_a_decisive_win(monkeypatch):
+    # A genuine content change drops the incumbent's score AND crowns the
+    # newcomer decisively (militia beat a stale villager name by 0.15):
+    # it must flip immediately.
+    reader = queue.QueueReader()
+    gray = cv2.cvtColor(fixture("green_villager"), cv2.COLOR_BGR2GRAY)
+    reader._identify_cached(0, gray, has_content=True)
+    monkeypatch.setattr(queue, "_match_variants",
+                        lambda cell, variants: 0.45)
+    monkeypatch.setattr(queue, "identify",
+                        lambda cell, templates: ("militia", 0.64, 0.15))
+    name, _, _ = reader._identify_cached(0, gray, has_content=True)
+    assert name == "militia"
+
+
+def test_unconfident_identity_is_not_tc_evidence():
+    # The reader's least-bad guess on an icon it has no template for lands
+    # on villagers and TC techs disturbingly often (an unknown Armenian
+    # icon read villager_male 0.42/margin 0.00 and minted a phantom TC).
+    # A green cell with a weak, unclear identity proves something is
+    # producing - busy - but never that a TC exists.
+    tracker = ProductionTracker()
+    guess = queue.SlotReading(1, "green", 0.4, None, "villager_male",
+                              0.42, 0.0)
+    seen = [vill(), guess]
+    tracker.update(100.0, seen)
+    tracker.update(101.5, seen)
+    tracker.update(103.1, seen)
+    assert tracker.tcs_seen == 1          # no phantom from the guess
+    assert tracker.tc_busy >= 1           # but it still counts as work
+
+
+def test_amber_items_do_not_make_a_tc_busy():
+    # Amber means WAITING BEHIND the building's in-progress item - the
+    # front of that queue is already counted. Live: one TC holding
+    # wheelbarrow(red) + town_watch(amber) + imperial_age(amber) read as
+    # three busy TCs, and a freshly built second TC sat idle unwarned.
+    tracker = ProductionTracker()
+    tracker.register_tc_built()           # two TCs known
+    seen = [slot("red", "wheelbarrow"), slot("amber", "town_watch"),
+            slot("amber", "imperial_age")]
+    tracker.update(100, seen)
+    events = tracker.update(103, seen)
+    assert tracker.tc_busy == 1           # the blocked front item only
+    assert tracker.idle_tcs == 1          # the second TC is idle
+    assert TC_IDLE in events
+
+
+def test_a_just_queued_item_is_not_mistaken_for_an_empty_slot():
+    """The false TC IDLE, on the exact pixels that caused it.
+
+    An item placed in the Town Centre but whose green wash has not begun
+    shows no tint and no count numeral, so the only evidence it can offer is
+    its portrait. Measured live on stock, this cell reads villager_male at
+    0.585 with a margin of 0.04 - the RIGHT answer, fifteen thousandths
+    under CLEAR_IDENTITY_SCORE. It was refused, the cell then had no wash,
+    no count and no identity, the content gate ended the queue there, and
+    Loom announced TC IDLE with a villager plainly training.
+
+    The slot having held a believed item on the previous poll is what
+    corroborates it now: decoration does not come and go, and a slot that
+    genuinely empties has its cache entry dropped.
+    """
+    reader = queue.QueueReader(profile=hud.STOCK)
+    gray = cv2.cvtColor(fixture("unwashed_villager"), cv2.COLOR_BGR2GRAY)
+
+    # One poll after a believed item sat in this slot: the cell is still a
+    # queue item, and must be named rather than thrown away.
+    reader._cache[0] = ("villager_male", 0.74)
+    identity, _, _ = reader._identify_cached(0, gray, has_content=False)
+
+    assert identity == "villager_male"
+
+
+def test_an_emptied_slot_stops_vouching_for_what_follows():
+    """The corroboration must not outlive the item.
+
+    Decoration hangs exactly where slot one sits on several civs, and the
+    whole point of the uncorroborated gate is to refuse it. If a stale cache
+    entry could vouch for a cell, the first decorated frame after a queue
+    emptied would read as a queue item - so read() drops the entry for every
+    slot past the end of the queue, and this pins that.
+    """
+    reader = queue.QueueReader(profile=hud.STOCK)
+    reader._cache[0] = ("villager_male", 0.74)
+    gray = cv2.cvtColor(fixture("junk_terrain_galley"), cv2.COLOR_BGR2GRAY)
+
+    # Junk still reads as junk even with a cached neighbour in the slot: the
+    # cache corroborates that SOMETHING is drawn, it does not name it.
+    identity, _, _ = reader._identify_cached(0, gray, has_content=False)
+
+    assert identity != "galley" or identity is None

@@ -19,12 +19,18 @@ import sys
 
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 
-from . import paths, statefeed
+from . import entry, paths, statefeed, stopline
 
-# How long a child gets to exit politely after SIGTERM before SIGKILL.
-# Two seconds is plenty: every child is a small Python program whose default
-# SIGTERM action is immediate death; the escalation only matters if one is
-# ever wedged inside a C call.
+# How long a child gets to act on the stop line before the signal follows.
+# Measured, a child that is watching stdin exits in 20-40ms, so half a second
+# is a wide margin. It only has to be long enough that a child which IS going
+# to quit politely has finished doing so - see stop() for what happens when
+# both requests land at once.
+TERMINATE_AFTER_MS = 500
+
+# How long a child gets after that before it is killed outright. Two seconds
+# is plenty: every child is a small Python program, and the escalation only
+# matters if one is ever wedged inside a C call.
 KILL_AFTER_MS = 2000
 
 
@@ -66,23 +72,51 @@ class ChildProcess(QObject):
             QProcess.ProcessChannelMode.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._read)
         self._process.finished.connect(self._finished)
-        # sys.executable is the venv python the launcher itself runs under.
-        # -u is load-bearing: without it Python buffers stdout when it is a
-        # pipe, and the output pane sits dead until the child exits.
-        self._process.start(sys.executable, ["-u"] + list(self.args))
+        # What starts a child differs between a clone and a bundle - in a
+        # bundle sys.executable IS Loom and there is no script to hand it -
+        # so entry.argv_for answers that in one place. See loom/entry.py.
+        program, arguments = entry.argv_for(self.args)
+        self._process.start(program, arguments)
 
     def stop(self):
-        """Ask the child to exit; force it if that takes too long.
+        """Ask the child to exit, and escalate only if asking did not work.
 
-        terminate() sends SIGTERM, which kills a Python child even while it
-        is blocked waiting for the game window. The QTimer escalation is
-        deliberately not waitForFinished(): that would freeze the launcher
-        UI for as long as the child dawdles.
+        Three stages, each one only reached if the last was ignored.
+
+        First a stop line on stdin, which any child watching for it turns into
+        a clean quit - see loom/stopline.py. This is the only stage that works
+        on Windows, where terminate() posts WM_CLOSE to top-level windows: a
+        console child has none, and the overlay's is a ToolTip. Measured, the
+        overlay ignored terminate() completely and was killed by the
+        escalation 2.01s later with aboutToQuit never running - and that hook
+        is the final statistics write and the placement offset, thrown away
+        every time Stop was pressed.
+
+        Then terminate(), which on Linux is SIGTERM and kills a Python child
+        even while it is blocked waiting for the game window. It is the only
+        stage that reaches a child which does NOT watch stdin, such as the APM
+        counter.
+
+        Then kill().
+
+        The stages are sequential rather than simultaneous, and that is not
+        tidiness. Sending the line and terminate() together crashed the
+        overlay on Windows with STATUS_STACK_BUFFER_OVERRUN: the child was
+        already tearing its QApplication down in response to the line when
+        WM_CLOSE arrived and was dispatched into it. The stats file still got
+        written, so the symptom was only a nonzero exit code in the launcher's
+        output pane - quiet, and exactly the kind of thing that gets explained
+        away. Each stage now checks the child is still running first, so a
+        child that quits politely is never signalled at all.
+
+        The escalation is deliberately QTimer rather than waitForFinished():
+        that would freeze the launcher UI for as long as the child dawdles.
         """
         if not self.is_running():
             return
         process = self._process
-        process.terminate()
+        self._ask_politely(process)
+        QTimer.singleShot(TERMINATE_AFTER_MS, lambda: self._terminate(process))
         QTimer.singleShot(KILL_AFTER_MS, lambda: self._force_kill(process))
 
     def is_running(self):
@@ -90,6 +124,28 @@ class ChildProcess(QObject):
                 and self._process.state() != QProcess.ProcessState.NotRunning)
 
     # ---- internals -----------------------------------------------------
+
+    def _ask_politely(self, process):
+        """Write the stop line to the child's stdin and flush it through.
+
+        closeWriteChannel after the write is what makes this reliable: it
+        sends EOF, so a child that is watching stdin stops either because it
+        read the sentinel or because its stdin ended. Both mean the same
+        thing, and a child that watches neither is no worse off than before.
+
+        Failure here is not worth reporting - the child may already be gone,
+        and terminate() and the kill escalation are both still to come.
+        """
+        try:
+            process.write(stopline.encode())
+            process.closeWriteChannel()
+        except (RuntimeError, OSError):
+            pass
+
+    def _terminate(self, process):
+        """The second stage: only for a child that ignored the stop line."""
+        if process.state() != QProcess.ProcessState.NotRunning:
+            process.terminate()
 
     def _force_kill(self, process):
         if process.state() != QProcess.ProcessState.NotRunning:
@@ -129,11 +185,15 @@ class ChildProcess(QObject):
     def shutdown(self):
         """Blocking stop for launcher exit: the UI is going away anyway.
 
-        The polite path first, then a bounded wait, then the axe. This is
-        the one place waiting is acceptable - nothing is left to freeze -
-        and it guarantees no orphaned overlay outlives the launcher.
+        The same three stages as stop(), and for the same reasons - see there
+        - but waiting between them instead of scheduling. This is the one
+        place waiting is acceptable, since nothing is left to freeze, and it
+        guarantees no orphaned overlay outlives the launcher.
         """
         if not self.is_running():
+            return
+        self._ask_politely(self._process)
+        if self._process.waitForFinished(TERMINATE_AFTER_MS):
             return
         self._process.terminate()
         if not self._process.waitForFinished(KILL_AFTER_MS):

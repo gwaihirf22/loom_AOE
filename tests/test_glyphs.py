@@ -110,17 +110,38 @@ def test_parse_event(text, event):
 # ---- the watcher (fake reads, no pixels) -----------------------------------
 
 def panel_for(lines):
-    """A synthetic panel: each string painted white as one fake band."""
+    """A synthetic panel: each string painted as one text-like band.
+
+    Rendered as actual glyph strokes, not solid bars: the band finder only
+    counts bright ink NEXT TO near-black (the font's outline), which is
+    what separates text from sunlit terrain - a solid bar has edges but no
+    interior gaps, and correctly finds no band.
+    """
     height = 30 * max(1, len(lines))
     panel = np.zeros((height, 400, 3), np.uint8)
     for index in range(len(lines)):
-        panel[index * 30 + 8: index * 30 + 24, 10:390] = 255
+        cv2.putText(panel, "--Sample Text Line--", (10, index * 30 + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     return panel
+
+
+def distinct_digests(monkeypatch):
+    """Make every band digest unique, so the read cache never hits.
+
+    Tests that script read_line by CALL SEQUENCE need this: the cache is
+    content-addressed, and the synthetic panels paint every band with the
+    same pixels - without it, one read would stand in for all of them.
+    """
+    import itertools
+    counter = itertools.count()
+    monkeypatch.setattr(glyphs, "_band_digest",
+                        lambda line: f"band{next(counter)}")
 
 
 def test_watcher_only_fires_the_bottom_line(monkeypatch):
     # The feed redisplays HISTORY above new lines (found live: one TC fired
     # three times). Only the bottom-most line may fire.
+    distinct_digests(monkeypatch)
     watcher = TextWatcher(save_unread=False)
     sequence = ["--Mill Built--", "--House Built--"]
     reads = {"count": 0}
@@ -165,6 +186,7 @@ def test_watcher_counts_identical_repeats_in_a_burst(monkeypatch):
 def test_watcher_scroll_off_does_not_refire(monkeypatch):
     # A line expiring off the TOP shrinks the stack but the bottom line is
     # the same line - that is not a new event.
+    distinct_digests(monkeypatch)
     watcher = TextWatcher(save_unread=False)
     texts = {1: "--Mill Built--", 2: "--Villager Created--"}
     calls = {"n": 0}

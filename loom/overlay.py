@@ -33,6 +33,14 @@ TEXT = QColor(238, 238, 238)
 DIM_TEXT = QColor(160, 160, 168)
 FAINT_TEXT = QColor(120, 120, 128)
 
+# The header note that says the panel is not following the game. Amber
+# rather than red: this is a state the player CHOSE, not an alarm - but it
+# must be impossible to miss, because a panel that has quietly stopped
+# following while looking exactly as it always does is the one failure this
+# whole project is built to avoid.
+NOT_FOLLOWING_COLOR = QColor(235, 190, 90)
+HOLDING_COLOR = QColor(150, 150, 160)
+
 ON_PACE_COLOR = QColor(120, 220, 130)
 AHEAD_COLOR = QColor(120, 200, 235)
 SLIGHTLY_BEHIND_COLOR = QColor(235, 200, 100)
@@ -71,8 +79,8 @@ def load_resource_icons(height=ICON_HEIGHT):
     icons = {}
     for name in RESOURCE_LABELS:
         for extension in (".png", ".webp", ".jpg"):
-            path = paths.ICONS_DIR / f"{name}{extension}"
-            if not path.exists():
+            path = paths.find_asset("icons", f"{name}{extension}")
+            if path is None:
                 continue
             pixmap = QPixmap(str(path))
             if not pixmap.isNull():
@@ -80,6 +88,7 @@ def load_resource_icons(height=ICON_HEIGHT):
                     height, Qt.TransformationMode.SmoothTransformation)
                 break
     return icons
+
 
 # Build-step icons (the @icon@ tokens in the build files), cached per token
 # and per height. None is cached too: a missing image should cost one disk
@@ -95,8 +104,8 @@ def load_step_icon(token, height):
         return _step_icon_cache[key]
 
     pixmap = None
-    path = paths.ICON_LIBRARY_DIR / token
-    if path.exists():
+    path = paths.find_asset("master_aoe2_images", token)
+    if path is not None:
         loaded = QPixmap(str(path))
         if not loaded.isNull():
             pixmap = loaded.scaledToHeight(
@@ -139,6 +148,62 @@ FLASH_SECONDS = 0.35
 # klaxon. Same shape so it reads as the same kind of message.
 ALERT_SOFT_FILL = QColor(120, 95, 20, 190)
 ALERT_SOFT_TEXT = QColor(240, 220, 160)
+
+
+def panel_background(opacity):
+    """The panel's backdrop and border at one background opacity.
+
+    Returns (fill, border) QColors. opacity is TRUE opacity: 1.0 is a solid
+    card the game cannot be seen through, 0.0 is no card at all. The default
+    (config.DEFAULT_BACKGROUND_OPACITY, 205/255) lands on exactly the
+    designed alpha 205, so an untouched install paints byte-identical frames
+    - the golden case the tests pin.
+
+    The border's 50 is chosen for the same golden case: round(50 * 205/255)
+    is exactly the designed 40, while the full-range card still gets a
+    slightly stronger edge at 100% and none at 0%.
+
+    Instance-level rather than a change to the BACKGROUND constant, and that
+    is load-bearing: loom/browser.py imports the same constant for the build
+    preview's cards, and the launcher must not fade because the overlay did.
+    """
+    fill = QColor(BACKGROUND)
+    fill.setAlpha(round(255 * opacity))
+    border = QColor(BORDER)
+    border.setAlpha(round(50 * opacity))
+    return fill, border
+
+
+def content_style(visibility):
+    """One slider value into (opacity, contrast) for the panel's content.
+
+    The scale puts the DESIGNED look at 0.5, because the beta finding was
+    that fading DOWN was only half of what the slider is for: with the card
+    thinned, the designed greys are unreadable over bright terrain, and the
+    useful direction is UP - solid and brighter than designed.
+
+        0.0 .. 0.5   contrast 0, opacity rising 0 -> 1 (fade toward gone)
+        0.5          exactly (1.0, 0.0): the designed look, byte-identical
+        0.5 .. 1.0   opacity 1, contrast rising 0 -> 1 (climb toward vivid)
+    """
+    if visibility <= 0.5:
+        return visibility / 0.5, 0.0
+    return 1.0, (visibility - 0.5) / 0.5
+
+
+def boosted(color, contrast):
+    """A pen colour pushed toward its vivid extreme by the contrast knob.
+
+    HSV value climbs toward 255 while hue and saturation stay put, so grey
+    text whitens and the pace and resource colours become brighter versions
+    of THEMSELVES rather than washing out toward white. Alpha is kept.
+    contrast 0 returns the colour bit-identical - the golden case.
+    """
+    if contrast <= 0:
+        return color
+    hue, saturation, value, alpha = color.getHsv()
+    value = round(value + (255 - value) * contrast)
+    return QColor.fromHsv(hue, saturation, value, alpha)
 
 
 class OverlayLayout:
@@ -292,6 +357,14 @@ class Overlay(QWidget):
         # Only what I paint is visible; the rest of the rectangle is see-through.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
+        # The two transparency knobs, read once like the size knobs. The
+        # text knob splits into a painter opacity (below the designed look)
+        # and a colour-contrast boost (above it) - see content_style.
+        self._background, self._border = panel_background(
+            config.background_opacity())
+        self._content_opacity, self._content_contrast = content_style(
+            config.text_visibility())
+
         # Resource icons, if the player supplied any. Loaded once, baked at
         # the scaled height - reading the disk on every repaint would be
         # wasteful, and the icons never change while Loom is running.
@@ -319,6 +392,10 @@ class Overlay(QWidget):
         self.next_segments = None
         self.pace_text = ""
         self.pace_color = DIM_TEXT
+        # "" while the game is driving, which is the normal case and draws
+        # nothing at all.
+        self.follow_note = ""
+        self.follow_color = NOT_FOLLOWING_COLOR
         self.have_reading = False
         self.alerts = []            # [(text, severity)], most urgent first
         self.report_rows = None     # build-complete report, replaces the step
@@ -359,7 +436,8 @@ class Overlay(QWidget):
         self.update()
 
     def show_step(self, build, villagers, game_time, active, following, delta,
-                  per_resource=None, extra=0, milestone_queued=False):
+                  per_resource=None, extra=0, milestone_queued=False,
+                  follow_mode=None, resume_hint=None):
         """Update the panel from one poll's worth of state.
 
         `active` is the step to be working on NOW - the first one not yet
@@ -373,6 +451,12 @@ class Overlay(QWidget):
         `milestone_queued` marks that the active step's milestone is already
         seen in the production queue - both deliberately subtle; the full
         story belongs to the build-complete report.
+
+        `follow_mode` is loom.follow's answer to "is the game still driving
+        this?", and `resume_hint` the binding that switches following back
+        on. Together they are the one thing on this panel that is NOT about
+        the game: they say whether what is on show can be trusted to track
+        it.
         """
         self.have_reading = True
         self.report_rows = None      # a step on show means no report page
@@ -415,6 +499,8 @@ class Overlay(QWidget):
             self.next_when = f"{when_minutes}:{when_seconds:02d} · {following.villager_count} vills"
 
         self.pace_text, self.pace_color = describe_pace(delta, extra)
+        self.follow_note, self.follow_color = describe_follow(
+            follow_mode, resume_hint)
         self.update()
 
     # ---- drawing -------------------------------------------------------
@@ -426,8 +512,15 @@ class Overlay(QWidget):
 
         self._draw_background(painter)
 
+        # Everything WRITTEN on the card fades with the text slider; the
+        # card itself already faded with the background slider above. The
+        # alert bands are deliberately outside both: TC IDLE and HOUSE SOON
+        # are alarms, and an alarm the player faded three settings ago is an
+        # alarm that fails at the one moment it exists for.
+        painter.setOpacity(self._content_opacity)
+
         if not self.have_reading:
-            painter.setPen(DIM_TEXT)
+            painter.setPen(self._pen(DIM_TEXT))
             painter.setFont(QFont("sans", self._layout.pt(11)))
             painter.drawText(0, 0, self.width(), self._layout.panel_height,
                              Qt.AlignmentFlag.AlignCenter, self.status_line)
@@ -442,27 +535,28 @@ class Overlay(QWidget):
             self._draw_targets(painter)
             self._draw_next(painter)
         if self.alerts:
+            painter.setOpacity(1.0)
             self._draw_alert_bands(painter)
 
     def _draw_report(self, painter):
         """The build-complete report: one stat per row, verdicts coloured."""
         L = self._layout
         painter.setFont(QFont("sans", L.pt(12), QFont.Weight.Bold))
-        painter.setPen(TEXT)
+        painter.setPen(self._pen(TEXT))
         painter.drawText(L.x(16), L.y(58), "BUILD COMPLETE")
 
         painter.setFont(QFont("sans", L.pt(10)))
         y = L.y(80)
         for label, value, good in self.report_rows[:6]:
-            painter.setPen(DIM_TEXT)
+            painter.setPen(self._pen(DIM_TEXT))
             painter.drawText(L.x(16), y, elide(painter, label, L.x(260)))
 
             if good is None:
-                painter.setPen(TEXT)
+                painter.setPen(self._pen(TEXT))
             elif good:
-                painter.setPen(ON_PACE_COLOR)
+                painter.setPen(self._pen(ON_PACE_COLOR))
             else:
-                painter.setPen(BEHIND_COLOR)
+                painter.setPen(self._pen(BEHIND_COLOR))
             width = painter.fontMetrics().horizontalAdvance(value)
             painter.drawText(self.width() - L.x(16) - width, y, value)
             y += L.y(18)
@@ -472,9 +566,15 @@ class Overlay(QWidget):
         path = QPainterPath()
         path.addRoundedRect(L.x(1), L.x(1), self.width() - L.x(2),
                             L.panel_height - L.x(2), L.x(10), L.x(10))
-        painter.fillPath(path, BACKGROUND)
-        painter.setPen(BORDER)
+        painter.fillPath(path, self._background)
+        painter.setPen(self._border)
         painter.drawPath(path)
+
+    def _pen(self, color):
+        """A content colour through the contrast knob. Every pen in the
+        step view goes through here; the alert bands deliberately do not -
+        they are alarms and already at full strength."""
+        return boosted(color, self._content_contrast)
 
     def _draw_alert_bands(self, painter):
         """The production alert bands, stacked below the panel."""
@@ -508,17 +608,30 @@ class Overlay(QWidget):
     def _draw_header(self, painter):
         L = self._layout
         painter.setFont(QFont("sans", L.pt(10)))
-        painter.setPen(DIM_TEXT)
+        painter.setPen(self._pen(DIM_TEXT))
         painter.drawText(L.x(16), L.y(24), self.status_line)
 
         painter.setFont(QFont("sans", L.pt(10), QFont.Weight.Bold))
-        painter.setPen(self.pace_color)
+        painter.setPen(self._pen(self.pace_color))
         metrics = painter.fontMetrics()
         width = metrics.horizontalAdvance(self.pace_text)
         painter.drawText(self.width() - L.x(16) - width, L.y(24),
                          self.pace_text)
 
-        painter.setPen(QColor(255, 255, 255, 28))
+        # The not-following note sits in the gap between the two, which is
+        # empty in every normal frame - the status line runs to about a
+        # quarter of the width and pace is a few characters right-aligned.
+        # Centring it there means the usual panel is untouched and this costs
+        # no height, which a 186px panel cannot spare.
+        if self.follow_note:
+            painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
+            painter.setPen(self._pen(self.follow_color))
+            note_metrics = painter.fontMetrics()
+            note_width = note_metrics.horizontalAdvance(self.follow_note)
+            painter.drawText((self.width() - note_width) // 2, L.y(24),
+                             self.follow_note)
+
+        painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), L.y(34), self.width() - L.x(14), L.y(34))
 
     def _draw_headline(self, painter):
@@ -533,7 +646,7 @@ class Overlay(QWidget):
                           .horizontalAdvance(self.headline_when) + L.x(14))
 
         painter.setFont(QFont("sans", L.pt(15), QFont.Weight.Bold))
-        painter.setPen(TEXT)
+        painter.setPen(self._pen(TEXT))
         available = self.width() - L.x(32) - when_width
         if self.headline_segments:
             draw_segments(painter, self.headline_segments, L.x(16), L.y(62),
@@ -545,13 +658,13 @@ class Overlay(QWidget):
 
         if self.headline_when:
             painter.setFont(QFont("sans", L.pt(9)))
-            painter.setPen(FAINT_TEXT)
+            painter.setPen(self._pen(FAINT_TEXT))
             width = painter.fontMetrics().horizontalAdvance(self.headline_when)
             painter.drawText(self.width() - L.x(16) - width, L.y(62),
                              self.headline_when)
 
         painter.setFont(QFont("sans", L.pt(10)))
-        painter.setPen(DIM_TEXT)
+        painter.setPen(self._pen(DIM_TEXT))
         y = L.y(84)
         rows = (self.footnote_segments
                 if self.footnote_segments else
@@ -582,7 +695,7 @@ class Overlay(QWidget):
         L = self._layout
         y = L.panel_height - L.y(56)
         painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
-        painter.setPen(FAINT_TEXT)
+        painter.setPen(self._pen(FAINT_TEXT))
         painter.drawText(L.x(16), y, "VILLS")
         # The row starts at its designed spot unless the label itself has
         # outgrown it - label width follows the text knob, the anchor only
@@ -592,18 +705,19 @@ class Overlay(QWidget):
 
         painter.setFont(QFont("sans", L.pt(11), QFont.Weight.Bold))
         draw_resource_row(painter, self._icons, self.targets, self.actual,
-                          max(L.x(66), label_end), y, spacing=L.spacing)
+                          max(L.x(66), label_end), y, spacing=L.spacing,
+                          pen=self._pen)
 
     def _draw_next(self, painter):
         L = self._layout
         baseline = L.panel_height - L.y(18)
 
-        painter.setPen(QColor(255, 255, 255, 28))
+        painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), baseline - L.y(26),
                          self.width() - L.x(14), baseline - L.y(26))
 
         painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
-        painter.setPen(FAINT_TEXT)
+        painter.setPen(self._pen(FAINT_TEXT))
         painter.drawText(L.x(16), baseline, "THEN")
         # Same give-the-label-room rule as the VILLS row: the text starts at
         # its designed spot unless "THEN" has outgrown it.
@@ -612,7 +726,7 @@ class Overlay(QWidget):
         text_x = max(L.x(62), label_end)
 
         painter.setFont(QFont("sans", L.pt(10)))
-        painter.setPen(DIM_TEXT)
+        painter.setPen(self._pen(DIM_TEXT))
 
         when_width = 0
         if self.next_when:
@@ -629,7 +743,7 @@ class Overlay(QWidget):
                              elide(painter, self.next_text, available))
 
         if self.next_when:
-            painter.setPen(FAINT_TEXT)
+            painter.setPen(self._pen(FAINT_TEXT))
             metrics = painter.fontMetrics()
             width = metrics.horizontalAdvance(self.next_when)
             painter.drawText(self.width() - L.x(16) - width, baseline,
@@ -681,7 +795,8 @@ def draw_segments(painter, segments, x, baseline, available, icon_height,
         x += width + round(5 * spacing)
 
 
-def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0):
+def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
+                      pen=None):
     """The villagers-per-resource row, shared by the overlay and the preview.
 
     Each resource leads with its icon if the player supplied one, or its full
@@ -695,7 +810,12 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0):
 
     spacing multiplies the gaps between resources, like draw_segments; the
     default keeps the designed pixel counts for the preview cards.
+
+    pen maps each colour before it is used - the overlay passes its contrast
+    knob; the default identity keeps the preview exactly as designed.
     """
+    if pen is None:
+        pen = lambda color: color
     for name in RESOURCE_ORDER:
         want = targets.get(name, 0)
         have = actual.get(name)
@@ -712,24 +832,55 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0):
                                icon)
             x += icon.width() + round(6 * spacing)
         else:
-            painter.setPen(resource_color)
+            painter.setPen(pen(resource_color))
             label = RESOURCE_LABELS[name]
             painter.drawText(int(x), y, label)
             x += (painter.fontMetrics().horizontalAdvance(label)
                   + round(6 * spacing))
 
         text = str(want) if have is None else f"{have}/{want}"
-        painter.setPen(TEXT if off else resource_color)
+        painter.setPen(pen(TEXT if off else resource_color))
         painter.drawText(int(x), y, text)
         width = painter.fontMetrics().horizontalAdvance(text)
 
         if off:
-            painter.setPen(OFF_TARGET_COLOR)
+            painter.setPen(pen(OFF_TARGET_COLOR))
             painter.drawLine(int(x), y + round(3 * spacing),
                              int(x) + width, y + round(3 * spacing))
 
         x += width + round(18 * spacing)
     return x
+
+
+def describe_follow(mode, resume_hint=None):
+    """The header note for a panel that is not following the game.
+
+    Returns (text, colour); the text is "" while the game is driving, which
+    is the normal case and draws nothing.
+
+    A pure function of two arguments, so every phrasing is checkable without
+    a window - the same reason describe_pace below is one.
+
+    The wording matters more than it looks. Loom's entire claim is that it
+    reads the game and keeps up by itself, so a panel showing a step it is no
+    longer syncing to is a lie unless it says so. MANUAL names the state and
+    the hint names the way out, because a player who toggled following off
+    twenty minutes ago will not remember which key did it.
+    """
+    from . import follow
+
+    if mode is None or mode == follow.FOLLOWING:
+        return "", NOT_FOLLOWING_COLOR
+    if mode == follow.MANUAL:
+        if resume_hint:
+            return f"MANUAL · {resume_hint} to resume", NOT_FOLLOWING_COLOR
+        # Hotkeys are off or unavailable, so there is no key to name. Saying
+        # so anyway beats implying the panel is still tracking the game.
+        return "MANUAL · not following the game", NOT_FOLLOWING_COLOR
+    # Holding: this fixes itself in a few seconds, so it is stated quietly.
+    # No countdown - a number ticking down in the corner of a game is a
+    # distraction, and the panel returning to normal is the real signal.
+    return "manual · resuming shortly", HOLDING_COLOR
 
 
 def describe_pace(delta, extra=0):

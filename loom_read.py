@@ -91,6 +91,7 @@ def main():
 
     tracker = production.ProductionTracker()
     last_population = None
+    last_raw_villagers = None
 
     try:
         while True:
@@ -116,6 +117,23 @@ def main():
                 cv2.imwrite(os.path.join(misread_dir, f"band_{stamp}.png"),
                             hud.last_population_band)
                 last_misread_save = time.monotonic()
+
+            # A villager count that leaps is a misread, not a game event.
+            # Villagers arrive one at a time and only ever fall by a few (a
+            # boar kill, a drush), so a jump of several in one poll is the
+            # reader inventing something - and because the count is the ONLY
+            # sync signal, a wrong one desynchronises the whole build order.
+            # Printed loudly with the raw value beside the believed one, so an
+            # intermittent misread is caught in the log rather than by staring.
+            if (reading.raw_villagers is not None
+                    and last_raw_villagers is not None
+                    and abs(reading.raw_villagers - last_raw_villagers) > 3):
+                print(f"\r*** villager JUMP {last_raw_villagers} -> "
+                      f"{reading.raw_villagers} (believed {reading.villagers}) "
+                      f"at {filters.format_time(reading.game_time)}"
+                      f"   min_glyph_width={hud.hud['min_glyph_width']}      ")
+            if reading.raw_villagers is not None:
+                last_raw_villagers = reading.raw_villagers
 
             if reading.event is not None:
                 # Events print on their own line and scroll past, while the

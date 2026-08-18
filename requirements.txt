@@ -1,6 +1,9 @@
 mss==10.2.0
 numpy==2.5.1
-opencv-python==5.0.0.93
+# Headless on purpose: Loom draws with Qt and never calls a cv2 GUI
+# function (no imshow, no waitKey - checked), and the headless wheel keeps
+# OpenCV's own GUI stack out of the frozen bundle.
+opencv-python-headless==5.0.0.93
 PyQt6==6.11.0
 PyQt6-Qt6==6.11.1
 pytest==9.1.1
@@ -12,3 +15,20 @@ pytest==9.1.1
 # python-xlib is pure Python and would install harmlessly anywhere, but the
 # marker states the intent: it belongs to the x11 backend.
 python-xlib==0.33 ; sys_platform == "linux"
+
+# Windows Graphics Capture, the only path measured to return real pixels from
+# the game's Direct3D window - GDI's BitBlt hands back pure black, and
+# PrintWindow works but costs 20ms a grab against this one's 2us region crop.
+# See tools/windows_probe.py, which is what measured that.
+windows-capture==2.0.1 ; sys_platform == "win32"
+# Window enumeration and geometry. WGC captures the pixels but has nothing to
+# say about which window is the game or where it sits on the desktop.
+pywin32==312 ; sys_platform == "win32"
+
+# The macOS backend imports these and they were never declared, so a fresh
+# macOS install failed only when pixels were first asked for - a CaptureError
+# at the first poll rather than an honest failure at install time.
+pyobjc-core==11.1 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa==11.1 ; sys_platform == "darwin"
+pyobjc-framework-Quartz==11.1 ; sys_platform == "darwin"
+pyobjc-framework-ScreenCaptureKit==11.1 ; sys_platform == "darwin"

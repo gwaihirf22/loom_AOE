@@ -11,7 +11,8 @@ the table is plain data, which is exactly why it is a table.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
-from loom.launcher import COACH_SCENARIOS, DEV_COMMANDS, PLACE_COMMAND
+from loom.launcher import (COACH_SCENARIOS, DEV_COMMANDS, PLACE_COMMAND,
+                           WINDOW_GAP, beside)
 
 
 def argv_for(label, stem="scoutsrush18pop", scenario="behind"):
@@ -75,3 +76,54 @@ def test_passthrough_check_asks_for_the_real_overlay_conditions():
     assert argv[:2] == ["-m", "tools.overlay_test"]
     assert argv[argv.index("--style") + 1] == "tooltip"
     assert argv[argv.index("--passthrough") + 1] == "on"
+
+
+# ---- placing the build preview beside the launcher ----------------------
+#
+# The preview used to open wherever the window manager felt like, which in
+# practice meant behind the launcher. It is parented now so it can never hide,
+# and placed beside the launcher the first time. This is the arithmetic for
+# that placement, tested with fake inputs because the cases that matter - no
+# room on the right, a monitor at negative coordinates - are the awkward ones
+# to reproduce by opening real windows, and both would strand the preview
+# somewhere the player cannot reach.
+
+FULL_HD = (0, 0, 1920, 1080)
+
+
+def test_the_preview_goes_to_the_right_when_there_is_room():
+    x, y = beside((100, 200, 720), (600, 640), FULL_HD)
+    assert x == 100 + 720 + WINDOW_GAP
+    assert y == 200, "it should line up with the launcher's top edge"
+
+
+def test_it_flips_to_the_left_when_the_right_would_hang_off():
+    # Launcher pushed right: 1400 + 720 + gap + 600 is well past 1920.
+    x, _y = beside((1400, 100, 720), (600, 640), FULL_HD)
+    assert x == 1400 - 600 - WINDOW_GAP
+
+
+def test_it_stays_on_screen_when_neither_side_fits():
+    # A preview nearly as wide as the screen fits properly on neither side;
+    # landing half off the edge would be worse than simply being clamped.
+    left, top, right, bottom = FULL_HD
+    x, y = beside((900, 100, 720), (1800, 640), FULL_HD)
+    assert left <= x
+    assert x + 1800 <= right
+
+
+def test_a_monitor_left_of_the_primary_one_works():
+    """Negative screen coordinates are ordinary on a multi-monitor desktop.
+    Clamping them away would drag the preview onto the wrong monitor."""
+    area = (-2560, 0, 0, 1440)
+    x, y = beside((-2000, 300, 720), (600, 640), area)
+    assert x == -2000 + 720 + WINDOW_GAP
+    assert -2560 <= x and x + 600 <= 0
+
+
+def test_it_never_places_a_window_above_the_work_area():
+    # A launcher dragged up under a taskbar must not push the preview off the
+    # top, where some window managers make it unreachable.
+    area = (0, 40, 1920, 1080)
+    _x, y = beside((100, 0, 720), (600, 640), area)
+    assert y >= 40

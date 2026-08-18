@@ -10,13 +10,24 @@ those lines to the preview instead of the log pane. One producer, one
 consumer, a pipe the launcher already owns - a socket or shared memory would
 buy nothing but moving parts.
 
-The payload keeps build_order.py's own semantics: "idx" is current_index()
-verbatim - the last COMPLETED step, -1 before the first - so the wire format
-never needs translating. Compact keys because this rides a pipe once a
+The payload keeps build_order.py's own semantics: "idx" is in current_index()
+terms - the last COMPLETED step, -1 before the first - so the wire format
+never needs translating. It is the step the overlay is ACTUALLY showing,
+which is usually what the reading implies and is the player's own cursor when
+they have nudged it with a hotkey; either way it is the same semantics, so
+consumers need no special case.
+
+"mode" says which of those it is - "following", "holding" or "manual", from
+loom/follow.py - so a second window cannot claim to be following the game
+while the panel says it is not. Compact keys because this rides a pipe once a
 second for a whole match:
 
-    {"usable": true, "idx": 4, "vills": 13, "t": 251, "pace": -8,
-     "res": {"food": 7, ...} | null, "pop": [14, 20] | null}
+    {"usable": true, "idx": 4, "mode": "following", "vills": 13, "t": 251,
+     "pace": -8, "res": {"food": 7, ...} | null, "pop": [14, 20] | null}
+
+The APM counter borrows this same channel with a payload of its own,
+{"apm": {"wall": ..., "keys": ..., "clicks": ...}}, which the launcher tells
+apart by the key rather than by any type field.
 
 A reading the overlay cannot use is announced as exactly {"usable": false},
 once - the launcher takes that as "no game to follow, browsing allowed".

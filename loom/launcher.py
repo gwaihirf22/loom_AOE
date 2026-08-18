@@ -16,16 +16,20 @@ the overlay starts, and the UI says so rather than pretending otherwise.
 # debugging and review. The design and code are my own work.
 
 import json
+import sys
 import time
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QGroupBox, QHBoxLayout,
-                             QLabel, QPlainTextEdit, QPushButton, QSpinBox,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QGroupBox,
+                             QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+                             QPushButton, QSlider, QSpinBox, QVBoxLayout,
+                             QWidget)
 
-from . import apm, config, paths, statefeed
+from . import apm, config, hotkeys, paths, statefeed
+from .hotkeys import keyspec
 from . import __version__ as loom_version
+from .about import AboutWindow
 from .browser import BuildBrowser
 from .statsview import StatsWindow
 from .build_order import available_builds
@@ -75,6 +79,39 @@ COACH_SCENARIOS = ("perfect", "behind", "stall")
 # so the same test can check it without any Qt.
 PLACE_COMMAND = ("place",
                  lambda stem: ["loom_overlay.py", "--place", "--build", stem])
+
+# The gap left between the launcher and a window placed beside it.
+WINDOW_GAP = 12
+
+
+def beside(anchor, size, area):
+    """Where to put a window so it sits next to another one, on screen.
+
+    anchor is (x, y, width) of the window to sit beside, size is (width,
+    height) of the window being placed, and area is the screen's work area as
+    (left, top, right, bottom). Returns (x, y).
+
+    Pure arithmetic on purpose: the interesting cases are a preview too wide
+    for the space to the right, and a monitor left of the primary one whose
+    coordinates are negative. Neither is convenient to reproduce by opening
+    real windows, and both would put the preview somewhere the player cannot
+    reach - so they are worth testing with fake inputs instead.
+
+    To the right by preference, flipping left when the right would hang off
+    the edge, and clamped into the work area either way.
+    """
+    anchor_x, anchor_y, anchor_width = anchor
+    width, height = size
+    left, top, right, bottom = area
+
+    x = anchor_x + anchor_width + WINDOW_GAP
+    if x + width > right:
+        x = anchor_x - width - WINDOW_GAP
+    # Clamped last, so a window wider than the space still lands on screen
+    # rather than half off it.
+    x = max(left, min(x, right - width))
+    y = max(top, min(anchor_y, bottom - height))
+    return x, y
 
 
 class OutputPane(QPlainTextEdit):
@@ -196,19 +233,19 @@ class AlertSettingsBox(QGroupBox):
         taper.addWidget(self.silence)
         taper.addStretch()
 
-        # The pre-emptive HOUSE NOW threshold: how much pop space remaining
+        # The pre-emptive HOUSE SOON threshold: how much pop space remaining
         # should raise the warning. A boom eats more per house than a
         # one-TC opening, so the right number is the player's to pick.
         self.headroom = QSpinBox()
         self.headroom.setRange(*config.HOUSE_HEADROOM_BOUNDS)
         self.headroom.setValue(config.house_headroom())
         self.headroom.setToolTip(
-            "Warn HOUSE NOW when this little population space is left -"
+            "Warn HOUSE SOON when this little population space is left -"
             " raise it if you keep getting housed anyway.")
         self.headroom.valueChanged.connect(config.set_house_headroom)
 
         house = QHBoxLayout()
-        house.addWidget(QLabel("HOUSE NOW warns at"))
+        house.addWidget(QLabel("HOUSE SOON warns at"))
         house.addWidget(self.headroom)
         house.addWidget(QLabel("pop space left"))
         house.addStretch()
@@ -222,7 +259,7 @@ class AlertSettingsBox(QGroupBox):
             ("housed", "Housed alert",
              "Alert when production has actually stalled against the pop"
              " cap."),
-            ("house_warning", "Pre-emptive HOUSE NOW warning",
+            ("house_warning", "Pre-emptive HOUSE SOON warning",
              "Alert just BEFORE hitting the pop cap, while a house can"
              " still prevent the stall."),
         ]
@@ -259,6 +296,11 @@ class OverlaySizeBox(QGroupBox):
     text size grows only the writing and the panel's height, never its
     width, so a bigger font never widens the overlay's footprint on the
     game.
+
+    Size ONLY. Transparency lives in its own box below - the beta feedback
+    was that transparency controls sitting beside size controls read as
+    more size controls, and a separate titled group is what actually
+    removes that ambiguity.
     """
 
     def __init__(self, parent=None):
@@ -298,6 +340,227 @@ class OverlaySizeBox(QGroupBox):
         layout = QVBoxLayout(self)
         layout.addLayout(row)
         layout.addWidget(_next_launch_hint())
+
+
+class OverlayTransparencyBox(QGroupBox):
+    """The overlay's two transparency sliders, in their own titled group.
+
+    Sliders rather than spinboxes, and a separate box rather than a row in
+    the size box - both straight from beta feedback: the spinboxes read as
+    more size controls, and transparency wants to be dragged and eyeballed,
+    not typed.
+
+    The two do different jobs. Background is TRUE opacity of the dark card:
+    0% none, 100% solid enough to hide the game behind it. Text is
+    VISIBILITY on a scale whose midpoint is the designed look: below 50% the
+    writing fades toward invisible, above it the colours climb toward full
+    contrast - the finding being that with the card thinned, the designed
+    greys are unreadable over bright terrain, and the useful direction is
+    up. Alert bands follow neither; they are alarms.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("Overlay transparency", parent)
+
+        layout = QVBoxLayout(self)
+        self.background = self._slider_row(
+            layout, "Background", "0% invisible / 100% solid",
+            config.background_opacity(),
+            config.set_background_opacity,
+            "How solid the overlay's dark card is. At 0% there is no card at"
+            " all; at 100% the game cannot be seen through it. 80% is the"
+            " designed look.")
+        self.text = self._slider_row(
+            layout, "Text && icons", "50% normal / 100% bright && bold",
+            config.text_visibility(),
+            config.set_text_visibility,
+            "How visible the overlay's writing is. 50% is the designed look;"
+            " lower fades it out, higher makes it solid and brighter for"
+            " reading over bright terrain. Alert bands always stay at full"
+            " strength - they are alarms.")
+        layout.addWidget(_next_launch_hint())
+
+    def _slider_row(self, layout, caption, scale_hint, value, setter, tip):
+        """One captioned slider with a live percent label beside it.
+
+        A QSlider cannot display its own value the way a spinbox shows a
+        suffix, so the label does it - updated on every change, including
+        mid-drag, which is half the point of a slider.
+        """
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setPageStep(10)
+        slider.setValue(round(value * 100))
+        slider.setToolTip(tip)
+
+        percent = QLabel(f"{slider.value()} %")
+        percent.setMinimumWidth(40)
+
+        def changed(new_value):
+            percent.setText(f"{new_value} %")
+            setter(new_value / 100)
+        slider.valueChanged.connect(changed)
+
+        caption_label = QLabel(caption)
+        caption_label.setMinimumWidth(90)
+        caption_label.setToolTip(tip)
+        hint = QLabel(scale_hint)
+        hint.setStyleSheet("color: gray;")
+
+        row = QHBoxLayout()
+        row.addWidget(caption_label)
+        row.addWidget(slider, stretch=1)
+        row.addWidget(percent)
+        row.addWidget(hint)
+        layout.addLayout(row)
+        return slider
+
+
+class HotkeysBox(QGroupBox):
+    """The build-order hotkeys, and how long a nudge holds sync off.
+
+    Every binding is editable and every one can be emptied, and that is not
+    politeness. A hotkey Loom registers is TAKEN FROM THE GAME - while Loom
+    holds Ctrl+Shift+W, Age of Empires never sees it - and AoE2 players remap
+    heavily, so a binding somebody cannot change is a binding that breaks
+    their game.
+
+    Bindings are validated as they are typed rather than on save, because the
+    alternative is finding out at the next overlay launch that a key does
+    nothing, which looks exactly like the feature being broken.
+    """
+
+    LABELS = {
+        "previous_step": ("Previous step",
+                          "Step the overlay back one step in the build."),
+        "next_step": ("Next step",
+                      "Step the overlay forward one step in the build."),
+        "toggle_follow": ("Stop / resume following",
+                          "Stop the overlay following the game, or start it"
+                          " again. Unlike the two step keys this does not"
+                          " time out - the panel says MANUAL until you press"
+                          " it again."),
+        "start_stop_overlay": (
+            "Start / stop overlay",
+            "One key that does what the Start and Stop buttons do, so the"
+            " overlay can be launched mid-game without alt-tabbing out."
+            " Registered by the launcher itself, so it works while the game"
+            " has focus - and unlike the keys above, changing it applies"
+            " immediately. Empty by default: bind it here to switch it on."),
+    }
+
+    # Emitted whenever any binding or the master switch changes, so the
+    # launcher can re-register its own hotkey live - the settings and that
+    # listener share this process, which is what makes "applies immediately"
+    # possible for the launcher's key where the overlay's read-once contract
+    # makes it impossible for the others.
+    bindings_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__("Build-order hotkeys", parent)
+
+        self.enabled = QCheckBox("Use hotkeys")
+        self.enabled.setChecked(config.hotkeys_enabled())
+        self.enabled.setToolTip(
+            "Register these key combinations system-wide. While Loom holds"
+            " them, the game does not see them - so switch this off to hand"
+            " them all back at once.")
+        self.enabled.toggled.connect(config.set_hotkeys_enabled)
+        self.enabled.toggled.connect(
+            lambda _checked: self.bindings_changed.emit())
+
+        bindings = config.hotkeys()
+        self.fields = {}
+        rows = QVBoxLayout()
+        for action in config.HOTKEY_ACTIONS:
+            label, tip = self.LABELS[action]
+            field = QLineEdit(bindings[action])
+            field.setPlaceholderText("(no key)")
+            field.setToolTip(
+                f"{tip} Type something like Ctrl+Shift+W. Leave it empty to"
+                f" switch this action off and give the keys back to the"
+                f" game.")
+            # name=action for the same reason the alert checkboxes need it:
+            # without it every lambda closes over the last loop variable.
+            field.textChanged.connect(
+                lambda text, name=action: self._save(name, text))
+            self.fields[action] = field
+
+            row = QHBoxLayout()
+            caption = QLabel(label)
+            caption.setMinimumWidth(150)
+            row.addWidget(caption)
+            row.addWidget(field)
+            rows.addLayout(row)
+
+        self.hold = QSpinBox()
+        low, high = config.MANUAL_HOLD_BOUNDS
+        self.hold.setRange(low, high)
+        self.hold.setSuffix(" s")
+        self.hold.setValue(config.manual_hold_seconds())
+        self.hold.setToolTip(
+            "How long a step key stops the overlay following the game before"
+            " it picks the game back up by itself. The step keys are meant as"
+            " a correction, not a mode - this is how long the correction"
+            " lasts.")
+        self.hold.valueChanged.connect(config.set_manual_hold_seconds)
+
+        hold_row = QHBoxLayout()
+        hold_row.addWidget(QLabel("A step key holds sync off for"))
+        hold_row.addWidget(self.hold)
+        hold_row.addStretch()
+
+        self.warning = QLabel("")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color: rgb(235, 190, 90);")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.enabled)
+        layout.addLayout(rows)
+        layout.addLayout(hold_row)
+        layout.addWidget(self.warning)
+        if not hotkeys.available():
+            unsupported = QLabel(
+                "Hotkeys are not available on this system, so the overlay"
+                " will only follow the game automatically.")
+            unsupported.setWordWrap(True)
+            unsupported.setStyleSheet("color: gray;")
+            layout.addWidget(unsupported)
+        # Two contracts, one per owner, stated rather than implied: the
+        # overlay reads its keys once at startup; the launcher re-registers
+        # its own the moment a binding changes.
+        hint = QLabel("The step keys apply the next time the overlay starts;"
+                      " the start/stop key applies immediately.")
+        hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self._check()
+
+    def _save(self, action, text):
+        config.set_hotkey(action, text)
+        self._check()
+        self.bindings_changed.emit()
+
+    def _check(self):
+        """Say what is wrong with the current set, or nothing.
+
+        Two failures are worth catching here rather than at launch: a
+        combination that will not parse, and two actions on one combination -
+        which no operating system reports, because whichever registers first
+        simply wins and the other never fires.
+        """
+        bindings = {action: field.text()
+                    for action, field in self.fields.items()}
+        complaints = []
+        for action in config.HOTKEY_ACTIONS:
+            trouble = keyspec.problem(bindings[action])
+            if trouble:
+                complaints.append(f"{self.LABELS[action][0]}: {trouble}")
+        for first, second in keyspec.conflicts(bindings):
+            complaints.append(
+                f"{self.LABELS[first][0]} and {self.LABELS[second][0]} are on"
+                f" the same keys; only one of them will work.")
+        self.warning.setText("\n".join(complaints))
 
 
 class DevPanel(QGroupBox):
@@ -360,6 +623,8 @@ class LauncherWindow(QWidget):
         self.picker = BuildPicker()
         self.settings = AlertSettingsBox()
         self.appearance = OverlaySizeBox()
+        self.transparency = OverlayTransparencyBox()
+        self.hotkeys_box = HotkeysBox()
         self.output = OutputPane()
         self.apm_process = None
         # The APM join: buckets from the counter child, and (wall, game_t)
@@ -391,10 +656,17 @@ class LauncherWindow(QWidget):
         self.start_button.clicked.connect(self.start_overlay)
         self.stop_button.clicked.connect(self.stop_overlay)
         self.place_button.clicked.connect(self.place_overlay)
+        self.reset_place_button = QPushButton("Reset position")
+        self.reset_place_button.setToolTip(
+            "Forget where the overlay was placed and go back to the default"
+            " spot (top right, under the game's bar). The rescue for a"
+            " position that ended up off the screen.")
+        self.reset_place_button.clicked.connect(self.reset_overlay_position)
         controls = QHBoxLayout()
         controls.addWidget(self.start_button)
         controls.addWidget(self.stop_button)
         controls.addWidget(self.place_button)
+        controls.addWidget(self.reset_place_button)
         controls.addWidget(self.status)
         controls.addStretch()
 
@@ -410,8 +682,9 @@ class LauncherWindow(QWidget):
 
         # The build preview: its own window, so the window manager is the
         # size control. The checkbox and the window's own X both hide it,
-        # and stay in sync with each other.
-        self.browser = BuildBrowser()
+        # and stay in sync with each other. Parented to the launcher so it
+        # can never open behind it.
+        self.browser = BuildBrowser(self)
         self.browser_toggle = QCheckBox("Show build preview")
         self.browser_toggle.setToolTip(
             "Show the build order in its own resizable window - browse it"
@@ -421,7 +694,7 @@ class LauncherWindow(QWidget):
         self.browser.closed.connect(
             lambda: self.browser_toggle.setChecked(False))
         if config.build_browser():
-            self.browser.show()
+            self._show_browser()
 
         # APM tracking: a counter child that runs alongside the overlay.
         self.apm_toggle = QCheckBox("Track APM")
@@ -440,6 +713,14 @@ class LauncherWindow(QWidget):
             " graphs. One file per game in stats/.")
         self.stats_button.clicked.connect(self._open_stats)
 
+        # How to use: which HUD mods work, and how to get going. Shown once
+        # on a fresh install by loom_app; this button is how it comes back.
+        self.about_window = AboutWindow(self)
+        self.about_button = QPushButton("How to use")
+        self.about_button.setToolTip(
+            "Which HUD mods Loom works with, and how to set it up.")
+        self.about_button.clicked.connect(self._open_about)
+
         toggles = QHBoxLayout()
         toggles.addWidget(self.dev_toggle)
         toggles.addWidget(self.browser_toggle)
@@ -447,11 +728,42 @@ class LauncherWindow(QWidget):
         toggles.addWidget(self.stats_button)
         toggles.addStretch()
 
+        # How to use sits alone at the TOP RIGHT, in blue - the one control
+        # a lost new player needs, put where lost people look and coloured
+        # so it cannot hide among a column of grey settings. It used to sit
+        # in the toggles row at the bottom, which is where you find things
+        # you already know exist.
+        self.about_button.setStyleSheet(
+            "QPushButton { background-color: #2f6fd0; color: white;"
+            " font-weight: bold; padding: 4px 14px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #3d7de0; }")
+        header = QHBoxLayout()
+        emblem = QPixmap(str(paths.LOGO_PATH))
+        if not emblem.isNull():
+            # The banner at the top left, the one place a logo goes. isNull
+            # covers a clone with the image stripped - branding is the last
+            # thing worth failing over.
+            logo = QLabel()
+            logo.setPixmap(emblem.scaledToHeight(
+                40, Qt.TransformationMode.SmoothTransformation))
+            header.addWidget(logo)
+            name = QLabel("Loom")
+            name_font = name.font()
+            name_font.setPointSize(name_font.pointSize() + 4)
+            name_font.setBold(True)
+            name.setFont(name_font)
+            header.addWidget(name)
+        header.addStretch()
+        header.addWidget(self.about_button)
+
         layout = QVBoxLayout(self)
+        layout.addLayout(header)
         layout.addWidget(self.picker)
         layout.addLayout(controls)
         layout.addWidget(self.settings)
         layout.addWidget(self.appearance)
+        layout.addWidget(self.transparency)
+        layout.addWidget(self.hotkeys_box)
         layout.addLayout(toggles)
         layout.addWidget(self.dev_panel)
         layout.addWidget(self.output)
@@ -464,6 +776,66 @@ class LauncherWindow(QWidget):
         for problem in self.picker.problems:
             self.output.append_line(f"[builds] {problem}")
         self._show_overlay_state(running=False)
+
+        # The launcher's own hotkey: one key toggling Start/Stop. It has to
+        # live HERE - the one thing it does is start a process that does not
+        # exist yet - and because the listener and the settings share this
+        # process, a rebind re-registers immediately instead of waiting for
+        # anything to restart.
+        self._launcher_hotkeys = None
+        self._register_launcher_hotkeys()
+        self.hotkeys_box.bindings_changed.connect(
+            self._register_launcher_hotkeys)
+
+    # ---- the launcher's own hotkey --------------------------------------
+
+    def _register_launcher_hotkeys(self):
+        """(Re)register the start/stop key from the current settings.
+
+        Stop-then-listen every time, so a rebind hands the old combination
+        back to the game in the same breath it takes the new one. Nothing
+        here may break the launcher: a hotkey is a convenience, and every
+        failure is a line in the output pane.
+        """
+        if self._launcher_hotkeys is not None:
+            hotkeys.stop(self._launcher_hotkeys)
+            self._launcher_hotkeys = None
+
+        if not config.hotkeys_enabled():
+            return
+        bindings = {action: binding
+                    for action, binding in config.hotkeys().items()
+                    if action in config.LAUNCHER_HOTKEY_ACTIONS
+                    and not keyspec.is_disabled(binding)}
+        if not bindings:
+            return
+
+        try:
+            listener = hotkeys.listen(bindings, self._on_launcher_hotkey)
+        except hotkeys.HotkeyError as problem:
+            self.output.append_line(f"[launcher] hotkeys unavailable: {problem}")
+            return
+        for action, binding, reason in listener.failures:
+            self.output.append_line(
+                f"[launcher] hotkey {action} ({binding}) could not be "
+                f"registered: {reason}")
+        if listener.actions:
+            taken = ", ".join(sorted(bindings[action]
+                                     for action in listener.actions.values()))
+            self.output.append_line(
+                f"[launcher] hotkey: {taken} starts and stops the overlay "
+                f"(taken from the game while the launcher runs)")
+        self._launcher_hotkeys = listener
+
+    def _on_launcher_hotkey(self, action):
+        if action != "start_stop_overlay":
+            return
+        # Exactly the buttons' semantics: both methods are guarded, so a
+        # mashed key can neither double-start nor kill anything twice.
+        if self.overlay_process is not None and self.overlay_process.is_running():
+            self.stop_overlay()
+        else:
+            self.start_overlay()
 
     # ---- the overlay slot ----------------------------------------------
 
@@ -481,7 +853,11 @@ class LauncherWindow(QWidget):
         # they are joined to game time and written after the overlay ends.
         self._apm_buckets = []
         self._time_pairs = []
-        if config.track_apm():
+        # Only where APM is a separate process. On Windows the overlay
+        # counts it itself with Raw Input, and spawning this too would count
+        # every action twice - which would not look like a bug, it would look
+        # like the player having a very good game.
+        if config.track_apm() and not apm.counted_in_the_overlay(sys.platform):
             self.apm_process = self._spawn("apm", ["-m", "tools.apm_counter"],
                                            self._apm_finished)
         self._show_overlay_state(running=True)
@@ -491,6 +867,15 @@ class LauncherWindow(QWidget):
             self.overlay_process.stop()
         if self.apm_process is not None:
             self.apm_process.stop()
+
+    def reset_overlay_position(self):
+        """Forget the saved overlay spot. Applies on the next overlay start,
+        like every overlay setting."""
+        config.clear_overlay_offset()
+        self.output.append_line(
+            "[launcher] overlay position reset to the default (top right,"
+            " under the game's bar) - applies the next time the overlay"
+            " starts")
 
     def place_overlay(self):
         """Open the overlay's placement mode: drag it, close it to save.
@@ -552,6 +937,7 @@ class LauncherWindow(QWidget):
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.place_button.setEnabled(not running)
+        self.reset_place_button.setEnabled(not running)
         self.status.setText("overlay: running" if running
                             else "overlay: not running")
 
@@ -612,9 +998,62 @@ class LauncherWindow(QWidget):
         self.stats_window.raise_()
         self.stats_window.refresh()
 
+    def _open_about(self):
+        self.about_window.open_at(self._cascaded_from_me(self.about_window))
+
+    def show_about_if_unseen(self):
+        """Open the How-to-use window on a fresh install. Returns whether it
+        opened, so a caller (and a test) can tell."""
+        if config.about_seen():
+            return False
+        self.about_window.show_first_run(
+            self._cascaded_from_me(self.about_window))
+        return True
+
+    def _cascaded_from_me(self, window):
+        """A spot overlapping the launcher's top-left, clamped on screen.
+
+        The classic offset a dialog opens at. It matters here because this
+        window is SMALLER than the launcher: centred, it landed exactly
+        behind it and looked like nothing had happened at all.
+        """
+        offset = 48
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        x = min(self.x() + offset, area.right() - (window.width() or 620))
+        y = min(self.y() + offset, area.bottom() - (window.height() or 520))
+        return max(area.left(), x), max(area.top(), y)
+
     def _set_build_browser(self, enabled):
         config.set_build_browser(enabled)
-        self.browser.setVisible(enabled)
+        if enabled:
+            self._show_browser()
+        else:
+            self.browser.hide()
+
+    def _show_browser(self):
+        """Show the preview, placing it beside the launcher the first time.
+
+        Only the first time: once the player has moved it, config remembers
+        where, and that beats any guess this could make.
+
+        The placement is best-effort by nature. Under Wayland a client is not
+        allowed to position its own windows at all and the move is simply
+        ignored - which is why the preview is PARENTED to the launcher rather
+        than relying on this. Parenting is what guarantees it stops opening
+        behind; this only makes it tidy where the platform permits.
+        """
+        if config.browser_position() is None:
+            self.browser.move(*self._beside_me(self.browser))
+        self.browser.show()
+        self.browser.raise_()
+
+    def _beside_me(self, window):
+        """Where to put a window so it sits next to the launcher, on screen."""
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        return beside(
+            (self.x(), self.y(), self.frameGeometry().width()),
+            (window.width() or 600, window.height() or 640),
+            (area.left(), area.top(), area.right(), area.bottom()))
 
     def closeEvent(self, event):
         """Closing the launcher takes its children with it - no orphans.
@@ -622,6 +1061,8 @@ class LauncherWindow(QWidget):
         Blocking waits are fine here (the UI is going away), and shutdown()
         bounds them, so the window cannot hang open indefinitely either.
         """
+        if self._launcher_hotkeys is not None:
+            hotkeys.stop(self._launcher_hotkeys)
         for child in (self.overlay_process, self.dev_process,
                       self.apm_process):
             if child is not None:
@@ -633,4 +1074,5 @@ class LauncherWindow(QWidget):
         self.browser.blockSignals(True)
         self.browser.close()
         self.stats_window.close()
+        self.about_window.close()
         event.accept()

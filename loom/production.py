@@ -35,25 +35,47 @@ TC_RECOVERED = "tc_recovered"                # every known TC is working again
 # How many agreeing polls before a state change is believed.
 POLLS_TO_BELIEVE = 2
 
-# How long queue evidence must hold, on every poll without a gap, before it
-# may add a Town Centre to the believed count.
+# How long queue evidence must hold before it may add a Town Centre to the
+# believed count: this many game seconds AND this many distinct queue
+# reads, on every read without a gap. Both dimensions matter. Time alone
+# proved too weak: under load shedding the queue is read ~0.9s apart, so
+# "one game second sustained" was satisfiable by TWO glances - and a
+# tech handover (Loom finishing as Feudal Age starts, both cells wearing
+# green for a moment) minted a phantom second TC in a live one-TC game.
+# Three reads across three game seconds outlive any single transition;
+# real multi-TC evidence persists for minutes and never notices. This
+# runs for the WHOLE game - the notification feed cannot carry the count
+# alone, because the game never reprints a line that is already on
+# screen, so a TC completing while "--Town Center Built--" still lingers
+# announces nothing at all (a seven-TC game produced three lines).
 QUEUE_TC_CONFIRM_SECONDS = 3
+QUEUE_TC_CONFIRM_READS = 3
 
-# Queue evidence may only ADD Town Centres during the opening. It exists
-# for one job: noticing a multi-TC start (scenarios, nomad-style setups)
-# before anything has been built. Past the opening, every new TC announces
-# itself with "--Town Center Built--", and the notification channel is the
-# only one allowed to raise the count - a queue misread that mints a
-# phantom TC nags for the whole game, while a TC the queue merely failed
-# to corroborate costs nothing.
-QUEUE_TC_WINDOW_SECONDS = 120
+# A green item may only prove a TC exists when its IDENTITY is confident:
+# a strong score, or a clear win over every other identity family. The
+# queue reader's least-bad guess on an icon it has no template for lands
+# on villagers and TC techs disturbingly often - measured three times in
+# two days: an unknown Armenian icon read villager_male 0.42 with
+# castle_age 0.42 right behind it, the Husbandry horseshoe read
+# flemish_militia 0.30, an upgrade shield read villager_male 0.53 - and
+# each one minted a phantom TC. A real villager scores 0.6+ on most polls
+# or wins its family by a wide margin, and the high-water only needs one
+# clean confirmation window; an unknown icon matches everything a little
+# and nothing well, forever. Busyness deliberately IGNORES this gate:
+# erring busy is safe, and a misnamed green cell still proves SOMETHING
+# is producing.
+TC_EVIDENCE_SCORE = 0.6
+TC_EVIDENCE_MARGIN = 0.08
 
-# Identities that mean a Town Centre is doing something. Only one group per
-# building can be green at a time, so each green TC-unit group IS one TC
-# actively training - which is how I count TCs without ever seeing one: the
-# most green groups ever on screen at once is how many TCs I know about.
-# A green group of one of the TC techs means a TC is busy researching rather
-# than training; that is still a working TC, not an idle one.
+# Identities that mean a Town Centre is doing something. Each building
+# shows at most ONE in-progress item in the global queue - completely
+# untinted the moment it is placed, then washing green left to right -
+# while anything queued behind it waits AMBER until the first finishes,
+# and an item the population cannot fit turns RED (even a tech, if it sits
+# behind a blocked unit). Villager batch depth is the white count on the
+# one icon, not extra slots. So the number of untinted-or-green TC items
+# on screen at once is a floor on how many TCs exist (tested in game,
+# 2026-07-31).
 #
 # TC units are villagers plus exactly one exception: Flemish Militia, which
 # Burgundians train at the TC after Flemish Revolution. TC techs are the
@@ -84,11 +106,11 @@ class ProductionTracker:
         self.blocked = None           # None | 'housed' | 'pop_capped'
         self.slots = []               # the last believed readings
 
-        # Town Centres. tcs_seen is a high-water mark: the most TC-work
-        # groups (training or researching) ever simultaneously green. It only
-        # grows during a game - reset() clears it - so a TC lost to a raid
-        # leaves it overcounting; the villager-count policy in alerts.py is
-        # what stops that becoming a late-game nag.
+        # Town Centres. tcs_seen is a high-water mark: the most in-progress
+        # TC items (untinted or green, unit or tech) ever on screen at
+        # once. It only grows during a game - reset() clears it - so a TC
+        # lost to a raid leaves it overcounting; the villager-count policy
+        # in alerts.py is what stops that becoming a late-game nag.
         #
         # It STARTS at 1, not 0: every standard match begins with a Town
         # Centre, and starting from 0 meant the idle warning could never fire
@@ -103,14 +125,13 @@ class ProductionTracker:
         # signals, so adding them invented a third TC in live testing.
         self.tcs_seen = 1
         self._tcs_notified = 1        # starting TC + "--Town Center Built--"
-        self._tcs_queue_high = 1      # high-water of green villager groups
-        # A queue-evidence raise must hold CONTINUOUSLY for this many game
-        # seconds. The notification channel is the dominant TC source (and
-        # is double-checked by ink agreement); queue evidence is the
-        # subordinate witness, and persistent misreads have fooled shorter
-        # streaks into minting phantom TCs.
+        self._tcs_queue_high = 1      # high-water of in-progress TC items
+        # A queue-evidence raise must hold CONTINUOUSLY across both game
+        # time and distinct reads (QUEUE_TC_CONFIRM_*) - a misread or a
+        # handover artifact flickers, a real queue item stays.
         self._training_candidate = None
         self._training_since = None
+        self._training_reads = 0
         self.tc_busy = 0              # TCs working right now (or blocked)
         self.idle_tcs = 0             # believed idle TCs, debounced
 
@@ -202,58 +223,84 @@ class ProductionTracker:
         self.tcs_seen = max(self._tcs_notified, self._tcs_queue_high)
 
     def _track_tcs(self, slots, game_time):
-        """Notice when a known Town Centre stops doing anything.
+        """Count Town Centres by in-progress queue items, and notice when a
+        known one stops doing anything.
 
-        Existence and busyness use different evidence, and the asymmetry is
-        deliberate. Only a GREEN VILLAGER group proves an extra TC exists:
-        the tech icons are dark silhouettes that mis-match military groups,
-        and letting them raise the count invented phantom TCs in a one-TC
-        game. The assumed starting TC covers "researching at 0:01", and the
-        notification feed reports real additions (register_tc_built).
+        EXISTENCE: each building shows at most one in-progress item -
+        untinted when just placed, then washing green - while anything
+        waiting behind it is amber and anything the population cannot fit
+        is red (see the identity-table comment). So every untinted-or-green
+        TC item, unit or tech, is one distinct TC, and the most ever seen
+        at once is how many exist. This is a high-water mark for the whole
+        game: the notification feed cannot carry the count alone (the game
+        never reprints a line already on screen), and it is never lowered -
+        TCs do die, but that is accepted as uncountable; the villager-count
+        policy in alerts.py is what stops overcounting becoming a
+        late-game nag.
 
-        For busyness the net is wide on purpose: ANY villager group counts
-        (a queued unit starts by itself), and ANY TC-tech group counts too -
-        a tech group is either researching right now or waiting behind a
-        green group that is already counted, and a just-clicked age-up's
-        wash covers too few pixels to classify for its first quarter, which
-        used to flash TC IDLE at the exact moment the player did the right
-        thing. Erring busy costs a missed alert; erring idle costs the
-        player's trust in the warning.
+        For busyness, every tint counts EXCEPT amber. Green is working;
+        untinted is a just-started item whose wash is too thin to classify
+        (counting it stops TC IDLE flashing at the exact moment the player
+        clicks an age-up); red is blocked-busy, which is the HOUSED
+        alert's problem, not idleness. But amber means WAITING BEHIND the
+        building's in-progress item - the front of that queue is already
+        counted, so an amber item adds nothing. Counting it hid a real
+        idle TC live: one TC held wheelbarrow(red) + town_watch(amber) +
+        imperial_age(amber), read as THREE busy TCs, and the player's
+        freshly-built second TC sat idle with no warning.
         """
-        training = sum(1 for slot in slots
-                       if slot.tint == "green"
-                       and slot.identity in TC_UNIT_IDENTITIES)
+        # GREEN or UNTINTED, per the author's tested rule (2026-08-01):
+        # an untinted TC item is verifiable as producing - a just-placed
+        # item whose wash is too young to classify - so counting it
+        # confirms a new TC seconds earlier than waiting for green. The
+        # residual ambiguity is the same-type waiting batch, which also
+        # renders dark; the confidence gate below, the three-read window,
+        # and the never-lowered high water carry that risk, and the one
+        # game blamed on it turned out to have that many real TCs after
+        # all. Amber and red never count: amber is waiting or pop-capped
+        # (nothing being made), red is blocked.
+        in_progress = sum(1 for slot in slots
+                          if slot.tint in (None, "green")
+                          and (slot.identity in TC_UNIT_IDENTITIES
+                               or slot.identity in TC_TECH_IDENTITIES)
+                          and (slot.identity_score >= TC_EVIDENCE_SCORE
+                               or (slot.identity_margin is not None
+                                   and slot.identity_margin
+                                   >= TC_EVIDENCE_MARGIN)))
         queued = sum(1 for slot in slots
-                     if slot.identity in TC_UNIT_IDENTITIES)
+                     if slot.identity in TC_UNIT_IDENTITIES
+                     and slot.tint != "amber")
         researching = sum(1 for slot in slots
-                          if slot.identity in TC_TECH_IDENTITIES)
+                          if slot.identity in TC_TECH_IDENTITIES
+                          and slot.tint != "amber")
 
-        # Raising the queue's TC evidence takes CONTINUOUS proof: the count
-        # above the current high-water must hold on every poll for three
-        # game-seconds. Persistent misreads fooled shorter streaks into
-        # minting phantom TCs, and a high-water mark never forgets. One gap
-        # resets the window. The candidate tracks the LOWEST count sustained
-        # throughout - three greens shrinking to two still proves two.
-        # And it only works at all during the opening (see
-        # QUEUE_TC_WINDOW_SECONDS): after two minutes, only the
-        # notification feed may add a Town Centre.
-        if (game_time is None
-                or game_time > QUEUE_TC_WINDOW_SECONDS
-                or training <= self._tcs_queue_high):
+        # Raising the queue's TC evidence takes CONTINUOUS proof in both
+        # time and looks: the count above the current high-water must hold
+        # on every read for QUEUE_TC_CONFIRM_SECONDS spanning at least
+        # QUEUE_TC_CONFIRM_READS reads. A misread or a handover artifact
+        # flickers; a real item stays. One gap resets the window. The
+        # candidate tracks the LOWEST count sustained throughout - three
+        # items shrinking to two still proves two.
+        if game_time is None or in_progress <= self._tcs_queue_high:
             self._training_candidate = None
             self._training_since = None
+            self._training_reads = 0
         else:
             if self._training_candidate is None:
-                self._training_candidate = training
+                self._training_candidate = in_progress
                 self._training_since = game_time
+                self._training_reads = 1
             else:
                 self._training_candidate = min(self._training_candidate,
-                                               training)
+                                               in_progress)
+                self._training_reads += 1
             if (game_time - self._training_since
-                    >= QUEUE_TC_CONFIRM_SECONDS):
+                    >= QUEUE_TC_CONFIRM_SECONDS
+                    and self._training_reads >= QUEUE_TC_CONFIRM_READS):
                 self._tcs_queue_high = self._training_candidate
                 self._training_candidate = None
                 self._training_since = None
+                self._training_reads = 0
         self.tcs_seen = max(self._tcs_notified, self._tcs_queue_high)
         self.tc_busy = min(self.tcs_seen, queued + researching)
         idle_now = self.tcs_seen - self.tc_busy

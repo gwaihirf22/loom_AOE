@@ -241,8 +241,15 @@ from loom.build_order import available_builds
 
 @pytest.fixture
 def library(tmp_path, monkeypatch):
-    """A tiny builds/ directory of my own, so the real library stays out."""
-    monkeypatch.setattr(paths, "BUILDS_DIR", tmp_path)
+    """A tiny builds/ directory of my own, so the real library stays out.
+
+    The search path is what gets replaced, not BUILDS_DIR: build orders are
+    looked up across the player's own folder and the shipped one, so a test
+    that pinned a single directory would be testing something Loom no longer
+    does.
+    """
+    monkeypatch.setattr(paths, "asset_search_path",
+                        lambda kind: (tmp_path,))
     return tmp_path
 
 

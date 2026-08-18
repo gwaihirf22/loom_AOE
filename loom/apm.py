@@ -76,3 +76,21 @@ def align(buckets, pairs):
     return {"t": t_series, "apm": apm_series,
             "keys_total": keys_total, "clicks_total": clicks_total,
             "bucket_seconds": BUCKET_SECONDS}
+
+
+def counted_in_the_overlay(platform):
+    """Does this platform count APM inside the overlay, or as a child process?
+
+    Windows uses Raw Input, which needs a window and a message pump, and the
+    overlay already has both - so loom/apmwin.py runs there and there is no
+    APM child at all. Linux selects XInput2 raw events on the root window,
+    which needs neither, so tools/apm_counter.py stays a separate process.
+
+    One function both the launcher and the overlay ask, because the failure
+    mode of them disagreeing is counting every action twice - which would not
+    look like a bug, it would look like the player having a very good game.
+
+    Takes the platform rather than reading sys.platform, so both answers are
+    testable from either machine and this module stays import-free.
+    """
+    return platform == "win32"

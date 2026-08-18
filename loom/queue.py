@@ -76,15 +76,21 @@ import sys
 import cv2
 import numpy as np
 
-from . import anchor, digits, paths, resources
+from . import anchor, digits, hud, paths, resources
 
 # The first slot's box, in reference pixels, as an offset from the WOOD icon's
 # top-left corner: (dx1, dy1, dx2, dy2). Cells are 48x48. Fitted numerically
-# against a fully packed 15x2 queue (run_20260724_182337/frame_0519) by
-# maximising the image-edge energy under the grid lines, then checked visually
-# against both capture runs. The woven trim below row one is decorative HUD
+# against a fully packed 15x2 queue - frame_0519 of the capture run named
+# run_20260724_182337_annehk_packed-queue-grid-fit - by maximising the
+# image-edge energy under the grid lines, then checked visually against both
+# capture runs. The woven trim below row one is decorative HUD
 # edge - it is there whether or not anything is queued, so it stays outside
 # the box.
+#
+# This is the Anne_HK skin's origin, and the default for callers that pass no
+# profile. The stock bar puts its wood icon in a different place relative to
+# the strip, so hud.STOCK carries its own - fitted the same way. Only the
+# ORIGIN is per-skin; SLOT_PITCH and ROW_PITCH below are the game's grid.
 SLOT_ONE = (-4.5, 60.5, 43.5, 108.5)
 
 # Spacing from one slot to the next along a row, in reference pixels. The queue
@@ -106,6 +112,15 @@ MAX_ROWS = 2
 # Below this score I decide the wood icon is not on screen (a mod replaced the
 # bar, or the HUD is not up) and give no slots rather than reading garbage.
 MIN_WOOD_SCORE = 0.6
+
+# ...and the score alone is not enough. The wood icon is the LEFTMOST thing in
+# the resource bar, so a match out in the middle of the frame is a false
+# positive however well it scored. Measured: the Anne_HK wood template matches
+# the stock bar at x=1078 with score 0.701 - comfortably past the gate above -
+# which would have anchored the whole slot grid a thousand pixels wrong and
+# read confident nonsense off the terrain. A fraction of the frame width, not
+# a pixel count, because the bar's width is the display's.
+MAX_WOOD_X_FRACTION = 0.15
 
 # Occupancy: a cell counts as a slot when at least three of its four border
 # lines show a strong brightness step (mean absolute pixel difference across
@@ -147,7 +162,7 @@ TECH_IDENTITIES = frozenset({
     "feudal_age", "castle_age", "imperial_age",
     "double_bit_axe", "bow_saw", "two_man_saw", "horse_collar",
     "heavy_plow", "gold_mining", "stone_mining", "coinage", "masonry",
-    "ballistics",
+    "ballistics", "hoardings", "pikeman_upgrade",
 })
 
 # The occupancy content gate needs a STRONGER identity than the matcher's
@@ -164,15 +179,72 @@ CONTENT_IDENTITY_SCORE = 0.38
 # search runs again.
 IDENTITY_DROP = 0.12
 
+# When the full search crowns a DIFFERENT name than the cached one, the
+# challenger must beat the incumbent's current score by this much to take
+# the slot. Weak cells re-rank every poll (see _identify_cached), and two
+# similar portraits trade hair's-breadth wins poll to poll - a real
+# villager batch flapped villager/monk around 0.50 and dropped out of the
+# TC busy count each time it lost, dancing the idle alert between 5, 6
+# and 7. A genuine content change wins decisively: the militia batch that
+# once inherited a stale villager name beat it by 0.15.
+IDENTITY_HYSTERESIS = 0.05
 
-def load_wood_template():
-    """Load the wood-icon template as greyscale (the queue's anchor)."""
-    template = cv2.imread(str(paths.TEMPLATES_DIR / "wood_icon.png"),
-                          cv2.IMREAD_GRAYSCALE)
+# Above this correlation a slot crop IS a known piece of civ decoration
+# (see load_decor_templates) and cannot be a queue item. Measured: the
+# harvested tapestry scores 0.95+ against its own later frames, while real
+# queue cards drawn over the same spot score far below - the portrait
+# covers the pattern.
+DECOR_MATCH_SCORE = 0.7
+
+# An identity with NO corroborating wash or count numeral must either
+# score at least this well or beat the runner-up identity by at least the
+# margin below. Junk cells match everything a little (best 0.46-0.52,
+# margin 0.03-0.07 measured on terrain that read as "galley"); a real
+# uncorroborated portrait wins clearly (a green villager measured 0.13).
+# Corroborated cells are exempt: a genuine amber villager batch measured
+# margin 0.05, and its wash already proves something real is drawn there.
+CLEAR_IDENTITY_SCORE = 0.6
+MIN_IDENTITY_MARGIN = 0.08
+
+# A tech identity claim is either excellent or wrong: every real tech
+# icon in the capture corpus reads 0.91+ (the silhouettes are crisp and
+# distinctive), while junk and unit batches peak against tech templates
+# in the 0.4s. A weak "tech" is a misread - and a misread TC tech once
+# credited a TC with wheelbarrow research while a halberdier batch
+# trained, masking a real idle TC.
+TECH_IDENTITY_SCORE = 0.7
+
+
+def load_wood_template(profile=None):
+    """Load a HUD skin's wood-icon template as greyscale (the queue's anchor)."""
+    if profile is None:
+        profile = hud.DEFAULT
+    template = cv2.imread(str(profile.wood_icon), cv2.IMREAD_GRAYSCALE)
     if template is None:
         raise FileNotFoundError(
-            f"Missing wood template: {paths.TEMPLATES_DIR / 'wood_icon.png'}")
+            f"Missing wood template: {profile.wood_icon}")
     return template
+
+
+def load_decor_templates():
+    """Civ UI decorations that hang exactly where queue slots sit.
+
+    Some civilizations drape artwork from the resource bar right through
+    the queue grid - the red tapestry did more than fake a slot: its
+    saturated red read as a BLOCKED villager group, which marked one TC
+    busy forever and turned a six-TC "6 idle" into "5 TCs IDLE" in a live
+    game. The content gate cannot catch it (a wash IS content), so known
+    decorations are matched explicitly and excluded. Harvested per art
+    from capture frames, like every other template; an empty directory
+    just means no decor is known yet.
+    """
+    templates = []
+    for path in sorted(glob.glob(str(paths.TEMPLATES_DIR / "queue_decor"
+                                     / "*.png"))):
+        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if image is not None:
+            templates.append(image)
+    return templates
 
 
 def find_wood_icon(frame_bgr, wood_template, scale):
@@ -190,16 +262,29 @@ def find_wood_icon(frame_bgr, wood_template, scale):
     match = resources._match_at_scale(search_area, wood_template, scale)
     if match is None or match[0] < MIN_WOOD_SCORE:
         return None
+    if not _wood_position_is_plausible(match[1], frame_bgr.shape[1]):
+        return None
     return match  # (score, x, y)
 
 
-def slot_boxes(wood_x, wood_y, scale, per_row=SLOTS_PER_ROW, rows=MAX_ROWS):
+def _wood_position_is_plausible(wood_x, frame_width):
+    """Is a match somewhere the leftmost resource icon could actually be?
+
+    A frame that is only the queue strip is already narrow, so the fraction is
+    measured against whatever width was handed in - the strip starts at the
+    frame's left edge either way, which is the thing that matters.
+    """
+    return wood_x <= max(60, frame_width * MAX_WOOD_X_FRACTION)
+
+
+def slot_boxes(wood_x, wood_y, scale, per_row=SLOTS_PER_ROW, rows=MAX_ROWS,
+               slot_one=None):
     """Return the candidate slot boxes, row by row, left to right.
 
     Each box is (x1, y1, x2, y2) in frame coordinates. These are only *where a
     slot would be* - whether a slot is actually occupied is a later step.
     """
-    dx1, dy1, dx2, dy2 = SLOT_ONE
+    dx1, dy1, dx2, dy2 = SLOT_ONE if slot_one is None else slot_one
     boxes = []
     for row in range(rows):
         for col in range(per_row):
@@ -214,7 +299,7 @@ def slot_boxes(wood_x, wood_y, scale, per_row=SLOTS_PER_ROW, rows=MAX_ROWS):
     return boxes
 
 
-def locate_slots(frame_bgr, wood_template, scale):
+def locate_slots(frame_bgr, wood_template, scale, slot_one=None):
     """Find the wood anchor and return the queue's candidate slot boxes.
 
     Returns {"wood_score", "wood": (x, y), "slots": [box, ...]} or None if the
@@ -228,7 +313,7 @@ def locate_slots(frame_bgr, wood_template, scale):
     return {
         "wood_score": score,
         "wood": (wood_x, wood_y),
-        "slots": slot_boxes(wood_x, wood_y, scale),
+        "slots": slot_boxes(wood_x, wood_y, scale, slot_one=slot_one),
     }
 
 
@@ -344,15 +429,21 @@ def count_occupied(frame_gray, boxes):
     return len(boxes)
 
 
-def classify_tint(cell_bgr):
+def classify_tint(cell_bgr, scale=1.0):
     """Return (tint, progress) for one occupied slot crop.
 
     tint is 'green', 'red', 'amber', or None for the plain dark portrait of a
     group that is waiting its turn. progress is only meaningful for green: the
     wash fills left to right as the item completes, so the fraction of columns
     it covers IS the completion fraction.
+
+    The interior margin is in reference pixels and must scale with the cell:
+    a fixed [4:44] read only the top-left corner of a 150%-HUD cell and
+    clipped nothing off a 75% one, quietly skewing every wash fraction.
     """
-    interior = cell_bgr[4:44, 4:44]
+    lo = int(round(4 * scale))
+    hi = int(round(44 * scale))
+    interior = cell_bgr[lo:hi, lo:hi]
     hsv = cv2.cvtColor(interior, cv2.COLOR_BGR2HSV)
     hue = hsv[:, :, 0].astype(int)
     saturated = hsv[:, :, 1] > MIN_TINT_SATURATION
@@ -377,7 +468,7 @@ def classify_tint(cell_bgr):
     return None, None
 
 
-def read_count(cell_bgr, count_templates):
+def read_count(cell_bgr, count_templates, scale=1.0):
     """Read the group-count numeral from a slot crop. None if unreadable.
 
     The numeral is pale against whatever tint covers the portrait. Two masks
@@ -387,14 +478,22 @@ def read_count(cell_bgr, count_templates):
     the tints change how bright "bright" is. Misreads fail the glyph match and
     return None - per the never-guess rule, a gap beats a wrong count.
     """
-    corner = cell_bgr[1:37, 1:27]
+    # The numeral corner is in reference pixels; scaled like the cell, or an
+    # off-100% HUD reads the wrong patch of the portrait.
+    corner = cell_bgr[int(round(1 * scale)):int(round(37 * scale)),
+                      int(round(1 * scale)):int(round(27 * scale))]
     channel_min = corner.min(axis=2)
     brightness = corner.max(axis=2)
     mask = ((channel_min > max(100, int(channel_min.max() * 0.68)))
             | (brightness > max(120, int(brightness.max() * 0.82))))
     mask = resources._keep_digit_shapes(mask.astype(np.uint8) * 255)
 
-    found, _ = digits.read_binary(mask, count_templates, min_glyph_width=5)
+    # The speck gate shrinks with the HUD but never grows past its tuned
+    # reference value - a wider gate is how the reader once swallowed a
+    # thin "1" (see reader.min_glyph_width for that story).
+    min_glyph = max(4, min(int(5 * scale), 5))
+    found, _ = digits.read_binary(mask, count_templates,
+                                  min_glyph_width=min_glyph)
     return None if found is None else digits.digits_to_int(found)
 
 
@@ -405,20 +504,41 @@ def _match_variants(cell_gray, variants):
                for template in variants)
 
 
+# Identities that are the same thing in different clothes. The margin
+# below is "how clearly did the winner beat everything ELSE" - and a
+# female villager outscoring the male by a whisker is not ambiguity, it
+# is a villager. Without this, every real villager cell carried a
+# near-zero margin against its own sibling.
+FAMILY = {"villager_male": "villager", "villager_female": "villager"}
+
+
 def identify(cell_gray, icon_templates):
-    """Best-matching icon for a slot crop, as (name, score).
+    """Best-matching icon for a slot crop, as (name, score, margin).
 
     Plain normalised correlation over every template variant. This is the
     expensive call, which is why QueueReader caches its results - see read().
+
+    margin is how far the winner beats the best identity outside its own
+    FAMILY. It is the tell that separates a real match from junk: terrain
+    that sneaks past the occupancy edge test - and any icon the template
+    set does not know - matches everything a little and nothing well
+    (measured: "galley" at 0.46-0.52 with the runner-up 0.03-0.06 behind;
+    an unknown Armenian icon at 0.42 with castle_age 0.42 right behind),
+    while a real portrait wins clearly.
     """
+    scores = {}
     best_name, best_score = None, -1.0
     for name, variants in icon_templates.items():
         score = _match_variants(cell_gray, variants)
+        scores[name] = score
         if score > best_score:
             best_name, best_score = name, score
     if best_score < MIN_IDENTITY_SCORE:
-        return None, best_score
-    return best_name, best_score
+        return None, best_score, 0.0
+    family = FAMILY.get(best_name, best_name)
+    second = max((s for n, s in scores.items()
+                  if FAMILY.get(n, n) != family), default=-1.0)
+    return best_name, best_score, max(0.0, best_score - second)
 
 
 def reconcile_identity_and_count(identity, score, count):
@@ -448,13 +568,18 @@ def reconcile_identity_and_count(identity, score, count):
 class SlotReading:
     """What one occupied queue slot showed this poll."""
 
-    def __init__(self, index, tint, progress, count, identity, identity_score):
+    def __init__(self, index, tint, progress, count, identity, identity_score,
+                 identity_margin=None):
         self.index = index                    # 0-29, reading order
         self.tint = tint                      # 'green' | 'red' | 'amber' | None
         self.progress = progress              # 0.0-1.0 for green, else None
         self.count = count                    # group size, or None if unreadable
         self.identity = identity              # template name, or None if unsure
         self.identity_score = identity_score
+        # How clearly the identity beat every other family, when the full
+        # search ran this poll; None when the answer came from the cache
+        # or hysteresis (the score speaks for those).
+        self.identity_margin = identity_margin
 
     def __repr__(self):
         return (f"Slot({self.index}: {self.identity or '?'}"
@@ -470,14 +595,17 @@ class QueueReader:
     again, so the full template sweep only runs when a slot's content changes.
     """
 
-    def __init__(self):
-        self.wood_template = load_wood_template()
+    def __init__(self, profile=None):
+        self.profile = profile or hud.DEFAULT
+        self.wood_template = load_wood_template(self.profile)
         self.icon_templates = load_icon_templates()
         self.count_templates = load_count_templates()
+        self.decor_templates = load_decor_templates()
         # Icon templates resized for a non-100% HUD, built lazily the first
         # time an off-unit scale is seen and cached - the HUD scale cannot
         # change mid-game, so this happens at most once per session.
         self._scaled_icons = {}
+        self._scaled_decor = {}
         # Per slot index: (identity, score at identification time).
         self._cache = {}
         # Where the wood icon was last seen. The HUD never moves during play,
@@ -485,6 +613,21 @@ class QueueReader:
         # icon in a small window around this spot - the difference between a
         # ~5 ms poll and a ~1 ms one.
         self._wood = None
+
+    def use_profile(self, profile):
+        """Switch to the HUD skin the anchor identified.
+
+        The reader calls this once the skin is known. Cheap and idempotent,
+        but it does drop the wood position: the icon it was tracking belonged
+        to the old skin's art, and a cached position from the wrong picture is
+        the sort of thing that reads plausible garbage for a whole game.
+        """
+        if profile is self.profile:
+            return
+        self.profile = profile
+        self.wood_template = load_wood_template(profile)
+        self._wood = None
+        self._cache = {}
 
     def _find_wood(self, frame_gray, scale, search_height):
         """The wood icon's position, from cache when it still verifies.
@@ -513,6 +656,11 @@ class QueueReader:
         if match is None or match[0] < MIN_WOOD_SCORE:
             self._wood = None
             return None
+        # Score alone has let a wrong-skin match through at x=1078; the icon
+        # is the leftmost thing in the bar or it is not the icon.
+        if not _wood_position_is_plausible(match[1], frame_gray.shape[1]):
+            self._wood = None
+            return None
         self._wood = (match[1], match[2])
         return self._wood
 
@@ -533,7 +681,8 @@ class QueueReader:
             self._cache.clear()
             return None
 
-        boxes = slot_boxes(wood[0], wood[1], scale)
+        boxes = slot_boxes(wood[0], wood[1], scale,
+                           slot_one=self.profile.slot_one)
         self._use_templates_for(scale)
         occupied = count_occupied(frame_gray, boxes)
 
@@ -543,9 +692,18 @@ class QueueReader:
             cell_bgr = frame_bgr[y1:y2, x1:x2]
             cell_gray = frame_gray[y1:y2, x1:x2]
 
-            tint, progress = classify_tint(cell_bgr)
-            count = read_count(cell_bgr, self.count_templates)
-            identity, score = self._identify_cached(index, cell_gray)
+            # Known civ decoration showing through means no item is drawn
+            # here - and the queue is a contiguous prefix, so it ends here.
+            # This must run before the tint check: the tapestry's saturated
+            # red passes the content gate as a "blocked" wash.
+            if self._is_decor(cell_gray, scale):
+                occupied = index
+                break
+
+            tint, progress = classify_tint(cell_bgr, scale)
+            count = read_count(cell_bgr, self.count_templates, scale)
+            identity, score, margin = self._identify_cached(
+                index, cell_gray, tint is not None or count is not None)
             identity, count = reconcile_identity_and_count(identity, score,
                                                            count)
 
@@ -553,23 +711,53 @@ class QueueReader:
             # several civs hang decorative UI art exactly where slot one
             # sits, and decor draws box-like edges too. A real queue item
             # always shows at least one piece of CONTENT - a wash, a count
-            # numeral, or a CONVINCING icon match (see CONTENT_IDENTITY_SCORE
-            # for why a borderline one is not enough here). Decor shows none.
-            # The queue is a contiguous prefix, so the first contentless cell
-            # ends it.
-            if (tint is None and count is None
-                    and score < CONTENT_IDENTITY_SCORE):
+            # numeral, or a CONFIDENT identity. Identity is the right test
+            # rather than a raw score: with five hundred templates, junk
+            # always lucks past any fixed score against SOMETHING, but the
+            # clear-win and margin gates in _identify_cached have already
+            # turned an unconvincing match into None by the time it gets
+            # here. Decor shows none of the three. The queue is a
+            # contiguous prefix, so the first contentless cell ends it.
+            if tint is None and count is None and identity is None:
                 occupied = index
                 break
 
             readings.append(SlotReading(index, tint, progress, count,
-                                        identity, score))
+                                        identity, score, margin))
 
         # Slots past the believed end of the queue no longer exist.
         for index in [i for i in self._cache if i >= occupied]:
             del self._cache[index]
 
         return readings
+
+    def _is_decor(self, cell_gray, scale):
+        """Is this cell a known piece of civ decoration, not a queue item?
+
+        A real card drawn over the decoration covers its pattern, so this
+        only matches when nothing is actually queued in the slot.
+        """
+        for template in self._decor_for(scale):
+            if (template.shape[0] > cell_gray.shape[0]
+                    or template.shape[1] > cell_gray.shape[1]):
+                continue
+            score = cv2.matchTemplate(cell_gray, template,
+                                      cv2.TM_CCOEFF_NORMED).max()
+            if score >= DECOR_MATCH_SCORE:
+                return True
+        return False
+
+    def _decor_for(self, scale):
+        """Decor templates sized for this HUD scale, cached like the icons."""
+        key = round(scale, 2)
+        if abs(key - 1.0) <= 0.02 or not self.decor_templates:
+            return self.decor_templates
+        if key not in self._scaled_decor:
+            self._scaled_decor[key] = [
+                cv2.resize(t, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_AREA)
+                for t in self.decor_templates]
+        return self._scaled_decor[key]
 
     def _use_templates_for(self, scale):
         """Point identification at templates sized for this HUD scale.
@@ -591,24 +779,77 @@ class QueueReader:
             }
         self.icon_templates = self._scaled_icons[key]
 
-    def _identify_cached(self, index, cell_gray):
-        """Identify a slot, re-using the cached answer while it still fits."""
+    def _identify_cached(self, index, cell_gray, has_content):
+        """Identify a slot, re-using the cached answer while it still fits.
+
+        has_content says whether a wash or a count numeral corroborates
+        this cell. Fresh identifications are vetted before they are cached
+        or believed: an uncorroborated identity must win clearly (see
+        CLEAR_IDENTITY_SCORE / MIN_IDENTITY_MARGIN), and a tech claim must
+        be excellent (TECH_IDENTITY_SCORE) whatever the corroboration -
+        both gates turn confident-sounding junk into an honest None.
+        """
+        incumbent = None            # (cached name, its score on THIS cell)
         cached = self._cache.get(index)
         if cached is not None:
             name, score_then = cached
             variants = self.icon_templates.get(name)
             if variants:
                 score_now = _match_variants(cell_gray, variants)
-                if score_now >= max(MIN_IDENTITY_SCORE,
-                                    score_then - IDENTITY_DROP):
-                    return name, score_now
+                # The drop-check alone is not enough to reuse a name: queue
+                # contents shift left as groups finish, and a DIFFERENT
+                # unit can score almost as well as the old one against the
+                # old one's template - a militia batch inherited a cached
+                # "villager_male" at 0.49 for its whole training run and
+                # minted a phantom TC, while a fresh search ranked militia
+                # 0.64. A weakly-scoring cached name must re-earn its slot
+                # through the full search below.
+                if (score_now >= max(MIN_IDENTITY_SCORE,
+                                     score_then - IDENTITY_DROP)
+                        and score_now >= CLEAR_IDENTITY_SCORE):
+                    return name, score_now, None
+                incumbent = (name, score_now)
 
-        identity, score = identify(cell_gray, self.icon_templates)
+        identity, score, margin = identify(cell_gray, self.icon_templates)
+
+        # A slot that held a believed item on the LAST poll corroborates this
+        # one, exactly as a wash or a count numeral does. What the
+        # uncorroborated gate is really asking is "is anything actually drawn
+        # here, or is this terrain and decoration?", and a cell that was a
+        # queue item 300ms ago has already answered that: decoration does not
+        # come and go, and a slot that genuinely empties has its cache entry
+        # deleted below, so nothing stale can vouch for it.
+        #
+        # Without this, the moment that costs the most is the one right after
+        # an item is queued. Measured live on stock: a villager placed but
+        # not yet washed reads villager_male at 0.585 with a margin of 0.04 -
+        # the RIGHT answer, fifteen thousandths under the gate. It was thrown
+        # away, the cell then showed no wash, no count and no identity, the
+        # content gate below ended the queue at that slot, and the queue read
+        # EMPTY with a villager plainly training. Two such polls and the
+        # tracker announced TC IDLE while the Town Centre was working.
+        corroborated = has_content or cached is not None
+        if (identity is not None and not corroborated
+                and score < CLEAR_IDENTITY_SCORE
+                and margin < MIN_IDENTITY_MARGIN):
+            identity = None
+        if identity in TECH_IDENTITIES and score < TECH_IDENTITY_SCORE:
+            identity = None
+        # Hysteresis: a challenger takes an occupied slot only by beating
+        # the incumbent decisively (IDENTITY_HYSTERESIS). Weak cells
+        # re-rank every poll, and two similar portraits trading
+        # hair's-breadth wins must not flap the identity - and with it the
+        # TC busy count - poll to poll.
+        if (incumbent is not None and identity is not None
+                and identity != incumbent[0]
+                and incumbent[1] >= MIN_IDENTITY_SCORE
+                and score - incumbent[1] < IDENTITY_HYSTERESIS):
+            (identity, score), margin = incumbent, None
         if identity is not None:
             self._cache[index] = (identity, score)
         else:
             self._cache.pop(index, None)
-        return identity, score
+        return identity, score, margin
 
 
 def draw_debug(frame_bgr, found):
@@ -629,7 +870,10 @@ def main():
         print("usage: python -m loom.queue <frame.png> [more.png ...]")
         return
 
-    pop_template = anchor.load_template()
+    pop_templates = {profile: anchor.load_template(profile)
+                     for profile in hud.PROFILES}
+    wood_templates = {profile: load_wood_template(profile)
+                      for profile in hud.PROFILES}
     reader = QueueReader()
 
     for path in sys.argv[1:]:
@@ -638,12 +882,15 @@ def main():
             print(f"{path}: could not read")
             continue
 
-        # The population anchor establishes the HUD scale for everything else.
-        pop_match = anchor.find_icon(frame, pop_template)
+        # The population anchor establishes both the HUD scale and which skin
+        # the queue's own geometry should come from.
+        pop_match = anchor.identify_hud(frame, pop_templates,
+                                        wood_templates=wood_templates)
         if pop_match is None:
             print(f"{path}: no population anchor")
             continue
-        scale = pop_match[3]
+        scale = pop_match["scale"]
+        reader.use_profile(pop_match["profile"])
 
         readings = reader.read(frame, scale)
         reader._cache.clear()   # each frame judged fresh in the debug tool
@@ -651,10 +898,12 @@ def main():
             print(f"{path}: no wood anchor")
             continue
 
-        found = locate_slots(frame, reader.wood_template, scale)
+        found = locate_slots(frame, reader.wood_template, scale,
+                             slot_one=reader.profile.slot_one)
         out_path = path.replace(".png", "_queue_debug.png")
         cv2.imwrite(out_path, draw_debug(frame, found))
-        print(f"{path}: {len(readings)} occupied -> {out_path}")
+        print(f"{path}: hud={pop_match['profile'].name} "
+              f"{len(readings)} occupied -> {out_path}")
         for slot in readings:
             print(f"   {slot}")
 

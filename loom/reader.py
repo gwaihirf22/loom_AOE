@@ -13,9 +13,10 @@ copy of it.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import os
 import time
 
-from . import (anchor, capture, digits, filters, glyphs, notifications,
+from . import (anchor, capture, digits, filters, glyphs, hud, notifications,
                queue, resources, session)
 
 # Below this template-match score I assume the HUD is not visible - a menu, a
@@ -25,34 +26,104 @@ MIN_ANCHOR_SCORE = 0.8
 # How many unreadable polls in a row before I go looking for the HUD again.
 FAILURES_BEFORE_REANCHOR = 10
 
+# When one whole poll costs more than this, the machine is overloaded and the
+# advisory readers drop to a slower cadence. Well above a healthy poll (about
+# 100ms on the Linux box) and well below the pathology it exists for: under a
+# 4K game's CPU load, polls measured 0.5-5.5 SECONDS, so the overlay was
+# showing values read seconds ago - which the player experiences as the
+# overlay running behind the game.
+POLL_BUDGET = 0.5
 
-def min_glyph_width(scale):
+# How often each advisory reader runs while overloaded: every Nth POLL, not
+# every N seconds. The first version used wall-time intervals and shed
+# nothing at all - with polls taking two seconds, a one-second interval has
+# always expired by the next poll, so every reader ran every poll anyway.
+# Counting polls throttles the WORK SHARE whatever the cadence is.
+#
+# The sync signals (villager count, clock, population) are never shed - they
+# are cheap and they are the point. These three tolerate gaps by
+# construction: a skipped queue poll returns None, which the production
+# tracker already treats as "no news"; notification lines persist on screen
+# for several seconds, and the watchers de-duplicate on their own cooldowns;
+# per-resource counts are advisory display only.
+ADVISORY_EVERY_NTH_POLL = {
+    "queue": 2,
+    "notifications": 3,
+    "resources": 5,
+}
+
+
+def min_glyph_width(scale, profile=None):
     """The narrowest column run still worth treating as a character.
 
-    Its job is to skip specks, so it has to stay BELOW the narrowest real
-    digit at every HUD scale. "1" is that digit, and it is far thinner than
-    its siblings - measured 7px against 12-13px for the rest in the same
-    population band.
+    The formula itself belongs to the HUD skin (see loom/hud.py): the stock
+    bar draws a font about four fifths the size of the mod's, and the value
+    below - correct for the mod for months - silently discarded stock's
+    3px-wide slash, so population read as nothing on a legible HUD. The
+    override and the reasoning stay here, where they have always been.
 
-    This used to be int(6 * scale), which overtakes "1" as the HUD grows: at
-    scale 1.37 it returned 8 and the reader skipped a 7px "1", turning a
-    population of 19/25 into 9/25 and 18 villagers into 8. A silently halved
-    villager count is the exact failure Loom is built to refuse, and it was
-    reporting it confidently.
+    Two jobs pull this number in opposite directions. In the clock band it is
+    the colon test - runs narrower than it are the colons between HH:MM:SS -
+    so it must sit ABOVE the colons. In every band it must sit BELOW the
+    narrowest digit, which is "1", or real ones get silently skipped.
 
-    The multiplier is deliberately gentle now. Measured against every clock
-    fixture in tests/data/clock, all four read correctly at 2-5 while the old
-    formula's value of 6 already broke two of them at scale 1.0 - so the
-    tests were only passing because they hand in a gentler number than the
-    runtime used. Nothing is lost by going low: specks are dropped by shape in
-    digits._keep_text_shapes long before this, and anything that survives
-    still has to beat digits.MIN_MATCH_SCORE to be called a digit.
+    max(4, int(6 * scale)) held both jobs for months of live play at scale
+    ~1.0, and that service record is the evidence that matters. It has ONE
+    measured failure: above scale ~1.15 it overtakes the "1", which does not
+    grow as fast as the anchor icon does - at anchor scale 1.37 the formula
+    said 8 while the "1" measured 7px, so a population of 19/25 read as 9/25
+    and 18 villagers as 8, confidently. Hence the cap: never past 6, which
+    stays under the thinnest "1" yet measured while every reading on the 4K
+    frame that exposed the bug still parses (villagers, population and clock
+    all read at width 6 there).
 
-    The floor is 3, not 4, for the same reason the multiplier came down. A
-    shrunken HUD puts "1" at three and a half pixels, so a floor of 4 outgrows
-    the digit exactly as the old multiplier did, only from the other end.
+    A CAUTIONARY NOTE, expensively learned. An earlier version replaced the
+    formula wholesale with int(4 * scale), justified by the clock fixtures in
+    tests/data/clock reading at widths 2-5 while 6 broke two of them. Those
+    fixtures are RESCALED screenshots - their own docstring says so - not
+    native-size crops, so they describe smaller glyphs than the live game
+    ever shows. The gentler value promptly caused live misreads on BOTH
+    platforms: wrong villager counts, a clock that lagged as StableClock
+    kept rejecting garbage, and an overlay that could no longer attach to a
+    match in progress (mid-game clock values misread too often to ever
+    confirm; only the mostly-zeros opening read reliably). Fixture evidence
+    is not live evidence.
+
+    LOOM_MIN_GLYPH_WIDTH overrides the answer outright, so the number can be
+    A/B-tested against a live game in seconds rather than by editing code:
+
+        LOOM_MIN_GLYPH_WIDTH=5 python loom_read.py
+
+    Watch the `raw:` column and the villager-JUMP lines.
     """
-    return max(3, int(4 * scale))
+    override = os.environ.get("LOOM_MIN_GLYPH_WIDTH")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    return (profile or hud.DEFAULT).min_glyph_width(scale)
+
+
+def max_glyph_width(scale, profile=None):
+    """How wide one character may be before it is two characters touching.
+
+    The sibling mistake to min_glyph_width, and found the same way. The
+    population parser splits any run wider than this at its thinnest column,
+    which is right for a slash brushing the digit after it and disastrous for
+    a digit that is simply large: measured at HUD scale 1.48, a "4" is 15px
+    and a "5" is 14px, so the fixed 13 halved both and "4/5" read as nothing.
+
+    Never below the reference 13, so at HUD scale 1.0 and under this is
+    exactly the constant that has always been used and nothing changes. Erring
+    LARGE is the safe direction: too large merely leaves a genuine pair fused,
+    which fails to classify and reports no reading, while too small carves a
+    real digit into halves that classify as something else entirely.
+
+    Like its sibling, the formula is the HUD skin's - a smaller font needs a
+    smaller "too wide to be one glyph" mark.
+    """
+    return (profile or hud.DEFAULT).max_glyph_width(scale)
 
 
 class Reading:
@@ -114,7 +185,7 @@ class HudReader:
         self.hud = None
 
         self._display = None
-        self._icon_template = None
+        self._icon_templates = {}
         self._digit_templates = None
         self._resource_templates = None
         self._resource_regions = {}
@@ -134,6 +205,23 @@ class HudReader:
         self._session = session.GameSession()
 
         self._failures_in_a_row = 0
+        # Whether the last poll could see the screen at all, so the complaint
+        # is printed on the transition rather than three times a second.
+        self._capture_failed = False
+
+        # Whether the "your HUD is too big to read" note has been printed;
+        # once is information, every two seconds is noise.
+        self._warned_oversize = False
+        # Same, for "something is there but no skin fits it well enough".
+        self._warned_weak_anchor = False
+
+        # Load shedding: how long the previous poll took, which poll this is,
+        # and the poll number each advisory reader last ran on. See
+        # POLL_BUDGET.
+        self._last_poll_cost = 0.0
+        self._poll_number = 0
+        self._advisory_ran = {}
+        self._per_resource_cache = {}
 
     # ---- setting up ----------------------------------------------------
 
@@ -155,9 +243,20 @@ class HudReader:
                 return False
             time.sleep(poll_interval)
 
-        self._icon_template = anchor.load_template()
+        # One anchor template per HUD skin. Which one the player is running is
+        # not knowable in advance - mods only switch when the game restarts -
+        # so both are loaded and find_hud lets the pixels decide.
+        self._icon_templates = {profile: anchor.load_template(profile)
+                                for profile in hud.PROFILES}
+        # The second opinion that tells the skins apart - see identify_hud.
+        self._wood_templates = {profile: queue.load_wood_template(profile)
+                                for profile in hud.PROFILES}
         self._digit_templates = digits.load_digit_templates()
-        self._resource_templates = resources.load_resource_templates()
+        # Per skin, like the anchors: the four icons are skin art too, and
+        # the mod's food icon matches a stock bar at 0.62 out in the terrain.
+        self._resource_templates = {
+            profile: resources.load_resource_templates(profile)
+            for profile in hud.PROFILES}
 
         # The queue reader is optional equipment: without its templates the
         # rest of Loom still works, it just cannot see production.
@@ -183,31 +282,110 @@ class HudReader:
         This is the slow step - a few hundred milliseconds - which is why it
         runs once rather than on every poll. The HUD does not move during a
         game, so the regions stay valid until something changes.
+
+        A capture failure here reads as "no HUD yet", not as an error. This is
+        called from wait_for_hud, which is happy to keep waiting, and from the
+        re-anchor path inside a poll, where raising would defeat the point of
+        poll() guarding itself.
         """
-        frame = capture.capture_window(self.window)
-        found = anchor.locate_regions(frame, self._icon_template)
+        try:
+            frame = capture.capture_window(self.window)
+        except capture.CaptureError:
+            return False
+
+        # Re-anchoring can say what size the HUD was last time, which turns a
+        # full scale sweep into a nine-step one. The HUD does not resize during
+        # a match - changing the in-game scale needs an overlay restart anyway -
+        # so the old scale is a good guess. It matters because this runs INSIDE
+        # poll() on the re-anchor path: at 4K the full sweep took 15 seconds,
+        # and the overlay is frozen for every one of them.
+        known_scale = self.hud.get("scale") if self.hud else None
+
+        # Once a skin has been identified, re-anchoring only re-checks that
+        # one: the player cannot swap a UI mod without restarting the game, so
+        # the answer cannot change inside a session. It still goes through
+        # identify_hud rather than locate_regions, so that "score" means the
+        # same thing on both paths - two icons agreeing, not one matching.
+        known_profile = self.hud.get("profile") if self.hud else None
+        candidates = ({known_profile: self._icon_templates[known_profile]}
+                      if known_profile is not None else self._icon_templates)
+        found = anchor.identify_hud(frame, candidates, known_scale,
+                                    self._wood_templates)
+
+        # A narrow sweep can miss if the HUD really did change size. Falling
+        # back to the full hunt costs a slow poll once, where not falling back
+        # would mean never finding the HUD again. The fallback re-opens the
+        # skin question too - if the old skin no longer fits, another might.
+        if (found is None or found["score"] < MIN_ANCHOR_SCORE) and known_scale:
+            found = anchor.identify_hud(frame, self._icon_templates,
+                                        wood_templates=self._wood_templates)
 
         if found is None or found["score"] < MIN_ANCHOR_SCORE:
+            # A HUD that is FOUND but scores under the gate used to be
+            # indistinguishable from no HUD at all: wait_for_hud looped on the
+            # silent False forever while "Waiting for a match to start..."
+            # stayed on screen. That is exactly what the stock HUD did (0.74
+            # against a 0.80 gate) before it had templates of its own, and
+            # with no message there was nothing to go on. Said once, because
+            # the answer cannot change while the same art is on screen.
+            if found is not None and not self._warned_weak_anchor:
+                self._warned_weak_anchor = True
+                print(f"note: the closest HUD match was "
+                      f"'{found['profile'].name}' at {found['score']:.2f}, "
+                      f"under the {MIN_ANCHOR_SCORE:.2f} Loom needs. If a "
+                      "match really is on screen, this usually means a UI mod "
+                      "Loom has no templates for.")
+
+            # Before giving the silent False that wait_for_hud will loop on
+            # forever: is the HUD present but BIGGER than the search can see?
+            # A game rendering below the display's resolution gets upscaled by
+            # the compositor - 1080p on a 4K screen puts the HUD at ~2.9x -
+            # and the difference between "no HUD yet" and "this HUD can never
+            # be found" is a player's whole evening. Checked once, because the
+            # answer cannot change without the game's settings changing.
+            if not self._warned_oversize:
+                oversize = anchor.icon_beyond_range(
+                    frame, self._icon_templates[hud.DEFAULT])
+                if oversize is not None:
+                    self._warned_oversize = True
+                    print(f"note: the HUD appears ~{oversize:.1f}x the size "
+                          "Loom can read (limit 2.0x). This usually means the "
+                          "game is rendering below the display's resolution "
+                          "and being upscaled - set the game's resolution to "
+                          "match the display.")
             return False
 
         height, width = frame.shape[:2]
+        profile = found["profile"]
         self.hud = {
             "scale": found["scale"],
             "score": found["score"],
+            "profile": profile,
             "villagers": _clamp(found["villagers"], width, height),
             "clock": _clamp(found["clock_band"], width, height),
             "population": _clamp(found["population"], width, height),
             # Digits get thinner as the HUD shrinks, so the speck test has to
             # shrink with it - and must never overtake the narrowest digit.
-            "min_glyph_width": min_glyph_width(found["scale"]),
+            # The skin sets the formula: its font may be a different size
+            # relative to the anchor that scales it.
+            "min_glyph_width": min_glyph_width(found["scale"], profile),
+            # ...and wider as it grows, or the "two characters touching" split
+            # starts cutting single large digits in half.
+            "max_glyph_width": max_glyph_width(found["scale"], profile),
         }
+
+        # The queue hangs off its own anchor in the same bar, and that anchor
+        # is skin art too. Hand the reader the matching template and grid
+        # origin, or it locates the strip against the wrong picture.
+        if self._queue_reader is not None:
+            self._queue_reader.use_profile(profile)
 
         # The resource icons sit in the same bar and do not move either, so
         # locate their number regions once too. A failure here is not fatal:
         # per-resource counts are a nicety, and the rest of Loom works without
         # them.
         self._resource_regions = resources.locate_regions(
-            frame, self._resource_templates, found["scale"])
+            frame, self._resource_templates[profile], found["scale"], profile)
 
         # Loom reads best with the in-game HUD scale at 100%: every other
         # region scales off the anchor and follows along, but recognition
@@ -232,7 +410,60 @@ class HudReader:
     # ---- reading -------------------------------------------------------
 
     def poll(self):
-        """Read the screen once and return a Reading."""
+        """Read the screen once and return a Reading.
+
+        A capture failure degrades to an unreadable poll instead of escaping.
+        Nothing upstream catches anything: LiveController.tick calls this bare
+        from a Qt timer, so one BadWindow when the game exits, or one refusal
+        while the window is not being composited, used to take the overlay
+        down mid-match. "No reading" is a state Loom already knows how to show.
+        """
+        started = time.monotonic()
+        try:
+            return self._poll_once()
+        except capture.CaptureError as problem:
+            return self._unreadable(problem)
+        finally:
+            self._last_poll_cost = time.monotonic() - started
+
+    def _unreadable(self, problem):
+        """A poll that could not see the screen at all.
+
+        The session tracker still gets told, and told the truth: passing a
+        stale value would stop it ever noticing the game went away, which is
+        the whole reason it exists. Everything else comes back empty rather
+        than held over.
+        """
+        # Say it once, on the way in and on the way out. At three polls a
+        # second an unguarded print would bury every other line in the log.
+        if not self._capture_failed:
+            self._capture_failed = True
+            print(f"capture unavailable: {problem}")
+
+        self._failures_in_a_row += 1
+        event = self._session.update(None, None)
+        return Reading(None, None, event, False)
+
+    def _advisory_due(self, name):
+        """Whether an advisory reader should run this poll.
+
+        On a healthy machine: always, exactly the behaviour Loom has always
+        had. When the previous poll ran over POLL_BUDGET - measured, not
+        guessed - each advisory reader runs only every Nth poll, so the poll
+        spends its time on the sync signals instead of stretching to seconds
+        and showing the player stale ones.
+        """
+        if self._last_poll_cost <= POLL_BUDGET:
+            return True
+        last = self._advisory_ran.get(name)
+        if last is None or self._poll_number - last >= ADVISORY_EVERY_NTH_POLL[name]:
+            self._advisory_ran[name] = self._poll_number
+            return True
+        return False
+
+    def _poll_once(self):
+        """Read the screen once, assuming capture works."""
+        self._poll_number += 1
         raw_villagers, _ = digits.read_count(
             self._read_region(self.hud["villagers"]),
             self._digit_templates,
@@ -255,6 +486,7 @@ class HudReader:
             self.last_population_band,
             self._digit_templates,
             self.hud["min_glyph_width"],
+            self.hud["max_glyph_width"],
         )
         if raw_population[0] is None:
             raw_population = None
@@ -263,7 +495,7 @@ class HudReader:
         # A stale population is worse than none: the filter holds its last
         # belief through unreadable polls (right for the villager count),
         # but population drives the HOUSED alerts - a "4/5" held for a
-        # minute keeps shouting HOUSE NOW long after the real pop moved on.
+        # minute keeps shouting HOUSE SOON long after the real pop moved on.
         # After ~3 seconds of failed reads the belief expires; it returns
         # the moment a fresh pair is confirmed.
         if raw_population is None:
@@ -275,23 +507,29 @@ class HudReader:
 
         # Read each resource's yellow number. Advisory only, and unfiltered:
         # they change slowly enough that a rare misread is corrected on the
-        # next poll, and nothing important depends on them.
-        per_resource = {}
-        for name, region in self._resource_regions.items():
-            count = resources.read_one(
-                self._read_region(region),
-                self._digit_templates,
-                self.hud["min_glyph_width"],
-            )
-            if count is not None:
-                per_resource[name] = count
+        # next poll, and nothing important depends on them. Under load the
+        # cache stands in - second-old advisory numbers beat a stretched poll.
+        if self._advisory_due("resources"):
+            per_resource = {}
+            for name, region in self._resource_regions.items():
+                count = resources.read_one(
+                    self._read_region(region),
+                    self._digit_templates,
+                    self.hud["min_glyph_width"],
+                )
+                if count is not None:
+                    per_resource[name] = count
+            self._per_resource_cache = per_resource
+        else:
+            per_resource = self._per_resource_cache
 
         # The global queue lives in the top-left corner, so only that strip
         # of the window gets captured for it. Skipped entirely when the HUD
         # numbers were unreadable - a menu is up, so the queue is not there.
         queue_slots = None
-        if self._queue_reader is not None and (raw_clock is not None
-                                               or raw_villagers is not None):
+        if (self._queue_reader is not None
+                and (raw_clock is not None or raw_villagers is not None)
+                and self._advisory_due("queue")):
             strip_w, strip_h, _ = queue.strip_extent(self.hud["scale"])
             strip = capture.capture_region(self.window, 0, 0, strip_w, strip_h)
             queue_slots = self._queue_reader.read(strip, self.hud["scale"])
@@ -308,7 +546,8 @@ class HudReader:
         text_ready = (self._text_watcher is not None
                       and self._text_watcher.font)
         if ((phrase_ready or text_ready) and game_time is not None
-                and (raw_clock is not None or raw_villagers is not None)):
+                and (raw_clock is not None or raw_villagers is not None)
+                and self._advisory_due("notifications")):
             width, height = capture.window_size(self.window)
             x1, y1, x2, y2 = notifications.panel_region(width, height)
             panel = capture.capture_region(self.window, x1, y1,
@@ -346,6 +585,9 @@ class HudReader:
         hud_visible = raw_clock is not None or raw_villagers is not None
         if hud_visible:
             self._failures_in_a_row = 0
+            if self._capture_failed:
+                self._capture_failed = False
+                print("capture recovered.")
         else:
             self._failures_in_a_row += 1
             # Lost it for a while: the HUD may have moved, or a new game may

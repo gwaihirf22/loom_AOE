@@ -35,7 +35,8 @@ from PyQt6.QtWidgets import (QLabel, QScrollArea, QVBoxLayout, QHBoxLayout,
 from . import config
 from .build_order import format_time
 from .overlay import (AHEAD_COLOR, BACKGROUND, BORDER, DIM_TEXT, FAINT_TEXT,
-                      ICON_HEIGHT, ON_PACE_COLOR, TEXT, describe_pace,
+                      ICON_HEIGHT, NOT_FOLLOWING_COLOR, ON_PACE_COLOR, TEXT,
+                      describe_pace,
                       draw_resource_row, draw_segments, elide,
                       load_resource_icons)
 
@@ -311,14 +312,22 @@ class BuildBrowser(QWidget):
 
     closed = pyqtSignal()   # the player closed the window with its X
 
-    def __init__(self):
-        # No parent: a top-level window in its own right, resizable and
-        # movable like anything else on the desktop.
-        super().__init__()
+    def __init__(self, parent=None):
+        # Parented to the launcher, but with the Window flag so it stays a
+        # real top-level window - resizable and movable like anything else on
+        # the desktop, just never BEHIND the launcher. It used to have no
+        # parent at all, which left stacking to the window manager, and the
+        # preview routinely opened hidden behind the launcher that spawned it.
+        # A parent is the one fix that works the same on X11, Wayland, macOS
+        # and Windows, none of which agree about a client positioning itself.
+        super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("Loom — Build preview")
         self.build = None
         self.focus = 0
         self.following = False
+        # What the overlay says it is doing, from the statefeed. None when
+        # there is no overlay to ask.
+        self.follow_mode = None
         self._scale = 1.0
 
         self.chip = QLabel()
@@ -349,23 +358,34 @@ class BuildBrowser(QWidget):
         layout.addLayout(header)
         layout.addWidget(self.scroll)
 
-        # Writing the window size per pixel of a drag would hammer the
-        # settings file, so the save waits for the resize to hold still.
+        # Writing the window geometry per pixel of a drag would hammer the
+        # settings file, so the save waits for the drag to hold still.
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(
-            lambda: config.set_browser_window(self.width(), self.height()))
+        self._save_timer.timeout.connect(self._remember_geometry)
 
         self.resize(*(config.browser_window() or DEFAULT_WINDOW))
+        remembered = config.browser_position()
+        if remembered is not None:
+            self.move(*remembered)
         self._show_mode()
 
     # ---- window behaviour ----------------------------------------------
+
+    def _remember_geometry(self):
+        """Save where and how big the player left this window."""
+        config.set_browser_window(self.width(), self.height())
+        config.set_browser_position(self.x(), self.y())
 
     def closeEvent(self, event):
         """The titlebar X hides the preview rather than destroying it, and
         tells the launcher so its checkbox can follow."""
         event.accept()
         self.closed.emit()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._save_timer.start(SAVE_SIZE_AFTER_MS)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -423,6 +443,11 @@ class BuildBrowser(QWidget):
             return
 
         self.following = True
+        # What the OVERLAY is doing, so this window never claims to be
+        # following the game while the panel says it is not. The step is
+        # still driven by "idx" either way - a manual cursor rides in the
+        # same semantics, so live_focus needs no special case.
+        self.follow_mode = payload.get("mode")
         self.focus = live_focus(payload.get("idx", -1), len(self.build.steps))
         self._deal()
         self.cards[1].set_live(payload.get("vills"), payload.get("t"),
@@ -437,6 +462,7 @@ class BuildBrowser(QWidget):
         if self.following:
             self.following = False
             self.cards[1].clear_live()
+        self.follow_mode = None
         self._show_mode()
 
     # ---- browsing ------------------------------------------------------
@@ -454,7 +480,15 @@ class BuildBrowser(QWidget):
         self.set_focus(self.focus + step)
 
     def _show_mode(self):
-        if self.following:
+        if self.following and self.follow_mode == "manual":
+            # The overlay is being driven by hand. Saying "following game"
+            # here would contradict the panel, and one of the two windows
+            # would be lying.
+            self.chip.setText("manual — the overlay is not following the game")
+            color = NOT_FOLLOWING_COLOR
+        elif self.following:
+            # A brief hold is not worth a different chip: it resolves itself
+            # in seconds and the cards are still tracking the same cursor.
             self.chip.setText("following game")
             color = ON_PACE_COLOR
         else:
