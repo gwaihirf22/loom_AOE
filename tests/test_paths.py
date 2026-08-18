@@ -105,6 +105,17 @@ def test_captures_deliberately_stay_in_the_source_tree():
     assert paths.CAPTURES_DIR.parent == paths.PROJECT_ROOT
 
 
+def test_frozen_captures_go_to_the_player_s_data_directory(monkeypatch):
+    """The exception to the rule above, learned the embarrassing way: the
+    overlay's unreadable-notification dump (glyphs.TextWatcher) writes to
+    CAPTURES_DIR at runtime, so in a bundle the source-tree rule means
+    writing into the read-only _internal directory - and one of my own
+    smoke-test crops shipped inside the 1.0.0 zip because of it."""
+    monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
+
+    assert paths._captures_dir() == paths.DATA_DIR / "captures"
+
+
 def test_read_only_assets_stay_anchored_to_the_source_tree():
     for shipped in (paths.TEMPLATES_DIR, paths.BUILDS_DIR, paths.ICONS_DIR):
         assert shipped.parent == paths.PROJECT_ROOT

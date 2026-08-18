@@ -36,7 +36,7 @@ copy first. See SHARED_ASSET_DIRS below.
 
 Captures are the deliberate exception and stay in the tree: they are scratch
 written by tools/, not the player's data, and CLAUDE.md documents them as
-such.
+such. Frozen is the exception to the exception - see CAPTURES_DIR below.
 """
 
 # I used Anthropic's Claude to help with proper syntax, code organisation,
@@ -87,9 +87,7 @@ IMAGES_DIR = PROJECT_ROOT / "images"
 LOGO_PATH = IMAGES_DIR / "loom_logo.png"
 ICON_PATH = IMAGES_DIR / "loom.ico"
 
-# Captured frames, written by tools/ during development. These stay in the
-# source tree on purpose - see the module docstring.
-CAPTURES_DIR = PROJECT_ROOT / "captures"
+# CAPTURES_DIR is defined below, after DATA_DIR - frozen it points there.
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +163,22 @@ CONFIG_DIR = Path(_override) if _override else config_home()
 # Per-game statistics files, one JSON per match. The player's own history,
 # not the project's.
 STATS_DIR = DATA_DIR / "stats"
+
+def _captures_dir():
+    """Captured frames. From a clone they stay in the source tree on
+    purpose - scratch written by tools/ during development, see the module
+    docstring. A bundle is different: PROJECT_ROOT is the read-only
+    _internal directory, and the overlay still writes here at runtime,
+    because glyphs.TextWatcher saves unreadable notification lines for
+    later harvesting. That is how one of my own smoke-test crops ended up
+    shipped inside the 1.0.0 zip. Frozen, captures go with the player's
+    data instead."""
+    if getattr(sys, "frozen", False):
+        return DATA_DIR / "captures"
+    return PROJECT_ROOT / "captures"
+
+
+CAPTURES_DIR = _captures_dir()
 
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
