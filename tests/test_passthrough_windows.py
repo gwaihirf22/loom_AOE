@@ -94,6 +94,13 @@ def test_the_real_overlay_flags_really_are_transparent():
 
     A plain window is checked alongside it, because a self-check that always
     answers yes would pass this file while proving nothing.
+
+    It needs Qt's native "windows" platform plugin: under offscreen - which is
+    how CI runs the whole suite - winId() is not a real HWND, so Windows
+    answers "cannot tell" about it, honestly. That is the check working as
+    designed on a handle that is not a window, not evidence about the flags,
+    so the test skips rather than failing. It runs for real on the dev
+    machine, where the suite runs against a desktop.
     """
     QtWidgets = pytest.importorskip("PyQt6.QtWidgets")
     from PyQt6.QtCore import Qt
@@ -102,6 +109,10 @@ def test_the_real_overlay_flags_really_are_transparent():
 
     application = (QtWidgets.QApplication.instance()
                    or QtWidgets.QApplication([]))
+    if application.platformName() != "windows":
+        pytest.skip("needs the native windows platform plugin; "
+                    f"running under {application.platformName()!r}, whose "
+                    "winId() is not an HWND")
 
     transparent = QtWidgets.QWidget()
     transparent.setWindowFlags(overlay.OVERLAY_WINDOW_FLAGS)
