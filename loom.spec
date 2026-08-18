@@ -28,6 +28,11 @@ a = Analysis(
         ("builds", "builds"),
         ("icons", "icons"),
         ("images", "images"),
+        # The build-step icon library. Without it every @icon@ token in a
+        # build order falls back to words - the overlay works, but reads
+        # like a telegram. Game art, shipped under Microsoft's Game Content
+        # Usage Rules; the notice is in the README.
+        ("master_aoe2_images", "master_aoe2_images"),
     ],
     hiddenimports=[
         # entry.run imports these by name at runtime; nothing static sees it.

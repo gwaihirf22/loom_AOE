@@ -669,6 +669,12 @@ Age of Empires II: Definitive Edition is developed by Forgotten Empires and
 published by Xbox Game Studios. Loom is an unofficial fan-made tool, not
 affiliated with or endorsed by them.
 
+The build-step icons in `master_aoe2_images/` are game art. Age of
+Empires II © Microsoft Corporation. Loom was created under Microsoft's
+["Game Content Usage Rules"](https://www.xbox.com/en-US/developers/rules)
+using assets from Age of Empires II, and it is not endorsed by or
+affiliated with Microsoft.
+
 ---
 
 
