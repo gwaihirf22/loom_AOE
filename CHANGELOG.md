@@ -52,6 +52,13 @@ getting a build order into Loom and having it look right when it arrives.
 - **Loom's own two build orders draw icons too.** Fast Castle and
   Uncounterable Fast Castle predate the icon library and were written in
   plain English, which looked like Loom failing on them.
+- **The release zip unpacks on Linux and macOS.** PowerShell's
+  Compress-Archive stored forward slashes in the zip's central directory
+  and backslashes in every local header; Windows Explorer and Python read
+  the former and unpacked it correctly, while unzip and Ark read the latter
+  and produced 1600 files called `Loom\_internal\...` in one flat heap.
+  `tools/package_windows.py` now builds the archive and refuses to return
+  one whose local headers are wrong - the half nothing on Windows looks at.
 - **A frozen bundle no longer writes into itself.** The overlay saves
   notification lines it cannot read for later study, and in a packaged copy
   that meant writing into the read-only program folder - one such crop
