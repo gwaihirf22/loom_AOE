@@ -147,8 +147,10 @@ class BuildPicker(QGroupBox):
         super().__init__("Build order", parent)
         self.combo = QComboBox()
         self.combo.setToolTip(
-            "Which build order the overlay and the preview follow. Drop new"
-            " ones into builds/ as RTS Overlay JSON files.")
+            "Which build order the overlay and the preview follow."
+            " Drop new ones into\n"
+            f"{paths.DATA_DIR / 'builds'}\n"
+            "as RTS Overlay JSON files - see How to use.")
         layout = QVBoxLayout(self)
         layout.addWidget(self.combo)
 
@@ -844,7 +846,9 @@ class LauncherWindow(QWidget):
             return
         stem = self.picker.selected_stem()
         if stem is None:
-            self.output.append_line("[launcher] no build orders in builds/")
+            self.output.append_line(
+                "[launcher] no build orders found. Put RTS Overlay JSON "
+                f"files in {paths.DATA_DIR / 'builds'}")
             return
         self.overlay_process = self._spawn(
             "overlay", ["loom_overlay.py", "--build", stem],

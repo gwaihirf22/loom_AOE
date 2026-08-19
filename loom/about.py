@@ -29,6 +29,13 @@ from .overlay import BACKGROUND, BORDER, DIM_TEXT, TEXT
 
 WINDOW_SIZE = (620, 520)
 
+# Where a player's own build orders go, spelled the way their OS spells it.
+# Named from paths rather than written into the prose because it differs per
+# platform and a wrong path is worse than no path - the same reason the HUD
+# page is checked against hud.PROFILES. Not user_asset_dir: importing this
+# module must not create folders.
+BUILDS_DIR = paths.DATA_DIR / "builds"
+
 
 PAGES = [
     ("What Loom does", """
@@ -195,16 +202,46 @@ you say otherwise).</p>
 <p><b>Track APM</b> counts your keystrokes and clicks for the post-game
 graphs. It counts and nothing more - Loom never knows <i>which</i> key was
 pressed; the code cannot see it, by construction.</p>
-<p><b>More build orders.</b> Loom uses the community's own format - RTS
-Overlay JSON - so builds made elsewhere load unchanged. Browse ready-made
-builds at <a href="https://buildorderguide.com">buildorderguide.com</a>,
-or design your own with the
-<a href="https://rts-overlay.github.io">RTS Overlay web tool</a> and save
-the JSON. Drop the files into Loom's builds folder and the launcher lists
-them at its next start.</p>
+<p><b>More build orders.</b> Loom plays any build written in the
+community's format, and there is a page of its own on where to find them
+and where to put them - see <b>Adding build orders</b>.</p>
 <p>Settings apply <b>the next time the overlay starts</b> - a running
 overlay keeps what it launched with. The one exception is the start/stop
 hotkey, which re-registers the moment you change it.</p>
+"""),
+    ("Adding build orders", f"""
+<h3>Any build the community has written</h3>
+<p>Loom uses <b>RTS Overlay JSON</b> - the format Age of Empires II players
+already share build orders in - so a build made elsewhere loads unchanged,
+and Loom never rewrites your file.</p>
+<p><b>Ready-made builds:</b> open one at
+<a href="https://www.buildorderguide.com">buildorderguide.com</a> and press
+<b>Export for RTS</b>. That shows the build as JSON text rather than
+downloading a file, so copy it, paste it into a text editor and save it as
+<b>SomeBuild.json</b>. In Notepad's save dialog set <i>Save as type</i> to
+<i>All files</i> first, or you will end up with a .txt that Loom will not
+list.</p>
+<p><b>Or write your own</b> with the
+<a href="https://rts-overlay.github.io">RTS Overlay web tool</a>, which
+builds the JSON for you step by step.</p>
+<h3>Where the file goes</h3>
+<p><b>{BUILDS_DIR}</b></p>
+<p>Create that folder if it is not there, drop the .json in, and the
+launcher lists it the next time it starts. Builds kept here <b>survive
+updating Loom</b>. The builds folder inside Loom's own program folder works
+too, but installing a new version replaces it - and takes anything you put
+there with it.</p>
+<h3>Why some builds show pictures and some show words</h3>
+<p>Where a build writes something like <b>@resource/MaleVillDE.webp@</b>,
+Loom draws that picture inside the instruction. The part between the @ signs
+is a folder and a file name from Loom's own icon library, and it is how
+community builds get their villager, sheep and house pictures.</p>
+<p>Loom is forgiving about the file extension - a build asking for
+<i>.png</i> still finds the <i>.webp</i> Loom ships - but not about the
+folder, because names repeat across folders and a confidently wrong picture
+is worse than plain words. Anything Loom cannot find is written out in words
+instead, so a build with no icon tokens at all still reads correctly. Builds
+written by hand usually have none, and there is nothing wrong with them.</p>
 """),
 ]
 

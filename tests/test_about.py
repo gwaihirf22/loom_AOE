@@ -17,9 +17,11 @@ concluding Loom is broken.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import re
+
 import pytest
 
-from loom import about, config, hud
+from loom import about, config, hud, overlay, paths
 
 
 def test_every_page_has_a_title_and_a_body():
@@ -178,3 +180,39 @@ def test_the_placement_page_mentions_the_reset():
     everything = " ".join(html for _title, html in about.PAGES)
 
     assert "Reset position" in everything
+
+
+def test_the_builds_page_names_the_folder_the_files_actually_go_in():
+    """Derived from paths, not typed into the prose.
+
+    The folder differs per OS, and a player who is told the wrong one is
+    worse off than a player told nothing: the file lands somewhere Loom
+    never looks and the build simply does not appear. Same discipline as
+    the HUD-skins and hotkeys pages above.
+    """
+    everything = " ".join(html for _title, html in about.PAGES)
+
+    assert str(paths.DATA_DIR / "builds") in everything
+
+
+def test_the_builds_page_explains_the_icon_tokens():
+    """Why one build draws pictures and another shows words - the question
+    that looked like a bug in Loom and was only ever an absence of tokens.
+    The example must be a real token, so it is checked against the library
+    rather than merely being present as text."""
+    everything = " ".join(html for _title, html in about.PAGES)
+
+    tokens = re.findall(r"@([^@\s<]+/[^@\s<]+)@", everything)
+    assert tokens, "the page no longer shows what a token looks like"
+    for token in tokens:
+        assert overlay.find_icon_file(token) is not None, (
+            f"the page teaches {token!r}, which Loom cannot draw")
+
+
+def test_the_builds_page_says_a_missing_picture_falls_back_to_words():
+    """The reassurance that stops somebody concluding their build is
+    broken when it is merely written without icons."""
+    everything = " ".join(
+        " ".join(html.split()) for _title, html in about.PAGES).lower()
+
+    assert "in words" in everything
