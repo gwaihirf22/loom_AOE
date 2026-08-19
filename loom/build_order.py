@@ -499,3 +499,112 @@ def available_builds():
             # shape (a list, a string) fails inside BuildOrder instead.
             problems.append(f"{path.name}: {error}")
     return builds, problems
+
+
+# ---------------------------------------------------------------------------
+# Finding one build in a growing library
+# ---------------------------------------------------------------------------
+#
+# Importing a build takes seconds now, so the library grows, and a flat list
+# ordered by filename stops answering the question a player actually has:
+# "what can I play as Mongols?". These are the pure half of that - the
+# launcher owns the widgets, this owns the rules, and so the rules can be
+# tested without a display.
+
+# Builds written for no particular civilization. The format's own default,
+# and six of the thirteen builds shipped the day this was written.
+GENERIC_CIVILIZATION = "Generic"
+
+
+def civilization_names(build):
+    """Every civilization a build claims, always as a tuple.
+
+    The field is a plain string in every build I have seen, but the format
+    allows a list, and a list would otherwise render as "['Mayans',
+    'Aztecs']" in the picker and match nothing a player typed. Absorbing
+    that here costs three lines and keeps it out of everything downstream.
+    """
+    value = build.civilization
+    if isinstance(value, str):
+        return (value,) if value else (GENERIC_CIVILIZATION,)
+    if isinstance(value, (list, tuple)):
+        names = tuple(str(name) for name in value if str(name).strip())
+        return names or (GENERIC_CIVILIZATION,)
+    return (GENERIC_CIVILIZATION,)
+
+
+def civilization_label(build):
+    """The civilizations as one readable string, for a row or a dialog."""
+    return "/".join(civilization_names(build))
+
+
+def civilizations(pairs):
+    """Every civilization present in a library, for a filter's drop-down.
+
+    Derived from the builds rather than from a list of the game's civs:
+    a hard-coded list would offer forty civilizations with nothing behind
+    thirty-nine of them, and would age every time the game adds one.
+
+    Generic leads, because it is the one entry that is not a civilization -
+    it is the builds that work for all of them.
+    """
+    found = set()
+    for _stem, build in pairs:
+        found.update(civilization_names(build))
+    generic = [GENERIC_CIVILIZATION] if GENERIC_CIVILIZATION in found else []
+    rest = sorted(name for name in found if name != GENERIC_CIVILIZATION)
+    return generic + rest
+
+
+def _haystack(stem, build):
+    """Everything about a build that a typed word may match.
+
+    The stem is in there because it is the file the player saved and may be
+    the only name they remember - "malay_fast_elephants" finds it even
+    though the build calls itself something else inside.
+    """
+    return " ".join((build.name, build.author or "", stem,
+                     *civilization_names(build))).lower()
+
+
+def matches_civilization(build, civilization):
+    """Would a player of this civilization use this build?
+
+    A specific civilization matches its own builds AND the Generic ones,
+    because a Generic build is by definition playable as that civ - and
+    hiding them would hide most of any real library. Asking for Generic
+    itself is the narrow question, and answers narrowly.
+    """
+    if not civilization:
+        return True
+    names = civilization_names(build)
+    if civilization in names:
+        return True
+    return (civilization != GENERIC_CIVILIZATION
+            and GENERIC_CIVILIZATION in names)
+
+
+def filtered_builds(pairs, query="", civilization=None, keep=None):
+    """The (stem, build) pairs a filtered picker should show, in order.
+
+    Every word of the query has to match somewhere, so "hera arena" narrows
+    rather than widens.
+
+    `keep` is a stem that stays in the result whatever the filter says. That
+    is not a convenience: it is the picker's current choice, and a filter
+    that could drop it would let the drop-down silently move to a different
+    build, so Start would run something the player never picked. Same class
+    of failure as a panel that quietly stops following the game.
+    """
+    words = query.lower().split()
+    shown = []
+    for stem, build in pairs:
+        if stem == keep:
+            shown.append((stem, build))
+            continue
+        if not matches_civilization(build, civilization):
+            continue
+        haystack = _haystack(stem, build)
+        if all(word in haystack for word in words):
+            shown.append((stem, build))
+    return shown

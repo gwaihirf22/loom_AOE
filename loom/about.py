@@ -97,9 +97,10 @@ restart the overlay so it measures the new one.</p>
 
     ("Getting started", """
 <h3>Four things, once</h3>
-<p><b>1. Pick a build.</b> Choose it at the top of the launcher. The preview
-window beside the launcher shows the whole build; during a match it follows
-along on its own.</p>
+<p><b>1. Pick a build.</b> Choose it from the list at the top of the
+launcher - Loom ships a starting library, and <b>Import build</b> adds any
+you find or write. The preview window beside the launcher shows the whole
+build; during a match it follows along on its own.</p>
 <p><b>2. Place the panel.</b> Use <b>Place overlay</b> to drag the panel
 wherever you want it, then close it - no game needed, though with one
 running it lines up exactly. Loom remembers the spot relative to the game
@@ -224,18 +225,42 @@ list.</p>
 <p><b>Or write your own</b> with the
 <a href="https://rts-overlay.github.io">RTS Overlay web tool</a>, which
 builds the JSON for you step by step.</p>
-<h3>Where the file goes</h3>
-<p><b>{BUILDS_DIR}</b></p>
-<p>Create that folder if it is not there, drop the .json in, and the
-launcher lists it the next time it starts. Builds kept here <b>survive
-updating Loom</b>. The builds folder inside Loom's own program folder works
-too, but installing a new version replaces it - and takes anything you put
-there with it.</p>
+<h3>Getting it into Loom</h3>
+<p>Press <b>Import build</b> in the launcher and pick the file. Loom checks
+it, says anything worth knowing, copies it in and selects it straight away -
+no restart, and no folder for you to find.</p>
+<p>If Loom cannot use the file at all it says why rather than importing it.
+If it can use it but something is odd - steps out of order, no times, icons
+it has no picture for - it tells you and lets you decide.</p>
+<h3>Where they are kept</h3>
+<p><b>Open builds folder</b> opens the place:<br>
+<b>{BUILDS_DIR}</b></p>
+<p>Anything dropped in there by hand is listed the next time the launcher
+starts, and builds kept here <b>survive updating Loom</b> - the folder
+inside Loom's own program folder works too, but installing a new version
+replaces it and takes anything you put there with it.</p>
+"""),
+
+    ("Finding your build", f"""
+<h3>Searching a library that keeps growing</h3>
+<p>The launcher lists your whole library. Type in the <b>search box</b> to
+narrow it as you go - it matches the name, the civilization and the author,
+and every word has to match, so "hera arena" lands on one build. Press
+<b>Enter</b> to take the top result.</p>
+<p>The <b>civilization</b> box beside it shows the builds you could play as
+one civ. Generic builds are included, because they work for every civ - and
+the count says how many, so a longer list than you expected is never a
+mystery.</p>
+<p>Whatever you have selected stays in the list even when it does not match
+what you typed, marked <i>your current choice</i>: narrowing a list should
+never quietly change which build the overlay is about to run. Pick something
+else and the marker goes with it.</p>
+<p>Neither filter is remembered - your whole library is back the next time
+you open the launcher.</p>
 <h3>Why some builds show pictures and some show words</h3>
 <p>Where a build writes something like <b>@resource/MaleVillDE.webp@</b>,
-Loom draws that picture inside the instruction. The part between the @ signs
-is a folder and a file name from Loom's own icon library, and it is how
-community builds get their villager, sheep and house pictures.</p>
+Loom draws that picture inside the instruction: the part between the @ signs
+is a folder and a file name from Loom's own icon library.</p>
 <p>Loom is forgiving about the file extension - a build asking for
 <i>.png</i> still finds the <i>.webp</i> Loom ships - but not about the
 folder, because names repeat across folders and a confidently wrong picture

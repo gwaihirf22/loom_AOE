@@ -76,12 +76,12 @@ here. If you ever do find the panel hidden behind the game, switch to
 ## Where Loom keeps your things
 
 - Settings and match statistics: `%APPDATA%\Loom`
-- Your own build orders: put the JSON files in `%APPDATA%\Loom\builds`
-  (create the folder if it is not there) and they appear in the launcher
-  next to the shipped set. The `builds` folder inside the app
-  (`Loom\_internal\builds`) works too, but a new version's zip replaces
-  it — `%APPDATA%` survives updates. Running from a clone, the `builds`
-  folder beside the code is the equivalent.
+- Your own build orders: `%APPDATA%\Loom\builds`. Use **Import build**
+  in the launcher and you never need that path — it checks the file, copies
+  it there and selects it; **Open builds folder** goes straight to it.
+  Builds kept there survive updating Loom. The `builds` folder inside the
+  app works too, but a new version's zip replaces it. Running from a clone,
+  the `builds` folder beside the code is the equivalent.
 
 If you previously ran Loom from a clone that kept `config.json` and `stats/`
 beside the code, they are copied to `%APPDATA%\Loom` the first time you start

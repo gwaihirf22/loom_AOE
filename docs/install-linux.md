@@ -75,7 +75,10 @@ Following the XDG base directory spec:
 
 - Settings: `~/.config/loom/config.json` (or `$XDG_CONFIG_HOME/loom`)
 - Match statistics: `~/.local/share/loom/stats` (or `$XDG_DATA_HOME/loom`)
-- Build orders: the `builds` directory in the clone
+- Build orders: the `builds` directory in the clone, plus your own in
+  the data directory above. **Import build** in the launcher puts them
+  there for you, after checking the file; **Open builds folder** shows
+  you where.
 
 If you previously ran Loom from a clone that kept `config.json` and `stats/`
 beside the code, they are copied across the first time you start it. The

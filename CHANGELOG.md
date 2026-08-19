@@ -6,6 +6,71 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.1 — 2026-08-19
+
+Everything the first day of 1.0.0 being in other people's hands turned up.
+No new capability in the reader or the overlay: this is entirely about
+getting a build order into Loom and having it look right when it arrives.
+
+### Added
+
+- **Import build.** A button on the launcher that takes a build-order JSON
+  from anywhere, checks it, and copies it into your builds folder - then
+  lists and selects it immediately, with no restart. Adding a build used to
+  be an instruction rather than a feature: find a folder Loom had never
+  created, make it yourself, drop a file in, start again.
+- **The check behind it** (`loom/buildcheck.py`). "Will it load" is answered
+  by loading it, so the answer cannot drift from the loader the launcher
+  actually runs. Only a build Loom genuinely cannot use is refused; anything
+  else is said plainly and left to the player, because the format belongs to
+  the community and being pickier than the format would reject builds that
+  work. It found a real one on the day it was written: a published build
+  with 25 villagers spread across the resources at a step with 21.
+- **Search and a civilization filter** on the build picker, because a
+  library you can add to in seconds outgrows a flat list. The drop-down
+  became a list that is always open, because typing into a search box whose
+  results hide behind a click is not searching: every keystroke now shows
+  its own answer, and Enter takes the top one. Asking for one
+  civilization includes the Generic builds, which are playable as any civ -
+  the count says how many, so it is never a surprise. Whatever is selected
+  stays in the list whatever the filter says: a drop-down that could drop
+  the current build would let Start run one nobody picked.
+- **Open builds folder**, next to it, for everything the file picker is not.
+- **Two How-to-use pages** - adding build orders, and finding one once the
+  library is big enough to need finding.
+
+### Fixed
+
+- **Icon tokens are matched forgivingly.** buildorderguide's export writes
+  `@resource/MaleVillDE.jpg@` where Loom's library holds the identical
+  picture as `.webp`, so the first community build imported showed words on
+  every instruction. The extension is now forgiven; the folder is not,
+  because names repeat across folders and a confidently wrong picture is
+  worse than plain words.
+- **The builds folder is created.** `paths.user_asset_dir` existed for
+  exactly this and was called by nothing.
+- **Loom's own two build orders draw icons too.** Fast Castle and
+  Uncounterable Fast Castle predate the icon library and were written in
+  plain English, which looked like Loom failing on them.
+- **A frozen bundle no longer writes into itself.** The overlay saves
+  notification lines it cannot read for later study, and in a packaged copy
+  that meant writing into the read-only program folder - one such crop
+  shipped inside the 1.0.0 zip. Frozen, captures go to the player's data
+  directory with their statistics.
+
+### Changed
+
+- **The README leads with using Loom rather than with how it was built.**
+  The engineering walkthrough moved whole to `docs/how-it-works.md`; the
+  Windows guide leads with the app and keeps running from source below it.
+  Both now say what to do when Windows quarantines a fresh release, which
+  is a machine-learning false positive on an unsigned file nobody has run
+  yet.
+- **The build-step icon library ships.** It was excluded from both the
+  bundle and the public snapshot as game art, which quietly cost every user
+  the pictures; it is redistributed under Microsoft's Game Content Usage
+  Rules, with the notice in the README.
+
 ## 1.0.0 — 2026-08-18
 
 The promise this number was reserved for: the first release that also runs

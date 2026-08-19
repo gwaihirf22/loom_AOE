@@ -62,7 +62,10 @@ fullscreen limitation.
 ## Where Loom keeps your things
 
 - Settings and match statistics: `~/Library/Application Support/Loom`
-- Build orders: the `builds` directory in the clone
+- Build orders: the `builds` directory in the clone, plus your own in
+  the data directory above. **Import build** in the launcher puts them
+  there for you, after checking the file; **Open builds folder** shows
+  you where.
 
 ## Known limitations
 

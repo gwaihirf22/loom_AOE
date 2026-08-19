@@ -55,7 +55,13 @@ looking exactly as it always does is the one thing this must never do.
 
 It does this **without touching the game**. Loom reads pixels from the screen
 and draws a window on top. It never injects into, modifies, or reads the memory
-of the game process — so it is not a cheat and cannot be mistaken for one.
+of the game process.
+
+If that still sounds like cheating, take a breath: Loom does not click for
+you, does not make you faster, and has never won a game on its own. It is a
+sticky note that can read a clock. I wrote it because my attention span
+mislays a build order somewhere around the fourth villager — the longer
+answer is [at the end](#is-this-cheating), for anyone who wants it.
 
 ---
 
@@ -72,6 +78,7 @@ of the game process — so it is not a cheat and cannot be mistaken for one.
 - [Make it yours](#make-it-yours) — size, transparency, alerts, APM
 - [Statistics](#statistics) — every game, graphed
 - [Which platforms it runs on](#which-platforms-it-runs-on) — Linux and macOS too
+- [Is this cheating?](#is-this-cheating) — no, and here is the long answer
 - [Running from source](#running-from-source) — for development
 - [How it works](#how-it-works) — the engineering story
 - [Project layout](#project-layout) · [Acknowledgements](#acknowledgements) · [Credits](#credits)
@@ -155,8 +162,10 @@ Two mods pair well with Loom — recommended, never required:
 
 Four things, once:
 
-1. **Pick a build** at the top of the launcher. The preview window beside
-   it shows the whole build; during a match it follows along on its own.
+1. **Pick a build** from the list at the top of the launcher — Loom ships
+   a starting library, and **Import build** adds any you find or write. The
+   preview window beside it shows the whole build; during a match it
+   follows along on its own.
 2. **Place the panel.** **Place overlay** opens it as a draggable window:
    drag it where you want it, close it, and the spot is saved — no game
    needed, though with one running it lines up exactly. **Reset position**
@@ -230,7 +239,9 @@ combination.
 
 Loom uses the format the Age of Empires II community already shares builds
 in — [RTS Overlay](https://github.com/CraftySalamander/RTS_Overlay) JSON —
-so **a build downloaded from the community works unchanged**:
+so **a build downloaded from the community works unchanged**.
+
+### Get a build
 
 - **Browse ready-made builds** at
   [buildorderguide.com](https://www.buildorderguide.com/): open a build and
@@ -240,19 +251,33 @@ so **a build downloaded from the community works unchanged**:
 - **Or design your own** with the
   [RTS Overlay web tool](https://rts-overlay.github.io) and save the JSON.
 
-Then put the file where Loom looks:
+### Import it
 
-- **Best: `%APPDATA%\Loom\builds`** — create the folder if it is not there.
-  (Paste `%APPDATA%\Loom` into the File Explorer address bar to jump
-  straight to it.) Builds here survive updating Loom.
-- The `builds` folder inside the app (`Loom\_internal\builds`, next to the
-  shipped build) works too — but replacing the app folder with a new
-  version's zip takes your builds with it, which is why `%APPDATA%` is the
-  better home.
-- Running from a clone: the `builds` folder beside the code.
+Press **Import build** in the launcher and pick the file. Loom checks it,
+copies it into your builds folder and selects it straight away — no
+restart. If the file cannot work as a build order, Loom says why rather
+than importing it; if it works but something is odd — steps out of order,
+no times, icons Loom has no picture for — it says so and lets you decide.
 
-The launcher lists every build it finds at its next start, each row showing
-the build's own name, civilisation, author and step count.
+### Find it again
+
+The launcher lists your whole library, each row naming the build, its
+civilisation, its author and how many steps it has. Type in the **search
+box** to narrow the list as you go — it matches the name, the civilisation
+and the author — or use the **civilisation** box beside it to see the
+builds you could play as one civ. Generic builds are included there,
+because they work for every civ.
+
+Whatever you have selected always stays in the list, marked, even when it
+does not match what you typed: narrowing the list should never quietly
+change which build the overlay is about to run.
+
+**Open builds folder** opens where they are kept — `%APPDATA%\Loom\builds` on
+Windows. Anything dropped in there by hand appears the next time the
+launcher starts, and builds kept there survive updating Loom. (The `builds`
+folder inside the app works too, but a new version's zip replaces it and
+takes your builds with it. Running from a clone, it is the `builds` folder
+beside the code.)
 
 Each step of a build looks like this:
 
@@ -268,9 +293,9 @@ Each step of a build looks like this:
 
 Loom normalises this on load: `"7:30"` becomes 450 seconds and the `@...@`
 icon tokens become pictures in the overlay (words, if the picture is
-missing). Your file is never rewritten. The build shipped with Loom is my
-own, with timings modelled on standard villager production; community
-builds are GPL-licensed and are not redistributed here.
+missing). Your file is never rewritten. Loom ships a starting library —
+two builds of my own, the rest transcribed from published guides and
+credited inside each file.
 
 ---
 
@@ -340,6 +365,62 @@ is not supported yet:
 
 The detail behind every cell, and why, is in
 [docs/platform-support.md](docs/platform-support.md).
+
+---
+
+
+
+## Is this cheating?
+
+It is a fair question and I have thought about it a lot, so here is the whole
+answer in one place.
+
+**Loom never touches the game.** It reads pixels off the screen and draws a
+window on top. It does not inject into the game, modify it, or read its memory,
+and it sends it no input — no clicks, no queued units, no hotkeys pressed on
+your behalf. Every action in your game is still one you took.
+
+**It shows you nothing that is not already on your screen.** It knows you have
+seven villagers because the number 7 is on your HUD. It knows you are behind
+because the clock is too. Even the idle-Town-Centre alert is read off the game's
+own production queue, the widget already sitting in the corner. If Loom knows
+something, you could have known it by looking.
+
+So what it gives you is **attention, not information** — it notices the thing
+you could see and did not, because you were watching your scout. That is the
+honest description, and it is also why the panel is not the shortcut people
+assume. Reading it and acting on it while you scout, wall and react is its own
+skill, and it is harder in a real game than it looks in a video.
+
+**It only covers the opening.** A build order runs out somewhere around your
+eighteenth to thirtieth villager. After that you get raided, you scout something
+that forces a change, and you are off script — and Loom has nothing to say
+about any of it. It helps with the most memorisable and least interesting part
+of the game.
+
+**What it replaces is a second monitor.** Players have kept build orders on a
+second screen, a phone or a printed sheet for as long as the game has existed.
+Loom puts the same page on the same screen and keeps your place in it. Not
+everyone has a second monitor; everyone has the one.
+
+### On the rules
+
+Microsoft's [Code of Conduct](https://www.ageofempires.com/code-of-conduct/)
+prohibits **tampering with the game**, and staying clear of that line is the
+whole architecture above. The [Xbox Community
+Standards](https://www.xbox.com/en-US/legal/community-standards) prohibit
+specialized software used **to gain unfair advantage** — a conditional, and one
+Loom does not meet on any reading that does not also catch Discord, rating
+overlays, aoecompanion, or the UI-readability mods the game's own mod browser
+hands out.
+
+I am not claiming Microsoft has blessed this; nobody has asked them, and there
+is no ruling to point at. I am claiming something narrower: Loom does not touch
+the game, sends it no input, and shows you nothing that is not already on your
+screen. If World's Edge ever tells me that is over the line, I will take it down.
+
+Tournaments are a separate matter. Organisers set their own rules and are free
+to forbid any external tool. If you are playing in one, ask before you run this.
 
 ---
 

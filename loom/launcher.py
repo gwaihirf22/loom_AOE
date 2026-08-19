@@ -16,24 +16,35 @@ the overlay starts, and the UI says so rather than pretending otherwise.
 # debugging and review. The design and code are my own work.
 
 import json
+import shutil
 import sys
 import time
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QPixmap
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QGroupBox,
-                             QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-                             QPushButton, QSlider, QSpinBox, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFont, QPixmap
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
+                             QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                             QListWidget, QListWidgetItem, QMessageBox,
+                             QPlainTextEdit, QPushButton, QSlider, QSpinBox,
+                             QVBoxLayout, QWidget)
 
-from . import apm, config, hotkeys, paths, statefeed
+from . import apm, buildcheck, config, hotkeys, overlay, paths, statefeed
 from .hotkeys import keyspec
 from . import __version__ as loom_version
 from .about import AboutWindow
 from .browser import BuildBrowser
 from .statsview import StatsWindow
-from .build_order import available_builds
+from .build_order import (GENERIC_CIVILIZATION, available_builds,
+                          civilization_label, civilization_names,
+                          civilizations, filtered_builds)
 from .runner import ChildProcess
+
+# How tall the build list stands: enough rows that a filtered search shows
+# its whole answer without scrolling, few enough that the library does not
+# push the settings below it off the window.
+LIBRARY_ROWS = 6
+LIBRARY_ROW_HEIGHT = 22
 
 # How many lines the output pane keeps before dropping the oldest. Enough to
 # scroll back through a pytest run; small enough to never matter for memory.
@@ -136,57 +147,344 @@ class OutputPane(QPlainTextEdit):
         self.appendPlainText(text)
 
 
+def _as_list(findings):
+    """Findings as an HTML list for a message box.
+
+    Qt's message boxes render rich text, and one paragraph holding four
+    problems runs together into something nobody reads to the end.
+    """
+    items = "".join(f"<li>{finding.message}</li>" for finding in findings)
+    return f"<ul>{items}</ul>"
+
+
 class BuildPicker(QGroupBox):
     """The build-order library as a drop-down, metadata on each entry.
 
     The drop-down shows the human name from inside each JSON; the value
     carried on each entry is the file stem, which is what --build takes.
+
+    Adding a build used to be an instruction rather than a feature: find a
+    folder that Loom never created, make it yourself, drop a file in,
+    restart. Import does the whole of that, and checks the file first -
+    see loom/buildcheck.py for why the checking happens here of all places.
     """
+
+    # One line for the launcher's output pane. The picker does its own
+    # dialogs, but what it did should also be in the log with everything
+    # else that happened this session.
+    note = pyqtSignal(str)
+
+    # A different build is now chosen. The launcher's preview follows this
+    # rather than reaching into the widget, so how the picker shows its
+    # library stays the picker's business.
+    selection_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("Build order", parent)
-        self.combo = QComboBox()
-        self.combo.setToolTip(
-            "Which build order the overlay and the preview follow."
-            " Drop new ones into\n"
-            f"{paths.DATA_DIR / 'builds'}\n"
-            "as RTS Overlay JSON files - see How to use.")
+        # Created, not just named. Nothing in Loom ever made this folder
+        # before, so the docs told players to make it by hand - work the
+        # program should have been doing for them.
+        self.builds_dir = paths.user_asset_dir("builds")
+
+        # A list rather than a drop-down. Typing into a search box whose
+        # results are hidden behind a click is not searching - the player
+        # types, sees nothing change, and has to open the list to find out
+        # whether it worked. The list is always open, so every keystroke
+        # shows its own answer and the build wanted is one click away.
+        self.list = QListWidget()
+        self.list.setToolTip(
+            "Which build order the overlay and the preview follow.\n"
+            "Import build adds one; they are kept in\n"
+            f"{self.builds_dir}")
+        self.list.setUniformItemSizes(True)
+        self.list.setMinimumHeight(LIBRARY_ROWS * LIBRARY_ROW_HEIGHT)
+
+        # Narrowing the library, not choosing from it. Neither of these is
+        # remembered between sessions: a filter silently restored next time
+        # is a library that looks half empty for no visible reason.
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search builds…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setToolTip(
+            "Matches the name, civilization and author. Every word has to "
+            "match, so \"hera arena\" narrows to one build.")
+        self.search.textChanged.connect(self._apply_filter)
+
+        self.civ_filter = QComboBox()
+        self.civ_filter.setToolTip(
+            "Show the builds you could play as one civilization.\n"
+            "Generic builds are included, because they work for every civ.")
+        self.civ_filter.currentIndexChanged.connect(self._apply_filter)
+
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet("color: gray;")
+
+        finder = QHBoxLayout()
+        finder.addWidget(self.search, stretch=2)
+        finder.addWidget(self.civ_filter, stretch=1)
+        finder.addWidget(self.count_label)
+
+        self.import_button = QPushButton("Import build…")
+        self.import_button.setToolTip(
+            "Add a build order from an RTS Overlay JSON file. Loom checks it "
+            "first and says what it finds.")
+        self.import_button.clicked.connect(self._import)
+
+        self.open_button = QPushButton("Open builds folder")
+        self.open_button.setToolTip(f"Open {self.builds_dir}")
+        self.open_button.clicked.connect(self._open_folder)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.import_button)
+        buttons.addWidget(self.open_button)
+        buttons.addStretch()
+
         layout = QVBoxLayout(self)
-        layout.addWidget(self.combo)
+        layout.addLayout(finder)
+        layout.addWidget(self.list)
+        layout.addLayout(buttons)
 
         self.problems = self._populate()
         # Whenever the choice changes, remember it - so the next session and
         # the bare command line default to the same build. Connected after
         # populating, so restoring the saved choice does not re-save it.
-        self.combo.currentIndexChanged.connect(self._remember)
+        self.list.currentItemChanged.connect(self._chosen)
+        # Enter in the search box takes the first result, so a search that
+        # has already found the build does not need the mouse at all.
+        self.search.returnPressed.connect(self._take_first_result)
 
     def _populate(self):
+        """Read the library from disk, then show it through the filter."""
         builds, problems = available_builds()
-        # Keep the loaded builds: the preview panel walks their steps, and
-        # reloading files it just read would be pointless.
+        # Keep every loaded build, filtered or not: the preview panel looks
+        # them up by stem, and reloading files just read would be pointless.
+        self._library = builds
         self._builds = dict(builds)
-        for stem, build in builds:
-            label = (f"{build.name} — {build.civilization}"
-                     f" — {build.author or 'unknown'}"
-                     f" — {len(build.steps)} steps")
-            # The second argument is invisible userData behind the display
-            # text - what currentData() hands back later.
-            self.combo.addItem(label, stem)
-        # Restore the saved choice. findData returns -1 if that build's file
-        # has since been deleted, and setCurrentIndex(-1) would blank the
-        # box - so fall back to the first entry instead.
-        index = self.combo.findData(config.active_build())
-        self.combo.setCurrentIndex(index if index >= 0 else 0)
+        self._fill_civilizations()
+        self._render()
         return problems
 
-    def _remember(self, _index):
-        stem = self.combo.currentData()
+    def _render(self):
+        """Rebuild the drop-down from the library and the current filter."""
+        # The choice that must survive: what is in the box now, or failing
+        # that what was saved. filtered_builds keeps it whatever the filter
+        # says, so narrowing the list can never move the selection onto a
+        # build the player did not pick - Start would then run it.
+        chosen = self.selected_stem() or config.active_build()
+        matched = filtered_builds(self._library,
+                                  query=self.search.text(),
+                                  civilization=self.civ_filter.currentData())
+        shown = filtered_builds(self._library,
+                                query=self.search.text(),
+                                civilization=self.civ_filter.currentData(),
+                                keep=chosen)
+        # Which row is only there because it is the current choice. Marked
+        # rather than left to puzzle over: a build that does not match what
+        # you typed, sitting in the list with no explanation, reads as a
+        # broken search rather than as the safety rule it is.
+        kept = {stem for stem, _build in shown} - {s for s, _b in matched}
+
+        # Silenced while rebuilding: clearing the list would otherwise save
+        # an empty choice on the way past, and this runs on every keystroke.
+        blocked = self.list.blockSignals(True)
+        self.list.clear()
+        for stem, build in shown:
+            label = (f"{build.name} — {civilization_label(build)}"
+                     f" — {build.author or 'unknown'}"
+                     f" — {len(build.steps)} steps")
+            if stem in kept:
+                label += "   · your current choice"
+            item = QListWidgetItem(label)
+            # The stem rides along invisibly - it is what --build takes.
+            item.setData(Qt.ItemDataRole.UserRole, stem)
+            self.list.addItem(item)
+        # Falls back to the first row when the chosen build's file has since
+        # been deleted, rather than leaving nothing selected.
+        row = self._row_of(chosen)
+        self.list.setCurrentRow(row if row >= 0 else 0)
+        self.list.scrollToItem(self.list.currentItem())
+        self.list.blockSignals(blocked)
+
+        self._show_count(matched)
+
+    def _show_count(self, shown):
+        """Say how much of the library is on show, and why it is that many.
+
+        The generic tally is what makes including Generic builds under a
+        specific civilization honest rather than surprising: without it,
+        asking for Mongols and getting eight builds reads like a filter that
+        is not working.
+        """
+        total = len(self._library)
+        if len(shown) >= total:
+            self.count_label.setText(f"{total} builds")
+            return
+
+        if not shown:
+            return self.count_label.setText(f"no matches in {total} builds")
+
+        text = f"{len(shown)} of {total}"
+        if self.civ_filter.currentData():
+            generic = sum(1 for _stem, build in shown
+                          if GENERIC_CIVILIZATION in civilization_names(build))
+            if generic:
+                text += f" ({generic} generic)"
+        self.count_label.setText(text)
+
+    def _fill_civilizations(self):
+        """The civilization drop-down, from the civs the library actually
+        holds - never a list of the game's civs, which would offer forty
+        entries with nothing behind most of them."""
+        wanted = self.civ_filter.currentData()
+        blocked = self.civ_filter.blockSignals(True)
+        self.civ_filter.clear()
+        self.civ_filter.addItem("All civilizations", None)
+        for name in civilizations(self._library):
+            self.civ_filter.addItem(name, name)
+        index = self.civ_filter.findData(wanted)
+        self.civ_filter.setCurrentIndex(max(index, 0))
+        self.civ_filter.blockSignals(blocked)
+
+    def _apply_filter(self, *_args):
+        self._render()
+
+    def clear_filters(self):
+        """Show the whole library again, without saving anything."""
+        blocked = self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(blocked)
+        blocked = self.civ_filter.blockSignals(True)
+        self.civ_filter.setCurrentIndex(0)
+        self.civ_filter.blockSignals(blocked)
+        self._render()
+
+    def _row_of(self, stem):
+        """Which row carries this build, or -1."""
+        for row in range(self.list.count()):
+            if self.list.item(row).data(Qt.ItemDataRole.UserRole) == stem:
+                return row
+        return -1
+
+    def _chosen(self, *_args):
+        """A build was picked: remember it, and tell the launcher."""
+        stem = self.selected_stem()
         if stem is not None:
             config.set_active_build(stem)
+        # Re-draw, because a row kept only for being the current choice has
+        # just stopped being one. Left alone it would sit there still
+        # labelled "your current choice" while the highlight is plainly on
+        # another build - two answers to "what is selected?", which is worse
+        # than the hidden selection the label was protecting against.
+        #
+        # Deferred by a zero-length timer rather than called outright: this
+        # runs inside currentItemChanged, whose arguments are the very items
+        # a re-draw deletes. Letting Qt finish delivering the signal first
+        # keeps that safe.
+        QTimer.singleShot(0, self._render)
+        self.selection_changed.emit()
+
+    def _take_first_result(self):
+        """Enter in the search box picks the top row."""
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    # ---- adding one ----------------------------------------------------
+
+    def _can_draw(self, token):
+        """Does Loom have a picture for this icon token? The overlay's own
+        answer, so the dialog cannot promise pictures it will not draw."""
+        return overlay.find_icon_file(token) is not None
+
+    def _import(self):
+        """Check a build order file, then copy it into the library."""
+        filename, _filter = QFileDialog.getOpenFileName(
+            self, "Import a build order", "",
+            "Build orders (*.json);;All files (*)")
+        if not filename:
+            return
+
+        source = Path(filename)
+        build, findings = buildcheck.inspect(source, self._can_draw)
+
+        refusals = buildcheck.fatal(findings)
+        if refusals:
+            self.note.emit(f"[builds] {source.name} was not imported")
+            QMessageBox.critical(
+                self, "Loom cannot use that file",
+                f"<b>{source.name}</b> was not imported.<br><br>"
+                + _as_list(refusals))
+            return
+
+        cautions = buildcheck.warnings(findings)
+        if cautions:
+            # Warnings are said, not enforced. Everything reachable here
+            # loads and runs; the player is the one who knows whether the
+            # oddity was deliberate.
+            answer = QMessageBox.warning(
+                self, "Import this build?",
+                f"<b>{buildcheck.describe(build)}</b><br><br>"
+                "Loom can use this build. Worth knowing first:<br><br>"
+                + _as_list(cautions),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                self.note.emit(f"[builds] {source.name} was not imported")
+                return
+
+        destination = self.builds_dir / source.name
+        if destination.exists():
+            answer = QMessageBox.question(
+                self, "Replace that build?",
+                f"<b>{destination.name}</b> is already in your builds "
+                "folder.<br><br>Replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            shutil.copy2(source, destination)
+        except OSError as problem:
+            QMessageBox.critical(
+                self, "The build could not be saved",
+                f"Loom could not write to<br><b>{self.builds_dir}</b>"
+                f"<br><br>{problem}")
+            self.note.emit(f"[builds] could not save {source.name}: {problem}")
+            return
+
+        # Listed and selected immediately: an import that needed a restart
+        # to show up would leave the player wondering whether it worked. The
+        # filters go with it, for the same reason - a build hidden behind a
+        # search the player forgot was on is the confusion Import exists to
+        # remove, wearing a different hat.
+        self.clear_filters()
+        for problem in self.refresh(select=destination.stem):
+            self.note.emit(f"[builds] {problem}")
+        self.note.emit(f"[builds] imported {destination.name}")
+        QMessageBox.information(
+            self, "Build imported",
+            f"<b>{buildcheck.describe(build)}</b><br><br>"
+            "It is selected now, and will be there next time.")
+
+    def _open_folder(self):
+        """Show the builds folder in the system's file manager."""
+        # Qt's own opener rather than a per-OS command line: this is one of
+        # the few places a wrong guess would launch something unexpected.
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.builds_dir)))
+
+    def refresh(self, select=None):
+        """Re-read the library. Returns the same problems _populate does."""
+        problems = self._populate()
+        if select is not None:
+            row = self._row_of(select)
+            if row >= 0:
+                self.list.setCurrentRow(row)
+        return problems
 
     def selected_stem(self):
         """The chosen build's file stem, or None if the library is empty."""
-        return self.combo.currentData()
+        item = self.list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def selected_build(self):
         """The chosen build, already loaded. None if the library is empty."""
@@ -772,9 +1070,10 @@ class LauncherWindow(QWidget):
 
         # The preview mirrors whichever build is picked, now and on change.
         self.browser.set_build(self.picker.selected_build())
-        self.picker.combo.currentIndexChanged.connect(
-            lambda _index: self.browser.set_build(self.picker.selected_build()))
+        self.picker.selection_changed.connect(
+            lambda: self.browser.set_build(self.picker.selected_build()))
 
+        self.picker.note.connect(self.output.append_line)
         for problem in self.picker.problems:
             self.output.append_line(f"[builds] {problem}")
         self._show_overlay_state(running=False)
