@@ -230,15 +230,22 @@ in — [RTS Overlay](https://github.com/CraftySalamander/RTS_Overlay) JSON —
 so **a build downloaded from the community works unchanged**:
 
 - **Browse ready-made builds** at
-  [buildorderguide.com](https://www.buildorderguide.com/) and download the
-  build-order JSON.
+  [buildorderguide.com](https://www.buildorderguide.com/): open a build and
+  press **Export for RTS**, which gives you the build as JSON text. Paste
+  it into Notepad and save it as `SomeBuild.json` (in the save dialog, set
+  *Save as type* to *All files* so it does not become `.txt`).
 - **Or design your own** with the
   [RTS Overlay web tool](https://rts-overlay.github.io) and save the JSON.
 
 Then put the file where Loom looks:
 
-- Running the app: `%APPDATA%\Loom\builds` — create the folder if it is not
-  there. (Paste `%APPDATA%\Loom` into the File Explorer address bar.)
+- **Best: `%APPDATA%\Loom\builds`** — create the folder if it is not there.
+  (Paste `%APPDATA%\Loom` into the File Explorer address bar to jump
+  straight to it.) Builds here survive updating Loom.
+- The `builds` folder inside the app (`Loom\_internal\builds`, next to the
+  shipped build) works too — but replacing the app folder with a new
+  version's zip takes your builds with it, which is why `%APPDATA%` is the
+  better home.
 - Running from a clone: the `builds` folder beside the code.
 
 The launcher lists every build it finds at its next start, each row showing

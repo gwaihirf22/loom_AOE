@@ -75,8 +75,10 @@ here. If you ever do find the panel hidden behind the game, switch to
 - Settings and match statistics: `%APPDATA%\Loom`
 - Your own build orders: put the JSON files in `%APPDATA%\Loom\builds`
   (create the folder if it is not there) and they appear in the launcher
-  next to the shipped set. Running from a clone, the `builds` folder beside
-  the code works too.
+  next to the shipped set. The `builds` folder inside the app
+  (`Loom\_internal\builds`) works too, but a new version's zip replaces
+  it — `%APPDATA%` survives updates. Running from a clone, the `builds`
+  folder beside the code is the equivalent.
 
 If you previously ran Loom from a clone that kept `config.json` and `stats/`
 beside the code, they are copied to `%APPDATA%\Loom` the first time you start
