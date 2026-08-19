@@ -57,11 +57,252 @@ It does this **without touching the game**. Loom reads pixels from the screen
 and draws a window on top. It never injects into, modifies, or reads the memory
 of the game process — so it is not a cheat and cannot be mistaken for one.
 
+---
+
+
+
+## Contents
+
+- [Get Loom running (Windows)](#get-loom-running-windows) — download, unzip, play
+- [Set up the game](#set-up-the-game) — the one setting that matters, and two useful mods
+- [First run](#first-run) — four things, once
+- [Reading the panel](#reading-the-panel) — what the overlay is telling you
+- [Hotkeys](#hotkeys) — nudging the step, and switching following off
+- [Adding build orders](#adding-build-orders) — where to find them, where to put them
+- [Make it yours](#make-it-yours) — size, transparency, alerts, APM
+- [Statistics](#statistics) — every game, graphed
+- [Which platforms it runs on](#which-platforms-it-runs-on) — Linux and macOS too
+- [Running from source](#running-from-source) — for development
+- [How it works](#how-it-works) — the engineering story
+- [Project layout](#project-layout) · [Acknowledgements](#acknowledgements) · [Credits](#credits)
+
+---
+
+
+
+## Get Loom running (Windows)
+
+1. Download the latest
+   [`Loom-x.y.z-windows.zip`](https://github.com/gwaihirf22/loom_AOE/releases/latest).
+2. Unzip it anywhere you like.
+3. Run `Loom.exe`.
+
+That is the whole install — no Python, nothing else to set up. It needs
+**Windows 10 version 1903 or newer** and the game. `Loom.exe` is the
+launcher; everything else opens from it.
+
+### If Windows objects
+
+Loom is a small unsigned open-source program, and Windows treats every new
+release of one with suspicion until enough people have run it:
+
+- **SmartScreen** ("Windows protected your PC"): click **More info → Run
+  anyway**.
+- **Microsoft Defender sometimes quarantines `Loom.exe` outright** — it
+  vanishes right after you extract the zip, blamed on a detection ending in
+  `!ml`. That is a machine-learning false positive on a brand-new file:
+  a fresh release has a hash Defender has never seen, and "unknown +
+  unsigned" is enough for its heuristics. Every release is submitted to
+  Microsoft as a false positive, and these clear within a few days of
+  going up. To get the file back yourself: **Windows Security → Virus &
+  threat protection → Protection history**, find the entry naming
+  `Loom.exe`, and choose **Restore** or **Allow on device**.
+
+Loom never injects into the game, reads its memory, or touches the network —
+it reads pixels from the screen and draws a panel on top. The full source of
+every release is published right here, so none of that has to be taken on
+faith.
+
+---
+
+
+
+## Set up the game
+
+One setting matters, under **Options → Interface**:
+
+- **HUD scale at 100%.** Loom follows the HUD at other sizes, but it reads
+  best at 100% and below about 90% it may not find the HUD at all. (The
+  slider tends to report 99% however it is set — that is fine.) If you
+  change the scale, or switch UI mods, restart the overlay so it measures
+  the new one.
+
+Loom reads **the stock HUD** and **the Anne_HK Better UI mod**, and works
+out which is on screen by itself when a match starts. Any other mod that
+replaces the resource-bar artwork needs its own profile first — Loom says
+so rather than failing silently, naming the closest skin it found.
+
+Two mods pair well with Loom — recommended, never required:
+
+- [Anne_HK — Better UI](https://www.ageofempires.com/mods/details/3762) is
+  the layout Loom was originally built against: more room, standardised
+  item locations, every read a little easier. Fully supported and
+  auto-detected.
+- [The transparent-UI mod](https://www.ageofempires.com/mods/details/2532)
+  clears the per-civilization border artwork from around the HUD — the main
+  source of reading trouble. One honest caveat: it does not cover every
+  civ, and the newest civs (whose artwork causes the most trouble) are the
+  least likely to be covered yet.
+
+---
+
+
+
+## First run
+
+Four things, once:
+
+1. **Pick a build** at the top of the launcher. The preview window beside
+   it shows the whole build; during a match it follows along on its own.
+2. **Place the panel.** **Place overlay** opens it as a draggable window:
+   drag it where you want it, close it, and the spot is saved — no game
+   needed, though with one running it lines up exactly. **Reset position**
+   puts it back in the top-right corner if it ever ends up somewhere
+   unhelpful.
+3. **Start the overlay** — before or during a match, either is fine. It
+   waits for the game, then picks up wherever the match already is.
+4. **Check the alerts.** The idle-Town-Centre and housing warnings can each
+   be switched off if you would rather not see them.
+
+---
+
+
+
+## Reading the panel
+
 ![A close-up of the overlay panel](images/overlay-panel.png)
 
 *The panel reads at a glance: the step to do now, the one after it, and a
 villagers-per-resource row where each resource is its own colour. Here the build
 wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
+
+- **The big line** is the step to do now, with its details beneath and its
+  deadline to the right ("by 7:30 · 22 vills"). The **THEN** row underneath
+  is the step after it, so you can read ahead.
+- **The VILLS row** is your villagers per resource against what the build
+  wants. A number is flagged when you are more than one villager off the
+  plan.
+- **The pace chip**, top right, is measured every time a villager arrives:
+  green on pace, blue ahead, yellow a little behind, red behind.
+- **Alert bands** appear *below* the panel, so the step you are reading
+  never jumps: a flashing red band for an idle Town Centre or being housed,
+  a steady amber one for the gentler warnings.
+- **MANUAL** across the top means the panel has stopped following the game
+  because you told it to — see [Hotkeys](#hotkeys). And when Loom cannot
+  read the HUD at all it says *waiting for the game* rather than showing
+  stale advice.
+
+---
+
+
+
+## Hotkeys
+
+- **Ctrl+Shift+W** — forward one step. **Ctrl+Shift+Q** — back one step.
+  These are a *correction*, not a mode: after you press one, Loom stops
+  following the game for ten seconds so you can read the step, then picks
+  the game back up by itself. The ten seconds is adjustable.
+- **Ctrl+Shift+R** — stop following the game, or start again. This one does
+  not time out: while it is off the panel says **MANUAL** across the top,
+  naming the key that gets you back. A new match always returns to
+  following the game.
+- An optional **start/stop overlay** key does what the launcher's Start and
+  Stop buttons do, so the overlay can be started mid-game without
+  alt-tabbing. It ships unbound; give it keys in the launcher to switch it
+  on.
+
+All of these are editable in the launcher under **Build-order hotkeys**,
+any can be left empty to switch that action off, and one **Use hotkeys**
+switch covers them all. Worth knowing: they are registered with the
+operating system, so **while Loom is running, the game does not see them**
+— if one clashes with a hotkey you use in Age of Empires, change it here.
+Loom also says in the launcher's output when another program already owns a
+combination.
+
+---
+
+
+
+## Adding build orders
+
+Loom uses the format the Age of Empires II community already shares builds
+in — [RTS Overlay](https://github.com/CraftySalamander/RTS_Overlay) JSON —
+so **a build downloaded from the community works unchanged**:
+
+- **Browse ready-made builds** at
+  [buildorderguide.com](https://www.buildorderguide.com/) and download the
+  build-order JSON.
+- **Or design your own** with the
+  [RTS Overlay web tool](https://rts-overlay.github.io) and save the JSON.
+
+Then put the file where Loom looks:
+
+- Running the app: `%APPDATA%\Loom\builds` — create the folder if it is not
+  there. (Paste `%APPDATA%\Loom` into the File Explorer address bar.)
+- Running from a clone: the `builds` folder beside the code.
+
+The launcher lists every build it finds at its next start, each row showing
+the build's own name, civilisation, author and step count.
+
+Each step of a build looks like this:
+
+```json
+{
+  "villager_count": 21,
+  "age": 1,
+  "time": "7:30",
+  "resources": { "food": 14, "wood": 7, "gold": 0, "stone": 0 },
+  "notes": ["Next 4 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@"]
+}
+```
+
+Loom normalises this on load: `"7:30"` becomes 450 seconds and the `@...@`
+icon tokens become pictures in the overlay (words, if the picture is
+missing). Your file is never rewritten. The build shipped with Loom is my
+own, with timings modelled on standard villager production; community
+builds are GPL-licensed and are not redistributed here.
+
+---
+
+
+
+## Make it yours
+
+Everything below lives in the launcher, and settings apply the next time
+the overlay starts.
+
+- **Overlay size** has two knobs: overall size grows the whole panel;
+  text size grows only the writing (the panel gets taller, never wider, so
+  bigger text does not widen its footprint on the game).
+- **Overlay transparency** has two sliders. **Background** is the dark card
+  behind the writing: 100% is solid, 0% removes it entirely. **Text &
+  icons** fades the writing below 50% and makes it brighter and bolder
+  above it — useful over bright terrain with the card thinned. A
+  combination I like: background around **20%** with text at **90%** — a
+  faint card with vivid writing — but it is entirely your taste. Alert
+  bands always stay at full strength; they are alarms.
+- **Alerts.** The idle Town Centre warning tapers as your economy matures:
+  you choose the villager count where it softens and the one where it goes
+  quiet — late game, an idle TC is often deliberate. **HOUSE SOON** warns
+  while a house can still prevent the stall; **HOUSED** means production
+  has actually hit the wall. Each family has its own switch.
+- **Track APM** counts your keystrokes and clicks for the post-game graphs.
+  It counts and nothing more — Loom never knows *which* key was pressed;
+  the code cannot see it, by construction. Switch it off and it counts
+  nothing at all.
+
+---
+
+
+
+## Statistics
+
+Every game writes one JSON file: the build-completion report, a post-game
+summary (game length, peak villagers, villager deaths with raid
+attribution, Town Centre efficiency, housed time, when each unit and
+technology first appeared), and a per-second timeline. The **Statistics**
+button opens past games with three tabs — the build report, the summary,
+and graphs of villagers, pace and APM.
 
 ---
 
@@ -76,59 +317,48 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
 | Statistics + graphs | ✅ | ✅ | ✅ |
 | APM tracking | ✅ | ✅ | ❌ not yet |
 
-**Windows: no install needed.** Download the latest
-[`Loom-x.y.z-windows.zip`](https://github.com/gwaihirf22/loom_AOE/releases/latest),
-unzip anywhere, run `Loom.exe` — that is the whole install, and it is the
-way most people should run Loom. Windows is wary of new unsigned programs
-the first time: SmartScreen wants *More info → Run anyway*, and Defender
-occasionally quarantines a freshly released `Loom.exe` on sight. That is a
-false positive on a brand-new file; the
-[Windows guide](docs/install-windows.md) explains it and how to restore
-the file.
+On Windows, [the zip above](#get-loom-running-windows) is the install. The
+per-OS guides carry the details — display modes, where settings live, what
+is not supported yet:
 
-Running from source instead: **[Linux](docs/install-linux.md)** ·
-**[Windows](docs/install-windows.md)** · **[macOS](docs/install-macos.md)**.
+- **[Windows](docs/install-windows.md)** — Windows 10 1903+; also covers
+  running from source.
+- **[Linux](docs/install-linux.md)** — XWayland, Proton, **Full screen**
+  mode. Verified on Bazzite / KDE Plasma / Wayland.
+- **[macOS](docs/install-macos.md)** — paused and known-degraded; read the
+  limitations first.
+
 The detail behind every cell, and why, is in
 [docs/platform-support.md](docs/platform-support.md).
-
-Everything that is not capture or overlay — the build-order engine, pace, the
-queue reader, notifications, statistics — is plain Python and OpenCV and
-behaves identically everywhere.
 
 ---
 
 
 
-## Trying it without the game
+## Running from source
 
-You do not need the game to see Loom work: **every front end runs in a demo or
-simulated mode with no game required**:
+For development, or the terminal tools. Everything that is not capture or
+overlay — the build-order engine, pace, the queue reader, notifications,
+statistics — is plain Python and OpenCV and behaves identically everywhere.
 
 ```bash
+git clone https://github.com/gwaihirf22/loom_AOE.git
+cd loom_AOE
 python3 -m venv .venv          # Windows: py -m venv .venv
 source .venv/bin/activate      # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# The overlay, replaying a whole match on your desktop in about a minute:
-python loom_overlay.py --demo
-
-# The same logic in a terminal, with three scenarios:
-python loom_coach.py --simulate                     # a player exactly on pace
-python loom_coach.py --simulate --scenario behind   # villagers arriving late
-python loom_coach.py --simulate --scenario stall    # production stops dead
+python loom_app.py             # the launcher: pick a build, start the overlay
+python loom_overlay.py         # the overlay directly, over a running game
+python loom_coach.py           # the same coaching logic, in a terminal
+python loom_read.py            # just the two HUD numbers, for checking
 ```
 
-`--demo` and `--simulate` feed the real build-order engine a made-up but
-plausible game, so you can watch the step advance, the pace meter move, and the
-"behind" warning appear, exactly as they would over a live game. The launcher
-(`python loom_app.py`) works without the game too — its developer mode runs the
-same demo, and the build preview follows it.
-
-And the test suite runs anywhere:
-
-```bash
-python -m pytest tests/ -q
-```
+Every front end also runs without the game — `loom_overlay.py --demo`
+replays a whole match on your desktop, and `loom_coach.py --simulate` does
+the same in a terminal — and the test suite runs anywhere with
+`python -m pytest tests/ -q`. The per-OS guides above cover the platform
+details, including the Windows "Python was not found" trap.
 
 ---
 
@@ -137,443 +367,17 @@ python -m pytest tests/ -q
 ## How it works
 
 Loom is a pipeline: **capture pixels → find the numbers → read the digits →
-filter out mistakes → decide what to show**. Each stage is a small module under
-`loom/`. This section walks the pipeline and explains the decisions that were
-not obvious, because most of them were forced by something I discovered while
-building rather than chosen up front.
-
-### Reading the screen — and the Wayland problem (`capture.py`)
-
-The first plan was to screenshot the screen with the `mss` library. The first
-test came back **pure black**.
-
-That is not a bug, it is a security decision. Under the old X11 display system
-any program could read the pixels of any other — a keylogger-grade hole. Wayland
-(the modern Linux display system this machine uses) closed it: an application may
-only see its own windows. So a normal screenshot returns nothing.
-
-The way in: Age of Empires runs under Proton, which draws the game through
-**XWayland** — a compatibility X server inside the Wayland session. That means
-the game has a real X window whose pixels *can* be read directly, even though the
-screen as a whole cannot. `capture.py` finds that window and asks the X server
-for its pixels with `XGetImage`. A useful side effect is that this works in
-**window-relative coordinates**, so which monitor the game is on and where the
-window sits never matter — a real problem on this two-monitor setup, solved for
-free.
-
-`capture_smoketest.py` (in `tools/`) is kept in the repo as a record: it is the
-script that returned black, and it documents *why* `mss` is not used.
-
-### Finding the numbers (`anchor.py`)
-
-The two numbers are not at fixed pixel positions: they move and change size with
-resolution and the in-game HUD-scale slider. Hardcoded rectangles are hopeless —
-I proved that to myself when a crop that captured the whole resource bar at one
-resolution sliced the digits clean off at another.
-
-So Loom **anchors** instead. It has a small reference image of the population
-icon and slides it over the top of the frame with OpenCV's `matchTemplate` at a
-range of sizes (`cv2.TM_CCOEFF_NORMED`, which matches on pattern rather than
-brightness, so it survives the HUD dimming). Wherever that scores highest is the
-icon, and the villager count and clock are then read at known offsets from it.
-The winning *scale* is reused to size those offsets, so the whole thing is
-resolution-independent. One subtlety: the search is coarse-then-fine, because the
-clock is far from the anchor and a small scale error there becomes a large
-position error — offset error grows with distance.
-
-### Which HUD is on screen (`hud.py`)
-
-The game's own bar and a UI mod's bar draw the same numbers in different art at
-different spacings, so a template cut from one does not find the other — Loom
-spent a while insisting a perfectly visible stock HUD was not there, because the
-anchor scored 0.74 against a 0.80 gate. A **HUD profile** is one skin's anchor
-templates plus the offsets and glyph metrics that belong with them; Loom tries
-each at startup and keeps whichever the pixels choose. Both the stock HUD and
-the Anne_HK Better UI mod are supported, and a third skin is one entry plus two
-small images.
-
-Two things that were not obvious. An anchor may contain **nothing that changes**
-— and that includes the *civilization*, because the resource bar's border art is
-drawn per civ. A first attempt included the bar texture around the icon to make
-the two skins easier to tell apart; it scored 1.00 on the civ it was measured on
-and 0.59 on Portuguese, whose bar is pale stone where the other was dark wood.
-The icons and their black boxes are shared art and identical across civs; the
-scenery around them is not.
-
-And because every skin draws that same shared art, one icon is a **weak**
-discriminator: the two anchors sit about 0.02 apart on each other's HUDs, which
-is a coin toss, not a decision. So Loom asks a second icon — it checks the wood
-icon at the scale the population icon proposes and scores the pair by its weaker
-half. A skin genuinely on screen has both icons where it expects them at one
-size; a wrong skin has to explain one and then finds nothing where the other
-should be. That takes the margin from 0.02 to at least 0.27 on every frame
-measured.
-
-### Recognising the digits (`digits.py`)
-
-Rather than an OCR engine like Tesseract, Loom matches each digit against ten
-small reference images. The HUD font is fixed and pixel-identical every frame, so
-there are only ten possible shapes; matching them is both more accurate and far
-faster than a general engine trained on prose, and it needs no system packages —
-which matters on this immutable OS. The digit templates were cut from real
-screenshots.
-
-### Not trusting a single frame (`filters.py`)
-
-OCR misfires occasionally. The filters stop one bad reading from poisoning the
-rest of the game, and the two numbers need different rules:
-
-- The **villager count** changes rarely, so a value must be seen twice in a row
-before it is believed.
-- The **clock** changes every poll, so requiring two identical readings would
-freeze it. Instead it accepts sensible forward movement and demands
-confirmation only for a surprise (a big jump, or the clock going backwards).
-
-Crucially the count filter does **not** reject large jumps. An earlier version
-did, and it froze the villager count at 22 for a whole session when a new game
-started at 4. A briefly wrong reading fixes itself next poll; a permanently stuck
-one silently desynchronises everything.
-
-### Knowing what is happening (`session.py`)
-
-Two numbers are not yet a sense of *events*. `session.py` turns them into "a game
-started", "resumed", or "tracking lost". The interesting case is telling a brand
-new match apart from alt-tabbing back into the same one — get it wrong and the
-build order restarts under the player mid-game. Loom does it by remembering the
-clock across the gap: if it comes back lower than it went away, the match is new.
-
-### The build order (`build_order.py`)
-
-A build order is a list of steps, each with a villager count, a game time, the
-target villager distribution, and instructions. Given the live count and clock,
-`build_order.py` answers which step is active. The trap: **villager count alone
-is ambiguous**. A Fast Castle sits at 22 villagers for three separate steps,
-because a Town Centre cannot train villagers while it researches an age. So Loom
-identifies a step by villager count *and* time together — the first step not yet
-satisfied by both.
-
-It deliberately shows the first *unfinished* step, not the last completed one.
-An early version showed the completed step and felt a beat behind the player's
-hands the whole game.
-
-### Are you on pace? (`pace.py`)
-
-The pace number is the thing a player watches out of the corner of their eye, so
-how it behaves matters more than any single value. It must not creep on its own.
-
-The rule: *you are as far behind as you were when your current villager arrived,
-and no further — unless something you should have done by now has not happened.*
-A player who fell 30 seconds behind and is now producing at the right rate reads
-a steady "30s", not a number ticking upward. An idle Town Centre makes it climb,
-because now something really is slipping. This is measured at villager **arrival
-events** rather than sampled every poll; sampling made the number sawtooth
-forever, because villagers arrive in jumps while time is continuous.
-
-### Villagers per resource (`resources.py`)
-
-The HUD also shows, under each resource icon, how many villagers are gathering
-it. Loom reads those too and compares them to the build's target, so a beginner
-can see "the build wants 4 on wood, you have 1" — something no manual overlay can
-do. These counts are **advisory only**: they never decide the build-order step,
-because per-resource numbers swing wildly the instant villagers are re-tasked.
-Reading them needed a colour mask plus a connected-component cleanup to drop the
-bar's highlight lines — a plain brightness threshold is no use, because the HUD
-bar's own highlights are bright too.
-
-*Which* colour mask turned out to be a property of the HUD skin rather than of
-the game: the mod prints these numbers in yellow **below** each icon, while the
-stock bar stamps them in white **inside** the icon's box, over the artwork. So
-the number's position comes from the profile, and the reader tries yellow first
-and then a "white and colourless" test — the second one works over artwork
-because skin tones are warm and cloth is saturated, while a digit is neither.
-
-### The production queue (`queue.py`, `production.py`, `alerts.py`)
-
-The HUD's global queue strip shows what every building is training, as tinted
-slot icons. Loom reads the slots — tint, unit identity by template matching,
-group count — and `production.py` turns the stream into believed state: are
-the Town Centers working, is production housed, how many TCs exist (the exact
-count comes from the game's own "Town Center built" notification;
-queue evidence only corroborates). `alerts.py` decides how loudly each fact
-deserves to be said: an idle TC starts obnoxious and tapers off as the economy
-matures; housed always shouts; pop-capped stays silent because it usually
-means production is maxed out. All thresholds and switches are the player's,
-from the launcher.
-
-### The game's own words (`notifications.py`)
-
-The game prints notification lines — "--Town Center Built--", "--Knight
-Created--", attack warnings — and this is the one place it states facts
-outright rather than Loom inferring them from pixels. Two readers share the
-feed: a handful of whole-phrase templates drive the live logic, and
-`glyphs.py` reads **any** line as text using a harvested character set — the
-digit-template idea applied to the whole alphabet, so every building, unit
-and technology event lands in the statistics without a template per phrase,
-an OCR engine, or an AI backend. A line the font cannot fully read is
-dropped and its crop saved, and one `tools/build_notification_font.py`
-command turns it into coverage.
-
-### The payoff screen (`report.py`)
-
-When the build completes, the overlay flips from instructions to a report:
-how the build went — completion time against a perfect run, TC idle seconds,
-villagers lost (with raid attribution from the attack notifications),
-milestone timings. The same data feeds the post-game statistics.
-
-### Showing it (`overlay.py`) — and the tooltip discovery
-
-The overlay is a frameless, click-through, always-on-top panel. Getting it to
-draw over a full-screen game took a real experiment. An ordinary always-on-top
-window drew over every other window but lost to the game — KDE puts a focused
-full-screen window in a stacking layer that outranks it. The fix, found by trying
-several window types, is to make the overlay a **tooltip-type** window, which
-sits in a higher layer still (the one the system volume popup uses), and to run
-it through XWayland. Both are load-bearing and commented as such in the code so
-they are not "tidied away" later.
-
-Making it genuinely *click-through* took a second discovery of the same shape.
-Qt's `WA_TransparentForMouseEvents` only makes the widget ignore mouse events it
-is handed; it tells the X server nothing, so the server went on routing the
-pointer into the overlay's window. Age of Empires II runs under Proton and
-confines the cursor to its own window, as every full-screen RTS does — and it
-loses that confinement the moment the pointer crosses out, so brushing the panel
-threw the mouse onto the second monitor mid-match. The fix is the window flag
-`WindowTransparentForInput`, which Qt implements through the X SHAPE extension:
-it empties the window's *input region*, so the server never considers the pointer
-to have entered at all. Measured with `python-xlib`, the region goes from the
-full panel rectangle to `[]`. `loom/passthrough.py` asks the X server that same
-question at startup and warns if the answer ever changes back.
-
-Because the overlay is click-through it can never be dragged, so repositioning it
-(`--place`) opens it briefly as a normal window; its position is saved as an
-offset from the game window's corner, not a desktop coordinate, so it survives a
-resolution change.
-
-The same engine feeds two other front ends: `loom_coach.py`, a terminal version
-used to get the logic right before any UI existed, and `loom_read.py`, a bare
-readout of the two numbers kept as a diagnostic for when something looks wrong.
-
----
-
-
-
-## Design decisions worth calling out
-
-- **Screen capture, not memory reading or replay parsing.** Memory reading is
-Windows-centric, breaks every patch, and looks like a cheat. Replays are not
-live and do not even store villager counts. Reading the HUD works on any OS and
-touches nothing in the game.
-- **Total villager count is the only signal that advances the build.**
-Per-resource counts are advisory; game time is read from the screen and never
-counted with a wall clock, because game speed is 1.7× in multiplayer and the
-game can pause.
-- **Never guess a reading.** If confidence is low, Loom reports no reading rather
-than a wrong one. A wrong villager count silently desynchronises everything; an
-admitted gap does not.
-- **Use the community's build-order format**, so builds people already share load
-unchanged, rather than inventing a schema.
-- **The overlay is transparent to the X server, not just to Qt.** Anything less
-and a game that confines the mouse cursor loses that confinement whenever the
-pointer touches the panel. This makes Loom *less* intrusive, not more: it stops
-the overlay intercepting pointer crossings that belonged to the game.
-
-More of the reasoning, including the wrong turns, is in my working notes, and the
-tests below encode the specific bugs these decisions were made to prevent.
-
----
-
-
-
-## Build orders
-
-Build orders are JSON files in `builds/`. Loom uses the same format as
-[RTS Overlay](https://github.com/CraftySalamander/RTS_Overlay), the format the
-Age of Empires II community already shares builds in — so **a build downloaded
-from the community library works unchanged**: drop the `.json` file into
-`builds/`. Verified against Hera's Arena Fast Castle Boom, which loads and runs
-with no conversion.
-
-Each step looks like this:
-
-```json
-{
-  "villager_count": 21,
-  "age": 1,
-  "time": "7:30",
-  "resources": { "food": 14, "wood": 7, "gold": 0, "stone": 0 },
-  "notes": ["Next 4 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@"]
-}
-```
-
-Loom normalises this on load: `"7:30"` becomes 450 seconds, the `@...@` icon
-tokens become readable words ("Villager", "Wood"), and each note is split on `|`
-into a headline instruction plus extras. The build shipped in `builds/` is my
-own, with timings modelled on standard villager production; community builds are
-GPL-licensed and are not redistributed here.
-
-Optionally, dropping `wood.png`, `food.png`, `gold.png`, `stone.png` into an
-`icons/` folder makes the overlay show the game's resource icons instead of the
-words; without them it falls back to the full words, so there is never any doubt
-which resource is which.
-
----
-
-
-
-## Running it for real
-
-The same everywhere:
-
-- Python 3.10+
-- Age of Empires II: Definitive Edition
-- In-game **HUD scale at 100%** (Options → Interface) — Loom warns if it
-  measures otherwise; recognition degrades away from 100%, and below about 90%
-  the HUD may not be found at all. (The slider tends to report 99% however it
-  is set; that 1% is well inside the tolerance.)
-- The **stock HUD** or the **Anne_HK Better UI** mod. Loom knows both and works
-  out which is on screen by itself — see "Which HUD is on screen" above. Another
-  UI mod that replaces the resource-bar artwork needs its own profile; Loom says
-  so rather than waiting silently, naming the closest skin and its score.
-
-  The launcher's **How to use** button says the same thing inside the app.
-
-  Two mods pair well with Loom (recommended, never required):
-  [Anne_HK — Better UI](https://www.ageofempires.com/mods/details/3762), the
-  layout Loom was built against, and
-  [the transparent-UI mod](https://www.ageofempires.com/mods/details/2532),
-  which clears the per-civ border artwork that causes most reading trouble —
-  though it does not yet cover every civ, the newest least of all.
-
-Per platform — the display mode the game needs, where settings are kept, and
-what is not supported yet — follow the guide for yours:
-
-- **[Linux](docs/install-linux.md)** — XWayland, Proton, **Full screen** mode.
-  Verified on Bazzite / KDE Plasma / Wayland.
-- **[Windows](docs/install-windows.md)** — Windows 10 1903+, **Windowed
-  Fullscreen** recommended.
-- **[macOS](docs/install-macos.md)** — paused and known-degraded; read the
-  limitations first.
-
-```bash
-pip install -r requirements.txt
-python loom_overlay.py            # over a running game
-python loom_coach.py              # the same, in the terminal
-```
-
-Resolution and the HUD-scale slider do not need configuring — Loom detects the
-HUD at whatever size it is drawn.
-
-### The launcher
-
-```bash
-python loom_app.py
-```
-
-One window instead of four terminal tabs: pick a build order from the library
-in `builds/` (each row shows the build's own name, civilisation, author and
-step count), start and stop the overlay, and adjust the alerts — the villager
-counts where the idle-TC warning softens and silences, and on/off switches
-for the TC-idle, housed and pre-emptive HOUSE SOON warnings. Settings are
-saved to `config.json` the moment they change, and apply the next time the
-overlay starts. The HOUSE SOON threshold is also settable: how much population
-space remaining should raise the pre-emptive warning — raise it if you boom
-hard enough to keep getting housed at the default 4.
-
-The **build preview** is its own window: four step cards stacked vertically —
-the step just done, the current step highlighted, and the two after it — each
-showing the same information the overlay shows, including the
-villagers-per-resource targets for that point in the build. Being a normal
-window, it is sized by normal window management, and **resizing it scales the
-cards**: drag it bigger on the second monitor and everything grows with it.
-The size persists. With no game running it is a study aid: click a card or
-scroll to browse the whole build. While the overlay is running a game, the
-preview follows the step the player is actually on (the overlay reports its
-state as sentinel lines on its own stdout, which the launcher already
-streams), and only the current card shows the live readings — game time,
-villager count, have/want per resource, and pace. Live wins: clicks go dead
-while following, and browsing resumes the moment there is no usable reading
-to follow (menus, the pre-match wait, or the overlay stopping). The **Show
-build preview** checkbox (on by default) and the window's own close button
-both hide it, and stay in sync.
-
-**Place overlay**, next to the Start/Stop buttons, opens the overlay's
-placement mode: drag the panel where you want it over the game, close it, and
-the position saves. It is disabled while the overlay is running — a new
-position applies on the next start anyway.
-
-The **Overlay size** box holds two independent knobs, as percentages.
-*Overall size* grows the whole panel uniformly — geometry, writing, icons.
-*Text size* grows only the writing (and the panel's height to give the taller
-lines room), never its width, so bigger text does not widen the overlay's
-footprint on the game — long instructions shorten with an ellipsis instead.
-Both apply the next time the overlay starts, like every other setting.
-
-### Statistics
-
-Every game writes one JSON file to `stats/`: the build-completion report,
-a post-game summary (game length, peak villagers, villager deaths with raid
-attribution, TC efficiency, housed time, when each unit and technology first
-appeared in the production queue), and a per-second timeline. The overlay
-writes it at build completion, every thirty game-seconds after that, and on
-any exit — including being stopped from the launcher. The **Statistics**
-button opens past games with three tabs: the build report, the post-game
-summary, and graphs (villagers and population, the pace meter, and APM)
-drawn with plain QPainter. Two honesty notes baked into the UI: queue rows
-are *first sightings*, not produced counts (the queue hides duplicate groups
-and never reports completion), and "game length" means the last usable
-reading, because the game never announces its end.
-
-**Track APM** runs a background counter alongside the overlay: keystrokes
-and clicks per minute, bucketed every five seconds and aligned to the game
-clock in the stats file. The privacy contract is structural, not a promise:
-the counter selects X11 *raw* input events whose payload is never decoded —
-it counts that a key was pressed and cannot know which. It also only sees
-the XWayland world the game lives in; input to native Wayland windows never
-reaches it. Raw APM only — eAPM would require knowing what the actions
-were, which is exactly what this refuses to see.
-
-A **Developer mode** checkbox reveals the debug tools: the overlay's demo
-mode, the terminal coach's simulator, the misread logger, the
-frame grabber, and a button that runs the test suite with its output
-streaming into the window. Everything the launcher starts runs as a child
-process, and closing the launcher takes its children with it. (The demo
-overlay drives the build preview too, so the follow behaviour can be watched
-without a game.)
-
-The launcher is an ordinary Wayland window; only the overlay itself runs
-through XWayland (see the capture section for why).
-
----
-
-
-
-## Tests
-
-```bash
-python -m pytest tests/ -q
-```
-
-(or the **Run tests** button in the launcher's developer mode, which streams
-the same run into the window.)
-
-Over two hundred tests, and they cover the *logic*, not the computer vision, because that is
-where every bug so far has been: the reader has been correct since it was
-written, while the reasoning on top of it went wrong repeatedly. Most tests pin
-down a failure that actually happened, and say so in a comment — the villager
-count that stuck at 22, the clock filter that silently assumed the poll rate, the
-pace number that crept every second, the overlay that showed the finished step
-instead of the next one. They exist so those cannot come back when the code later
-looks over-cautious and invites simplifying. `test_digits.py` needs no
-screenshots: it feeds each glyph template back through the classifier, catching a
-corrupt or mislabelled one instantly.
-
-Capture and the Qt drawing are not unit tested — they need a live X server and a
-running game, and `loom_read.py` serves as the manual check. The one Qt thing
-that *is* tested is the overlay's window flags, because they are pure data:
-`tests/test_overlay_flags.py` asserts, with no display and no `QApplication`,
-that the panel is still a tooltip window and still transparent for input, and
-that placement mode is neither. Both of those were found by experiment, and both
-look like clutter to a later reader.
+filter out mistakes → decide what to show**. The first screenshot attempt
+came back pure black (Wayland does not let one program read another's
+pixels — the way in is the game's own XWayland window); the digits are read
+by matching ten reference images because the HUD font never changes; and no
+reading is ever guessed, because a wrong villager count silently
+desynchronises everything while an admitted gap does not.
+
+The full engineering story — the anchor search, the HUD-skin detection, the
+filters and the bugs they pin down, the click-through discovery, and the
+design decisions worth calling out — is in
+**[docs/how-it-works.md](docs/how-it-works.md)**.
 
 ---
 
@@ -635,11 +439,13 @@ templates/              reference images used for matching
   digits/               labelled 0-9 glyphs (shared: it is the game's font)
   queue/                unit icons for reading the production queue
 builds/                 build orders as JSON
+master_aoe2_images/     the build-step icon library (game art - see below)
 stats/                  per-game statistics files (gitignored)
 captures/               frames grabbed while playing (gitignored); INDEX.md
                         is generated, so rename a folder to describe it
 images/                 resource icons for overlay
 tests/                  the test suite
+docs/                   install guides, platform support, how it works
 CHANGELOG.md            version history; 1.0.0 is the Windows release
 ```
 
@@ -691,12 +497,10 @@ affiliated with Microsoft.
 
 ## Credits
 
-Built by **Paul Blake** as a CS50 final project.
+Built by **Paul Blake**. Loom began as a CS50 final project, and outgrew
+the course before the course finished.
 
-I used Anthropic's Claude to help with proper syntax, code organisation,
-debugging, auditing and review. The design and code are my own work.
-I cited at the top of every source file, as CS50 permits for
-the final project. The code, architecture, design decisions, testing and direction are
-mine; Every significant choice came out of testing the tool against a real
-game and deciding what the results meant. Yet, many thousands of questions were asked
-of Claude for finding documentation and showing me how to write snippets of code.
+I used Anthropic's Claude throughout for syntax, code organisation,
+debugging and review — cited at the top of every source file. The design,
+architecture and direction are my own: every significant choice came out of
+testing the tool against a real game and deciding what the results meant.
