@@ -76,7 +76,17 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
 | Statistics + graphs | ✅ | ✅ | ✅ |
 | APM tracking | ✅ | ✅ | ❌ not yet |
 
-Install guides: **[Linux](docs/install-linux.md)** ·
+**Windows: no install needed.** Download the latest
+[`Loom-x.y.z-windows.zip`](https://github.com/gwaihirf22/loom_AOE/releases/latest),
+unzip anywhere, run `Loom.exe` — that is the whole install, and it is the
+way most people should run Loom. Windows is wary of new unsigned programs
+the first time: SmartScreen wants *More info → Run anyway*, and Defender
+occasionally quarantines a freshly released `Loom.exe` on sight. That is a
+false positive on a brand-new file; the
+[Windows guide](docs/install-windows.md) explains it and how to restore
+the file.
+
+Running from source instead: **[Linux](docs/install-linux.md)** ·
 **[Windows](docs/install-windows.md)** · **[macOS](docs/install-macos.md)**.
 The detail behind every cell, and why, is in
 [docs/platform-support.md](docs/platform-support.md).
