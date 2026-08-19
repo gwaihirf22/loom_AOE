@@ -29,12 +29,15 @@ release of one with suspicion until enough people have run it. Two flavours:
   vanishes right after you extract the zip, usually blamed on a
   machine-learning detection ending in `!ml`. That is a false positive on
   the freshly built file: a brand-new release has a file hash Defender has
-  never seen, and "unknown + unsigned" is enough for its heuristics. Each
-  release is submitted to Microsoft as a false positive, and these clear
-  within a few days of going up. If it happens to you: **Windows Security →
+  never seen, and "unknown + unsigned" is enough for its heuristics. Loom
+  is a free community project and is not code-signed — signing is a paid
+  subscription, and this app earns nothing — so a new release may always
+  start out under suspicion. If it happens to you: **Windows Security →
   Virus & threat protection → Protection history**, find the entry naming
-  `Loom.exe`, and choose **Restore** / **Allow on device** — or just wait a
-  few days and re-extract the zip.
+  `Loom.exe`, and choose **Restore** / **Allow on device**. If Defender
+  keeps taking it, add the folder you unzipped Loom into to its
+  exclusions: **Virus & threat protection settings → Exclusions → Add an
+  exclusion → Folder** (this needs administrator rights).
 
 Loom never injects into the game, reads its memory, or touches the network;
 it reads pixels from the screen and draws a panel on top. The full source
