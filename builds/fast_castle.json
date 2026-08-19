@@ -9,91 +9,91 @@
       "age": 1,
       "time": "1:15",
       "resources": { "food": 6, "wood": 0, "gold": 0, "stone": 0 },
-      "notes": ["Build 2 Houses | First 6 Villagers to Sheep"]
+      "notes": ["Build 2 @other/House_aoe2DE.webp@ | First 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@"]
     },
     {
       "villager_count": 10,
       "age": 1,
       "time": "2:55",
       "resources": { "food": 6, "wood": 4, "gold": 0, "stone": 0 },
-      "notes": ["Next 4 Villagers to Wood (build Lumber Camp)"]
+      "notes": ["Next 4 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build @lumber_camp/Lumber_camp_aoe2de.webp@)"]
     },
     {
       "villager_count": 11,
       "age": 1,
       "time": "3:20",
       "resources": { "food": 7, "wood": 4, "gold": 0, "stone": 0 },
-      "notes": ["Lure 1st Boar | Eat it under the Town Centre"]
+      "notes": ["Lure 1st @animal/Boar_aoe2DE.webp@ | Eat it under the @town_center/Towncenter_aoe2DE.webp@"]
     },
     {
       "villager_count": 13,
       "age": 1,
       "time": "4:10",
       "resources": { "food": 9, "wood": 4, "gold": 0, "stone": 0 },
-      "notes": ["Build 2 Houses, then Mill at Berries | Next 2 Villagers to Berries"]
+      "notes": ["Build 2 @other/House_aoe2DE.webp@, then @mill/Mill_aoe2de.webp@ at @resource/BerryBushDE.webp@ | Next 2 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@"]
     },
     {
       "villager_count": 16,
       "age": 1,
       "time": "5:25",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 0 },
-      "notes": ["Next 3 Villagers to Berries and Boar | Lure 2nd Boar"]
+      "notes": ["Next 3 @resource/MaleVillDE.webp@ to @resource/BerryBushDE.webp@ and @animal/Boar_aoe2DE.webp@ | Lure 2nd @animal/Boar_aoe2DE.webp@"]
     },
     {
       "villager_count": 19,
       "age": 1,
       "time": "6:40",
       "resources": { "food": 12, "wood": 7, "gold": 0, "stone": 0 },
-      "notes": ["Next 3 Villagers to Wood (build 2nd Lumber Camp)"]
+      "notes": ["Next 3 @resource/MaleVillDE.webp@ to @resource/Aoe2de_wood.webp@ (build 2nd @lumber_camp/Lumber_camp_aoe2de.webp@)"]
     },
     {
       "villager_count": 22,
       "age": 1,
       "time": "7:55",
       "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
-      "notes": ["Next 3 Villagers to Gold (build Mining Camp) | Research Loom"]
+      "notes": ["Next 3 @resource/MaleVillDE.webp@ to @resource/Aoe2de_gold.webp@ (build @mining_camp/Mining_camp_aoe2de.webp@) | Research @town_center/LoomDE.webp@"]
     },
     {
       "villager_count": 22,
       "age": 1,
       "time": "9:00",
       "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
-      "notes": ["Before Feudal Age | Click up at 22 Villagers | Needs 500 Food"]
+      "notes": ["Before @age/FeudalAgeIconDE.webp@ | Click up at 22 @resource/MaleVillDE.webp@ | Needs 500 @resource/Aoe2de_food.webp@"]
     },
     {
       "villager_count": 22,
       "age": 2,
       "time": "11:10",
       "resources": { "food": 12, "wood": 7, "gold": 3, "stone": 0 },
-      "notes": ["In Feudal Age | Build Market and Blacksmith with 2 Wood Villagers, then send them back"]
+      "notes": ["In @age/FeudalAgeIconDE.webp@ | Build @market/Market_aoe2DE.webp@ and @blacksmith/Blacksmith_aoe2de.webp@ with 2 @resource/Aoe2de_wood.webp@ @resource/MaleVillDE.webp@, then send them back"]
     },
     {
       "villager_count": 25,
       "age": 2,
       "time": "12:25",
       "resources": { "food": 15, "wood": 7, "gold": 3, "stone": 0 },
-      "notes": ["Next 3 Villagers to Farms"]
+      "notes": ["Next 3 @resource/MaleVillDE.webp@ to @mill/FarmDE.webp@"]
     },
     {
       "villager_count": 27,
       "age": 2,
       "time": "13:15",
       "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
-      "notes": ["Next 2 Villagers to Gold"]
+      "notes": ["Next 2 @resource/MaleVillDE.webp@ to @resource/Aoe2de_gold.webp@"]
     },
     {
       "villager_count": 27,
       "age": 2,
       "time": "13:40",
       "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
-      "notes": ["Before Castle Age | Click up at 27 Villagers | Needs 800 Food and 200 Gold"]
+      "notes": ["Before @age/CastleAgeIconDE.webp@ | Click up at 27 @resource/MaleVillDE.webp@ | Needs 800 @resource/Aoe2de_food.webp@ and 200 @resource/Aoe2de_gold.webp@"]
     },
     {
       "villager_count": 27,
       "age": 3,
       "time": "16:20",
       "resources": { "food": 15, "wood": 7, "gold": 5, "stone": 0 },
-      "notes": ["In Castle Age | Add Town Centres and keep making Villagers"]
+      "notes": ["In @age/CastleAgeIconDE.webp@ | Add @town_center/Towncenter_aoe2DE.webp@ and keep making @resource/MaleVillDE.webp@"]
     }
   ]
 }

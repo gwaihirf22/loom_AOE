@@ -9,14 +9,14 @@
       "age": 1,
       "time": "1:15",
       "resources": { "food": 6, "wood": 0, "gold": 0, "stone": 0 },
-      "notes": ["Build 2 Houses | First 6 Villagers to Sheep | Queue Villagers non-stop"]
+      "notes": ["Build 2 @other/House_aoe2DE.webp@ | First 6 @resource/MaleVillDE.webp@ to @animal/Sheep_aoe2DE.webp@ | Queue @resource/MaleVillDE.webp@ non-stop"]
     },
     {
       "villager_count": 7,
       "age": 1,
       "time": "1:40",
       "resources": { "food": 7, "wood": 0, "gold": 0, "stone": 0 },
-      "notes": ["Villager 7 lures 1st Boar"]
+      "notes": ["@resource/MaleVillDE.webp@ 7 lures 1st @animal/Boar_aoe2DE.webp@"]
     },
     {
       "villager_count": 11,
@@ -24,8 +24,8 @@
       "time": "3:20",
       "resources": { "food": 7, "wood": 4, "gold": 0, "stone": 0 },
       "notes": [
-        "Villagers 8-11 to Wood | Villager 8 builds Lumber Camp",
-        "Villager 9 builds 2 Houses, palisades gaps to the TC (max 5 tiles), then Wood"
+        "@resource/MaleVillDE.webp@ 8-11 to @resource/Aoe2de_wood.webp@ | @resource/MaleVillDE.webp@ 8 builds @lumber_camp/Lumber_camp_aoe2de.webp@",
+        "@resource/MaleVillDE.webp@ 9 builds 2 @other/House_aoe2DE.webp@, @defensive_structures/Palisade_wall_aoe2de.webp@ gaps to the @town_center/Towncenter_aoe2DE.webp@ (max 5 tiles), then @resource/Aoe2de_wood.webp@"
       ]
     },
     {
@@ -34,8 +34,8 @@
       "time": "5:25",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 0 },
       "notes": [
-        "Villagers 12-16 to food under the TC (Boar, Deer or Sheep)",
-        "Lure 2nd Boar around Villager 11"
+        "@resource/MaleVillDE.webp@ 12-16 to @resource/Aoe2de_food.webp@ under the @town_center/Towncenter_aoe2DE.webp@ (@animal/Boar_aoe2DE.webp@, @animal/Deer_aoe2DE.webp@ or @animal/Sheep_aoe2DE.webp@)",
+        "Lure 2nd @animal/Boar_aoe2DE.webp@ around @resource/MaleVillDE.webp@ 11"
       ]
     },
     {
@@ -44,8 +44,8 @@
       "time": "6:15",
       "resources": { "food": 14, "wood": 4, "gold": 0, "stone": 0 },
       "notes": [
-        "Villager 17 builds Mill on Berries | Villager 18 to Berries",
-        "Move 4 from under the TC to Berries | Keep at least 6 on dead Boar, 3 on dead Deer"
+        "@resource/MaleVillDE.webp@ 17 builds @mill/Mill_aoe2de.webp@ on @resource/BerryBushDE.webp@ | @resource/MaleVillDE.webp@ 18 to @resource/BerryBushDE.webp@",
+        "Move 4 from under the @town_center/Towncenter_aoe2DE.webp@ to @resource/BerryBushDE.webp@ | Keep at least 6 on dead @animal/Boar_aoe2DE.webp@, 3 on dead @animal/Deer_aoe2DE.webp@"
       ]
     },
     {
@@ -54,8 +54,8 @@
       "time": "7:55",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
       "notes": [
-        "Villagers 19-22 to Stone | Villager 19 builds Mining Camp on the safest Stone",
-        "Move 2 from under the TC to Stone (delay if it causes decay)"
+        "@resource/MaleVillDE.webp@ 19-22 to @resource/Aoe2de_stone.webp@ | @resource/MaleVillDE.webp@ 19 builds @mining_camp/Mining_camp_aoe2de.webp@ on the safest @resource/Aoe2de_stone.webp@",
+        "Move 2 from under the @town_center/Towncenter_aoe2DE.webp@ to @resource/Aoe2de_stone.webp@ (delay if it causes decay)"
       ]
     },
     {
@@ -63,7 +63,7 @@
       "age": 1,
       "time": "8:20",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
-      "notes": ["Research Loom | Click Feudal Age at 22 pop"]
+      "notes": ["Research @town_center/LoomDE.webp@ | Click @age/FeudalAgeIconDE.webp@ at 22 pop"]
     },
     {
       "villager_count": 22,
@@ -71,10 +71,10 @@
       "time": "10:30",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
       "notes": [
-        "In Feudal: build Market with 2 Villagers, Blacksmith with 1",
-        "Sell 100 Stone and 100 Wood, click Castle Age",
-        "Against an enemy Fast Castle: sell 300 Stone, buy 100 Food instead",
-        "If pressured, stop Villager production until safe"
+        "In @age/FeudalAgeIconDE.webp@: build @market/Market_aoe2DE.webp@ with 2 @resource/MaleVillDE.webp@, @blacksmith/Blacksmith_aoe2de.webp@ with 1",
+        "Sell 100 @resource/Aoe2de_stone.webp@ and 100 @resource/Aoe2de_wood.webp@, click @age/CastleAgeIconDE.webp@",
+        "Against an enemy Fast Castle: sell 300 @resource/Aoe2de_stone.webp@, buy 100 @resource/Aoe2de_food.webp@ instead",
+        "If pressured, stop @resource/MaleVillDE.webp@ production until safe"
       ]
     },
     {
@@ -83,8 +83,8 @@
       "time": "13:30",
       "resources": { "food": 12, "wood": 4, "gold": 0, "stone": 6 },
       "notes": [
-        "In Castle Age: build a Castle with the Stone miners | Train your Unique Unit",
-        "Resume Villager production and add economy behind it"
+        "In @age/CastleAgeIconDE.webp@: build a @castle/Castle_aoe2DE.webp@ with the @resource/Aoe2de_stone.webp@ miners | Train your Unique Unit",
+        "Resume @resource/MaleVillDE.webp@ production and add economy behind it"
       ]
     }
   ]
