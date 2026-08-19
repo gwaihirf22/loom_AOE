@@ -18,6 +18,7 @@ See the design notes for the full story.
 # debugging and review. The design and code are my own work.
 
 import time
+from pathlib import PurePosixPath
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
@@ -96,6 +97,34 @@ def load_resource_icons(height=ICON_HEIGHT):
 _step_icon_cache = {}
 
 
+def find_icon_file(token):
+    """The library file for one @icon@ token, forgiving about the extension.
+
+    Community builds name the same pictures with whatever suffix the site
+    they came from used - buildorderguide's export writes .png and .jpg
+    where the shipped library holds .webp - and every such token still
+    points at the right folder and the right name. So after the exact
+    match, any file in the SAME folder with the same name and a different
+    extension counts, case-insensitively. The folder is not forgiven:
+    different icons can share a name across folders, and a wrong picture
+    on an instruction is worse than the words.
+    """
+    exact = paths.find_asset("master_aoe2_images", token)
+    if exact is not None:
+        return exact
+
+    relative = PurePosixPath(token)
+    wanted = relative.stem.lower()
+    for base in paths.asset_search_path("master_aoe2_images"):
+        folder = base / relative.parent
+        if not folder.is_dir():
+            continue
+        for candidate in sorted(folder.iterdir()):
+            if candidate.is_file() and candidate.stem.lower() == wanted:
+                return candidate
+    return None
+
+
 def load_step_icon(token, height):
     """The picture for one @icon@ token, scaled to a text line. None if the
     library does not have it - the caller falls back to words."""
@@ -104,7 +133,7 @@ def load_step_icon(token, height):
         return _step_icon_cache[key]
 
     pixmap = None
-    path = paths.find_asset("master_aoe2_images", token)
+    path = find_icon_file(token)
     if path is not None:
         loaded = QPixmap(str(path))
         if not loaded.isNull():
