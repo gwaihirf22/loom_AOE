@@ -58,6 +58,18 @@ Two settings matter, both under **Options → Interface**:
   which is on screen by itself. Another UI mod that replaces the resource-bar
   artwork needs its own profile; Loom says so rather than waiting silently.
 
+**Resolution.** Loom reads the HUD at **1920x1080 and 2560x1440**, on both
+skins, and every band is checked against recorded games at both. Anything
+between should be fine; far outside that range is untested rather than known
+bad.
+
+One thing worth knowing if you play at a resolution that is *not* your
+monitor's own - 1080p on a 1440p screen, say. The overlay can appear to
+shimmer or vibrate slightly. That is the display scaling the picture, not
+Loom: measured, the overlay's window does not move at all and its own edge
+holds to a fifteenth of a pixel. Playing at the monitor's native resolution,
+or in windowed mode, removes it.
+
 Two mods are worth installing alongside Loom — recommended, not required:
 
 - [Anne_HK — Better UI](https://www.ageofempires.com/mods/details/3762) is the

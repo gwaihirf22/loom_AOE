@@ -51,6 +51,11 @@ Two things Windows does better than macOS:
   keeps capture pixels and Qt points apart, so a 125% or 150% display reads and
   places the overlay correctly.
 
+Reading the HUD is verified at **1920x1080 and 2560x1440**, on the stock bar
+and on Anne_HK, against recorded games rather than by eye: every band - the
+clock, the villager count, the population display and the production queue -
+is replayed frame by frame at both sizes.
+
 The overlay sits above the game in fullscreen - measured at 2560x1440, with
 click-through confirmed by asking Windows for the window's `WS_EX_TRANSPARENT`
 bit. There is no windowed-only restriction here, unlike macOS.

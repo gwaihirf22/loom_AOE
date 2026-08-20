@@ -6,6 +6,125 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.2 — 2026-08-20
+
+**Loom can read a 1920x1080 screen.** Until now it could not, and said so
+in the worst way available: by reading the HUD wrongly rather than not at
+all. Two threads came together in this release - the first report from
+someone testing on hardware that is not mine (Windows 10, 1080p, the
+packaged 1.0.1 zip), and a session of measuring every band against captured
+frames from real games at both resolutions.
+
+### The launcher, from the tester's report
+
+Five problems, three with a cause visible in the source. Every one was
+invisible on this machine - a taller screen, a source tree instead of a
+bundle, and a desktop theme that happened to paint the missing background.
+
+### Fixed
+
+- **The launcher fits the screen it opens on.** It was one tall column and
+  it had outgrown 1080p: Qt will not honour a resize below a layout's
+  minimumSizeHint, so the window opened with Start and the output pane below
+  the bottom edge, and maximising made the layout squeeze every box PAST its
+  own minimum until the captions overlapped. The settings now live in tabs -
+  Alerts, Appearance, Hotkeys, and Developer tools when it is switched on -
+  which is 400 pixels of height back, and the whole column sits in a scroll
+  area so a window dragged smaller scrolls instead of crushing itself. The
+  build picker, the Start row and the output pane stay outside the tabs:
+  they are the spine of the app, not settings. `fitted_size` and
+  `clamped_position` are the arithmetic, tested against fake screens for the
+  same reason `beside` is.
+- **The launcher remembers its size and where it was left**, like the build
+  preview already did, and both are clamped to the screen on the way back -
+  a geometry saved on a 1440p desktop must not restore off the bottom of a
+  1080p one, where the only symptom is Loom appearing not to start.
+- **Three developer buttons no longer kill the app.** Grab frames,
+  Passthrough check and Run tests are `-m tools.something` and `-m pytest`,
+  which a bundle has no source tree or interpreter to run: `entry.argv_for`
+  said so by raising, inside a Qt slot, where PyQt6 aborts the process - and
+  with `console=False` there was nowhere for the traceback to go. From
+  outside, Loom simply closed. `entry.can_run` is now asked first and those
+  buttons are greyed with the reason in their tooltip.
+- **A crash says so.** An unhandled exception anywhere now shows a message
+  box and prints the traceback, instead of a windowed build disappearing in
+  silence. It earned its place within the hour: it caught a moveEvent
+  arriving before its own timer had been built.
+- **Child processes speak UTF-8.** A child's stdout is a pipe, so Python
+  encoded it with the locale codec - cp1252 - while the launcher decodes
+  UTF-8. Coach simulate died on its first arrow with UnicodeEncodeError
+  before printing a line, which looked exactly like the button being broken.
+  Both ends now agree, unfrozen (`-X utf8`) and frozen (a reconfigure beside
+  the line-buffering one that was already there).
+- **How to use shows its pages again.** The body was a QLabel coloured
+  `#eeeeee` inside a QScrollArea, trusting the scroll area's dark background
+  to reach it. On a plain Windows 10 theme the viewport paints itself
+  window-grey and near-white writing on it is invisible - the page read as
+  empty apart from its title, which sits outside all that and kept the
+  system colour. It is a QTextBrowser now, carrying both its colours in its
+  own palette, with a link colour that can be read on a dark page.
+
+### Reading the HUD at 1080p
+
+The tester's fifth problem - "the overlay does not work in-game at
+1920x1080" - turned out to be four separate faults, each hiding the next,
+and every one of them a threshold or a template tuned at a size the HUD no
+longer was. They were found by replaying captured frames from real games:
+eleven runs, both HUD skins, both resolutions, roughly 2,000 frames.
+
+- **The clock read nothing at all** - 0 frames out of 185 - because at this
+  size its glyphs are about 6x12 pixels. Four things were needed, each
+  measured by removing it and watching the read die: glyphs scored at the
+  size the screen drew them as well as stretched to the template box, a
+  3px "1" counted as a digit rather than mistaken for a colon, hollow "0"s
+  rejoined when the threshold splits them, and a third and fainter white
+  pass. Together: 184 of 185, none backwards. A clock above four hours is
+  also refused now, because four split zeros read as "10:01:00" on about
+  one frame in eight.
+- **The villager count was confidently wrong.** The same 3px "1" was being
+  dropped by a different reader, so 18 read as 8 and 21 as 2 - on 189
+  frames out of 300, self-consistently enough to look like flakiness rather
+  than the silent wrong number it was. The rule the clock and population
+  readers each had in their own dialect is now one function they share.
+- **The stock villager band was reading the banner.** Its top edge sat
+  inside the artwork above the number, and where a digit's columns caught a
+  speck of that art the glyph was squashed into half its box and matched in
+  a shape it never had on screen. Never a resolution bug - it scored 0.32 at
+  1080p and 0.28 at 1440p - which is why it hid behind a fallback pass that
+  reads the leading digit alone. Counts of 10, 11, 14 and 15 now appear for
+  the first time, and a ten-minute game reaches 37 villagers instead of
+  stopping at 17.
+- **The population band had all but stopped answering**, which is what the
+  housing alerts run on: Anne_HK read 152 of 263 legible bands and stock 42
+  of 267, while both read every band at 1440p. Three faults - a split
+  threshold floored at its own full-size value so it never scaled down,
+  stock's "5" not matching templates cut at larger sizes, and a
+  last-resort pass that split a "4" in two and read half of it as a "1".
+  That last one now refuses the whole band: the population display has no
+  legitimately narrow glyph, so a narrow run is a broken digit, and a
+  plausible wrong number is worse than none. Across every capture: 1,795
+  readings against 1,299, with the wrong ones unchanged.
+
+2560x1440 is untouched throughout, on both skins, verified run by run -
+including with each new mechanism switched off in turn, to show they engage
+only where the old code read nothing.
+
+### Known problems
+
+- **The housed alert can still fire when you are not housed.** Seen once in
+  a 1080p game after these fixes, and consistent with ten population
+  readings in one capture that disagree with the villager count beside
+  them. A residual digit confusion on the stock bar at 1080p; not yet
+  pinned down.
+- **The overlay can shimmer at a non-native resolution.** Measured and
+  traced out of Loom: the window does not move - 3,660 samples, one
+  position - and the panel's own edge holds to a fifteenth of a pixel. It
+  is the display scaling 1080p onto a 1440p panel, so the fix is to play at
+  your monitor's own resolution or in windowed mode.
+- **The background-transparency slider is reported as doing nothing.** No
+  cause visible in the code and the path works here and on Linux; it waits
+  on the tester's output rather than a guess.
+
 ## 1.0.1 — 2026-08-19
 
 Everything the first day of 1.0.0 being in other people's hands turned up.

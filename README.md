@@ -137,6 +137,12 @@ One setting matters, under **Options → Interface**:
   change the scale, or switch UI mods, restart the overlay so it measures
   the new one.
 
+Loom reads the HUD at **1920x1080 and 2560x1440**, on both skins — every
+band is checked against recorded games at both sizes. If you play at a
+resolution that is not your monitor's own, the overlay can appear to shimmer
+slightly; that is the display scaling the picture rather than Loom, and
+playing at the native resolution or in windowed mode removes it.
+
 Loom reads **the stock HUD** and **the Anne_HK Better UI mod**, and works
 out which is on screen by itself when a match starts. Any other mod that
 replaces the resource-bar artwork needs its own profile first — Loom says
