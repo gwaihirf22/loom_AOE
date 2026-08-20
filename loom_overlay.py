@@ -577,6 +577,29 @@ def placement_origin(app):
     return x, y, width, "the primary screen"
 
 
+_last_placement = None
+
+
+def watch_placement(panel):
+    """Say when the panel's own geometry changes, and only then.
+
+    For an overlay reported to vibrate. place_panel runs once at startup and
+    nothing here moves the panel afterwards, so this answers the question
+    that decides where to look next: if the geometry never changes while the
+    panel is visibly shivering, nothing in Loom is moving it and the shake is
+    either the panel's own drawing or the compositor - and if it does change,
+    this prints what changed it into.
+    """
+    global _last_placement
+    now = (panel.x(), panel.y(), panel.width(), panel.height())
+    if now != _last_placement:
+        if _last_placement is not None:
+            print(f"[place] panel moved {_last_placement} -> {now}")
+        else:
+            print(f"[place] panel at {now}")
+        _last_placement = now
+
+
 def remember_position(panel, origin_x, origin_y):
     """Save where the player dragged the panel to."""
     dx = panel.x() - origin_x
@@ -607,6 +630,9 @@ def main():
                         help="drag the panel where you want it, then close it")
     parser.add_argument("--speed", type=float, default=20.0,
                         help="demo only: simulated seconds per real second")
+    parser.add_argument("--debug-place", action="store_true",
+                        help="print where the panel sits each poll, for "
+                             "chasing an overlay that will not hold still")
     args = parser.parse_args()
 
     # Settings and match history live outside the source tree now, so an
@@ -730,6 +756,8 @@ def main():
 
     timer = QTimer()
     timer.timeout.connect(controller.tick)
+    if args.debug_place:
+        timer.timeout.connect(lambda: watch_placement(panel))
     timer.start(POLL_INTERVAL_MS)
 
     # Without this, Ctrl+C in the terminal is not noticed while Qt is idle,

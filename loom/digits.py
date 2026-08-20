@@ -29,6 +29,11 @@ GLYPH_HEIGHT = 20
 # Below this correlation I refuse to guess.
 MIN_MATCH_SCORE = 0.55
 
+# The longest game clock worth believing. Age of Empires matches do not run
+# for hours on end, and every value above this seen so far has been a
+# mis-segmentation rather than a marathon.
+MAX_GAME_HOURS = 4
+
 # Bright text on the wooden bar vs. colored text inside a dark icon box.
 CLOCK_THRESHOLD = 220
 ICON_BOX_THRESHOLD = 150
@@ -78,7 +83,16 @@ def to_binary(region_bgr, threshold):
 # validation rule, so the fallback can fill a gap but never invent.
 WHITE_STRICT = 220
 WHITE_SOFT = 190
-WHITE_PASSES = (WHITE_STRICT, WHITE_SOFT)
+# A third, softer pass for a small HUD. At 1920x1080 the clock is drawn
+# about 6x12, and its strokes are so thin that antialiasing pulls whole
+# parts of a glyph under both gates above - the bottom bar of a "2" went
+# missing, leaving a shape that scored as a "7" just under the match gate
+# and threw the read away. Measured over 185 consecutive 1080p frames:
+# two frames read with the first two passes, 185 with this one, and the
+# times never once went backwards. It is tried last, so nothing that reads
+# today reaches it, and every validation rule still applies.
+WHITE_FAINT = 170
+WHITE_PASSES = (WHITE_STRICT, WHITE_SOFT, WHITE_FAINT)
 WHITE_MAX_SPREAD = 45
 
 
@@ -155,30 +169,89 @@ def find_column_runs(binary):
     return runs
 
 
-def extract_glyph(binary, start, end):
-    """Crop one character and squash it to the standard glyph size."""
+def trimmed_glyph(binary, start, end):
+    """Crop one character at the size the screen actually drew it."""
     column_slice = binary[:, start:end]
 
     # Trim blank rows so glyphs line up regardless of where they sat vertically.
     inked_rows = np.nonzero(column_slice.max(axis=1))[0]
     if len(inked_rows) == 0:
         return None
-    trimmed = column_slice[inked_rows.min():inked_rows.max() + 1, :]
+    return column_slice[inked_rows.min():inked_rows.max() + 1, :]
 
+
+def extract_glyph(binary, start, end):
+    """Crop one character and squash it to the standard glyph size."""
+    trimmed = trimmed_glyph(binary, start, end)
+    if trimmed is None:
+        return None
     return cv2.resize(trimmed, (GLYPH_WIDTH, GLYPH_HEIGHT),
                       interpolation=cv2.INTER_AREA)
 
 
-def classify_glyph(glyph, templates):
-    """Return (digit, score) for the best-matching template."""
-    normalized = _normalize(glyph)
+# Templates shrunk to one glyph size, kept because a clock read asks for the
+# same size six times over and a whole session asks for it thousands of
+# times. Keyed by the template list as well as the size: a caller that
+# loads its own templates must not be answered with somebody else's.
+_TEMPLATES_AT_SIZE = {}
+_TEMPLATE_CACHE_LIMIT = 32
 
+
+def templates_at_size(templates, shape):
+    """The same templates resized to (height, width), normalized as usual."""
+    key = (id(templates), shape)
+    resized = _TEMPLATES_AT_SIZE.get(key)
+    if resized is None:
+        height, width = shape
+        resized = [(label, _normalize(cv2.resize(template, (width, height),
+                                                 interpolation=cv2.INTER_AREA)))
+                   for label, template in templates]
+        if len(_TEMPLATES_AT_SIZE) >= _TEMPLATE_CACHE_LIMIT:
+            _TEMPLATES_AT_SIZE.clear()
+        _TEMPLATES_AT_SIZE[key] = resized
+    return resized
+
+
+def classify_glyph(glyph, templates, native=None):
+    """Return (digit, score) for the best-matching template.
+
+    Scored two ways when the caller passes the untouched crop as `native`,
+    keeping whichever answers more confidently.
+
+    The standard path stretches every glyph to 14x20 so one set of templates
+    serves every HUD size. That works until the glyph is SMALLER than the
+    box: at 1920x1080 the clock is drawn about 6x12, and blowing that up to
+    14x20 invents detail it never had - enough to turn a 2 into a 7 scoring
+    0.43, under MIN_MATCH_SCORE, which aborted the whole clock read. Loom
+    read no clock at all in 185 consecutive 1080p frames because of it.
+
+    Shrinking the TEMPLATE to the glyph instead throws away detail the
+    screen never drew, which is the honest direction: what is left is what
+    the game actually rendered. Both are tried because neither wins
+    everywhere - upscaling still reads the large HUDs best, and those are
+    the sizes the templates were cut at.
+    """
     best_label, best_score = None, -1.0
+
+    normalized = _normalize(glyph)
     for label, template in templates:
         # Normalized correlation: 1.0 is a perfect match.
         score = float((normalized * template).mean())
         if score > best_score:
             best_label, best_score = label, score
+
+    # Only worth asking when the glyph is smaller than the box it would be
+    # stretched into; at or above that size the standard path is already
+    # comparing real pixels against real pixels.
+    if (native is not None and native.size
+            and native.shape[0] < GLYPH_HEIGHT
+            and native.shape[1] <= GLYPH_WIDTH
+            and min(native.shape) >= 2):
+        as_drawn = _normalize(native)
+        for label, template in templates_at_size(templates, native.shape):
+            score = float((as_drawn * template).mean())
+            if score > best_score:
+                best_label, best_score = label, score
 
     return best_label, best_score
 
@@ -209,17 +282,22 @@ def read_binary(binary, templates, min_glyph_width, max_runs=None):
     if max_runs is not None:
         runs = runs[:max_runs]
 
+    # The tallest run is the yardstick for "as tall as its neighbours", so
+    # it is measured before anything is discarded.
+    _boxes, tallest = _bar_context(binary, runs)
+
     digits = []
     weakest = 1.0
     for start, end in runs:
-        if end - start < min_glyph_width:
+        if not is_character(binary, start, end, min_glyph_width, tallest):
             continue
 
         glyph = extract_glyph(binary, start, end)
         if glyph is None:
             continue
 
-        label, score = classify_glyph(glyph, templates)
+        label, score = classify_glyph(glyph, templates,
+                                      trimmed_glyph(binary, start, end))
         if score < MIN_MATCH_SCORE:
             return None, 0.0
 
@@ -356,6 +434,33 @@ def _is_bar(box, tallest):
 # digit-spacing away. A fraction of the measured text height rather than a
 # pixel count, per the pixel-constant rule.
 HOLLOW_GAP_FRACTION = 0.3
+
+# How tall a run must stand, against the tallest run beside it, to be a
+# digit rather than a colon. Measured at 1920x1080, where the clock's "1" is
+# 10px of an 11px line while the colons do not survive the white mask at
+# all; a colon that did survive is two dots around the middle and comes
+# nowhere near this.
+COLON_HEIGHT_FRACTION = 0.7
+
+
+def is_character(binary, start, end, min_glyph_width, tallest):
+    """Is this column run a character, or something to skip?
+
+    Width alone is the wrong question at a small HUD. The gate exists to
+    skip the colons in the clock, and a "1" is the narrowest digit there is
+    - at 1920x1080 it measures 3px against a gate of 4, so it was dropped
+    and "18" villagers read as a confident "8". Measured over one live
+    capture: 189 of 300 frames lost a full-height 3px run that way, every
+    one of them a "1".
+
+    Height is what tells them apart. A "1" stands as tall as every digit
+    beside it; a colon is two dots around the middle and never does.
+    """
+    if end - start >= min_glyph_width:
+        return True
+    box = _run_box(binary, start, end)
+    return box is not None and box[1] >= max(
+        2, round(tallest * COLON_HEIGHT_FRACTION))
 
 
 def _merge_hollow_pairs(binary, runs, tallest):
@@ -559,7 +664,8 @@ def _parse_population(binary, templates, min_glyph_width,
         if bar:
             labels.append(1)
             continue
-        label, score = classify_glyph(glyph, templates)
+        label, score = classify_glyph(glyph, templates,
+                                      trimmed_glyph(binary, start, end))
         if score < MIN_MATCH_SCORE:
             return None, None
         labels.append(label)
@@ -652,17 +758,27 @@ def _parse_clock(binary, templates, min_glyph_width):
     chance for well-scoring junk to head a valid-looking time.
     """
     runs = find_column_runs(binary)
+    # Rejoin a hollow digit the threshold split down the middle. The clock
+    # is drawn small - about 6x12 at 1920x1080 - and there the thin top and
+    # bottom bars of a "0" drop out of the white mask, leaving two upright
+    # strokes that each classify as a confident "1". This is the same fault
+    # the population band hit ("10/15" read as "111/15"), so it is the same
+    # repair; it was simply never wired in over here, where nothing smaller
+    # than 1440p had been read.
+    _boxes, tallest = _bar_context(binary, runs)
+    runs = _merge_hollow_pairs(binary, runs, tallest)
     digits = []
     weakest = 1.0
     for start, end in runs:
         if len(digits) == 6:
             break
-        if end - start < min_glyph_width:
+        if not is_character(binary, start, end, min_glyph_width, tallest):
             continue                     # the colons, far thinner than digits
         glyph = extract_glyph(binary, start, end)
         if glyph is None:
             continue
-        label, score = classify_glyph(glyph, templates)
+        label, score = classify_glyph(glyph, templates,
+                                      trimmed_glyph(binary, start, end))
         if score < MIN_MATCH_SCORE:
             return None, 0.0
         digits.append(label)
@@ -675,8 +791,14 @@ def _parse_clock(binary, templates, min_glyph_width):
     minutes = digits_to_int(digits[2:4])
     seconds = digits_to_int(digits[4:6])
 
-    # Minutes and seconds above 59 mean I mis-segmented something.
-    if minutes > 59 or seconds > 59:
+    # Minutes and seconds above 59 mean I mis-segmented something, and so
+    # does an hours field a real match cannot reach. Both are cheap, and the
+    # second earns its place: a small HUD whose hollow "0"s split down the
+    # middle reads four zeros as "10:01:00" - six digits, minutes and
+    # seconds both legal, and 36060 seconds of confident nonsense. A clock
+    # Loom refuses to read costs a poll; one it reads wrongly desynchronises
+    # the whole build.
+    if minutes > 59 or seconds > 59 or hours > MAX_GAME_HOURS:
         return None, 0.0
 
     return hours * 3600 + minutes * 60 + seconds, weakest

@@ -396,13 +396,19 @@ class HudReader:
                   "- Loom reads best at 100% (Options > Interface).")
         return True
 
-    def wait_for_hud(self, poll_interval=2.0):
+    def wait_for_hud(self, poll_interval=0.5):
         """Keep looking for the HUD until a match is actually on screen.
 
         The window existing just means the game launched; the player may sit
-        in menus or a lobby for minutes. Each find_hud attempt costs a few
-        hundred milliseconds, so a couple of seconds between tries keeps the
-        wait cheap without feeling slow to connect.
+        in menus or a lobby for minutes, so this loop can run for a long
+        time and must stay cheap.
+
+        Half a second rather than the two it waited for months. A search
+        costs 81 ms at 1920x1080 and 155 ms at 2560x1440, measured over
+        capture runs at both - so even the slow case spends under a third of
+        one core while waiting, and the player is not left watching nothing
+        happen for two seconds after a match starts. The delay was
+        indistinguishable from Loom failing to notice the game.
         """
         while not self.find_hud():
             time.sleep(poll_interval)

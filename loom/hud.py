@@ -163,7 +163,24 @@ STOCK = HudProfile(
     # this leaves a little beyond that. The left edge cannot go much further
     # without taking in the portrait; digits.read_count's colourless pass is
     # what keeps the portrait out of the reading.
-    villager_region=(24, 35, 58, 56),
+    #
+    # The TOP edge matters as much as the left, and for a different reason.
+    # At y=35 the band reaches up into the banner art above the number.
+    # Where a digit's columns also carry a speck of that art, the glyph's
+    # row-trim spans from the speck down to the digit and squashes the digit
+    # into the bottom half of a 14x20 box - so it is compared against the
+    # templates in a shape it never had on screen. Measured across five
+    # stock runs: at y=35 the glyphs score a median 0.32 at 1080p and 0.28
+    # at 1440p, with most of them under the 0.55 match gate; at y=40 the
+    # same frames score 0.75 and 0.78 with almost none under it. It is not
+    # a resolution bug - the banner scales with everything else - which is
+    # why it went unnoticed while only the badge fallback pass, reading the
+    # leading digit alone, kept answering.
+    #
+    # 40 rather than 41 (identical on every frame measured) for the extra
+    # row of headroom under the digits; 39 lets the banner back in and 42
+    # starts clipping the digit tops at 1080p.
+    villager_region=(24, 40, 58, 56),
     # The clock text sits at x 1123-1202, y 12-27, so the LEFT edge is the
     # one that has to be right - the mod's offset put it 111px too far along,
     # reading the speed text instead of the clock.
