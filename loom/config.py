@@ -312,6 +312,55 @@ def set_browser_position(x, y):
     return settings
 
 
+def launcher_window():
+    """The launcher's last size, as (width, height). None if never resized.
+
+    Same shape as browser_window above, and restored the same way - but the
+    launcher passes it through launcher.fitted_size first, because this one
+    can be a size that does not fit the screen it is being restored onto.
+    """
+    value = load().get("launcher_window")
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def set_launcher_window(width, height):
+    """Remember the launcher's size."""
+    settings = load()
+    settings["launcher_window"] = [int(width), int(height)]
+    save(settings)
+    return settings
+
+
+def launcher_position():
+    """Where the launcher was left, as (x, y). None if never moved.
+
+    A desktop coordinate, like browser_position. None means "never placed",
+    which leaves the placing to the window manager - the right answer on a
+    first run and under Wayland, where a client may not position itself at
+    all.
+    """
+    value = load().get("launcher_position")
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def set_launcher_position(x, y):
+    """Remember where the launcher was left."""
+    settings = load()
+    settings["launcher_position"] = [int(x), int(y)]
+    save(settings)
+    return settings
+
+
 def about_seen():
     """Whether the How-to-use window has been shown and dismissed. Default: no.
 

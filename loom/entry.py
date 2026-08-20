@@ -99,7 +99,14 @@ def argv_for(args):
     if not frozen():
         # -u is load-bearing: without it Python buffers stdout when it is a
         # pipe, and the launcher's output pane sits dead until the child exits.
-        return sys.executable, ["-u"] + list(args)
+        #
+        # -X utf8 is the other half, and it is load-bearing on Windows. A
+        # child's stdout is a pipe, so Python encodes it with the locale
+        # codec - cp1252 here - while ChildProcess._read decodes UTF-8. The
+        # coach prints arrows and em dashes, and the mismatch is not mojibake
+        # but a crash: UnicodeEncodeError, 'charmap' codec can't encode. Both
+        # ends now agree on UTF-8.
+        return sys.executable, ["-u", "-X", "utf8"] + list(args)
 
     args = list(args)
     mode = SCRIPTS.get(args[0]) if args else None
@@ -108,6 +115,28 @@ def argv_for(args):
             f"{args!r} cannot be run from a packaged copy of Loom - it has no "
             f"--mode. Only {', '.join(sorted(MODES))} are built in.")
     return sys.executable, [MODE_FLAG, mode] + args[1:]
+
+
+def can_run(args):
+    """Can THIS installation start a child with these arguments?
+
+    A clone can run anything: it has the source tree and an interpreter, so
+    `-m tools.grab_frames` and `-m pytest` are as startable as the overlay.
+    A bundle has neither - only the three modes built into the executable -
+    and argv_for says so by raising.
+
+    Asking before spawning is what turns that raise into a greyed-out button.
+    It used to be a crash: argv_for raised inside a Qt slot, PyQt6 aborts the
+    process on an unhandled exception there, and loom.spec builds with
+    console=False - so there was nowhere for the traceback to be printed and
+    Loom simply vanished. A tester reported exactly that, three buttons of
+    six, and had no way to know why.
+    """
+    try:
+        argv_for(args)
+    except ValueError:
+        return False
+    return True
 
 
 def run(mode, argv):
@@ -120,15 +149,34 @@ def run(mode, argv):
     """
     import importlib
 
-    # The moral equivalent of the -u every unfrozen child is started with.
-    # A frozen child has no interpreter flag, and a pipe makes stdout
-    # block-buffered - measured: the launcher's output pane and the build
-    # preview saw NOTHING until the child exited and the buffer flushed.
-    # Line buffering restores the one property the statefeed protocol
-    # needs: a line printed is a line delivered.
+    # The moral equivalent of the "-u -X utf8" every unfrozen child is
+    # started with. A frozen child has no interpreter flags to be given.
+    #
+    # line_buffering: a pipe makes stdout block-buffered - measured, the
+    # launcher's output pane and the build preview saw NOTHING until the
+    # child exited and the buffer flushed. Line buffering restores the one
+    # property the statefeed protocol needs: a line printed is a line
+    # delivered.
+    #
+    # encoding: a pipe also gets the locale codec, cp1252 on this machine,
+    # while ChildProcess._read decodes UTF-8. Measured in the packaged
+    # build - Coach simulate died on its first arrow with UnicodeEncodeError
+    # before printing anything, which from the launcher looked like the
+    # button simply erroring. errors="replace" as well, so a character
+    # neither end expected costs a question mark and not the whole run.
     if sys.stdout is not None:
         try:
-            sys.stdout.reconfigure(line_buffering=True)
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace",
+                                   line_buffering=True)
+        except (AttributeError, OSError):
+            pass
+    # stderr is merged into stdout by QProcess and lands in the same pane,
+    # so it needs the same treatment or a traceback carrying one accented
+    # character becomes a second, more confusing failure.
+    if sys.stderr is not None:
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace",
+                                   line_buffering=True)
         except (AttributeError, OSError):
             pass
 

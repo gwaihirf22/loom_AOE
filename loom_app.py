@@ -16,12 +16,43 @@ Pick a build order, start the overlay, adjust the alerts. Developer mode
 # Wayland client. The overlay child sets the variable for itself.
 
 import sys
+import traceback
 
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from loom import entry, paths
 from loom.launcher import LauncherWindow
+
+
+def report_crash(kind, value, trace):
+    """Show an unhandled exception instead of dying quietly.
+
+    This exists because of how a packaged Loom fails. PyQt6 aborts the
+    process on an unhandled exception inside a slot, and loom.spec builds
+    with console=False - so there is no stderr anywhere a player can see,
+    and a crash looks exactly like the window vanishing for no reason. A
+    tester reported three of six developer buttons doing precisely that and
+    had nothing to send me but the sentence "it closes".
+
+    A message box is not a fix for any particular bug; it is the difference
+    between a bug report and a shrug. Printed as well, for a clone run from
+    a terminal and for the launcher's own output pane when this is a child.
+    """
+    traceback.print_exception(kind, value, trace)
+    try:
+        QMessageBox.critical(
+            None, "Loom has hit a problem",
+            "Loom hit an error it did not expect and may not work properly"
+            " from here on.\n\n"
+            f"{kind.__name__}: {value}\n\n"
+            "If you are reporting this, the full details are below.",
+            QMessageBox.StandardButton.Ok)
+    except Exception:
+        # A dialog needs a QApplication, and the crash may BE the
+        # application. The traceback above is already out; never let the
+        # reporter become the second failure.
+        pass
 
 
 def main():
@@ -40,17 +71,20 @@ def main():
         print(note)
 
     entry.windows_app_identity()
+    # Installed before the window exists, so a failure while building it is
+    # still seen. See report_crash for why this is not optional on Windows.
+    sys.excepthook = report_crash
     app = QApplication(sys.argv)
     # The application-wide icon: every window this process opens - launcher,
     # preview, statistics, How-to-use - inherits it. The .ico carries seven
     # sizes so the title bar, taskbar and alt-tab each get a crisp one.
     app.setWindowIcon(QIcon(str(paths.ICON_PATH)))
     window = LauncherWindow()
-    # The build preview is its own window now and sizes itself, so the
-    # launcher is always the compact single column.
-    # Taller since the hotkeys box joined the settings column; without
-    # this the output pane is squeezed to a couple of lines.
-    window.resize(720, 840)
+    # Sized against the screen it is opening on rather than to a fixed
+    # number, and restored to where it was left. The window knows its own
+    # screen and its own remembered geometry, so both live there - see
+    # LauncherWindow.fit_to_screen.
+    window.fit_to_screen()
     window.show()
     # After show(), so the How-to-use window opens in front of a launcher
     # that already exists rather than racing it. Only ever on a fresh

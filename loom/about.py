@@ -20,14 +20,27 @@ it; nothing else knows how many there are.
 # debugging and review. The design and code are my own work.
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QColor, QPalette, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QPushButton,
-                             QScrollArea, QVBoxLayout, QWidget)
+                             QTextBrowser, QVBoxLayout, QWidget)
 
 from . import config, paths
 from .overlay import BACKGROUND, BORDER, DIM_TEXT, TEXT
 
 WINDOW_SIZE = (620, 520)
+
+# The page's own background, opaque. BACKGROUND carries alpha 205 because the
+# overlay paints it over the game; nothing shows through a help window, and a
+# half-transparent colour behind text is how you end up with a colour nobody
+# chose - on Windows it blended toward the window grey and took the writing
+# with it.
+PAGE_BACKGROUND = QColor(BACKGROUND.red(), BACKGROUND.green(),
+                         BACKGROUND.blue())
+
+# Links on the dark page. Qt's default is #0000ff, which over #121216 is a
+# smudge - and two of the links here are the mods this window exists to
+# recommend.
+LINK = QColor(127, 179, 255)
 
 # Where a player's own build orders go, spelled the way their OS spells it.
 # Named from paths rather than written into the prose because it differs per
@@ -306,19 +319,31 @@ class AboutWindow(QWidget):
             self.logo.setPixmap(emblem.scaledToHeight(
                 44, Qt.TransformationMode.SmoothTransformation))
 
-        self.body = QLabel()
-        self.body.setTextFormat(Qt.TextFormat.RichText)
-        self.body.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.body.setWordWrap(True)
-        self.body.setMargin(10)
+        # A QTextBrowser rather than a QLabel in a QScrollArea, and the
+        # colours in its PALETTE rather than in the scroll area's stylesheet.
+        # The old arrangement put "color: #eeeeee" on the label and trusted
+        # the scroll area's dark background to reach it - which it does here
+        # and does NOT on a plain Windows 10 theme, where the viewport paints
+        # itself window-grey and near-white writing on it vanishes. A tester
+        # reported How to use as "no content except the headings": the
+        # headings are self.title, which sits outside all this and kept the
+        # system colour. A widget that carries both its own colours cannot
+        # fail that way, whatever the platform style does.
+        self.body = QTextBrowser()
         self.body.setOpenExternalLinks(True)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.body)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background: {BACKGROUND.name()};"
-            f" border: 1px solid {BORDER.name()}; }}"
-            f" QLabel {{ color: {TEXT.name()}; }}")
+        self.body.setFrameStyle(0)
+        palette = self.body.palette()
+        palette.setColor(QPalette.ColorRole.Base, PAGE_BACKGROUND)
+        palette.setColor(QPalette.ColorRole.Text, TEXT)
+        self.body.setPalette(palette)
+        # Links are not the Text role - they come from the document's own
+        # style sheet, and Qt's default there is #0000ff, a smudge on this
+        # background. Set before any setHtml: the default style sheet is
+        # applied when a document is parsed, not when it is painted.
+        self.body.document().setDefaultStyleSheet(
+            f"a {{ color: {LINK.name()}; }}")
+        self.body.document().setDocumentMargin(10)
+        self.body.setStyleSheet(f"border: 1px solid {BORDER.name()};")
 
         self.counter = QLabel()
         self.counter.setStyleSheet(f"color: {DIM_TEXT.name()};")
@@ -353,7 +378,7 @@ class AboutWindow(QWidget):
         heading.addWidget(self.title)
         heading.addStretch()
         layout.addLayout(heading)
-        layout.addWidget(scroll, stretch=1)
+        layout.addWidget(self.body, stretch=1)
         layout.addLayout(buttons)
 
         self._go(0)
@@ -363,7 +388,9 @@ class AboutWindow(QWidget):
         self.page = max(0, min(page, len(PAGES) - 1))
         title, html = PAGES[self.page]
         self.title.setText(title)
-        self.body.setText(html)
+        self.body.setHtml(html)
+        # Every page starts at its top, not wherever the last one was left.
+        self.body.verticalScrollBar().setValue(0)
         self.counter.setText(f"page {self.page + 1} of {len(PAGES)}")
         self.back.setEnabled(self.page > 0)
         self.forward.setEnabled(self.page < len(PAGES) - 1)

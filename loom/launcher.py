@@ -24,12 +24,14 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont, QPixmap
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
-                             QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                             QListWidget, QListWidgetItem, QMessageBox,
-                             QPlainTextEdit, QPushButton, QSlider, QSpinBox,
+                             QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+                             QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                             QMessageBox, QPlainTextEdit, QPushButton,
+                             QScrollArea, QSlider, QSpinBox, QTabWidget,
                              QVBoxLayout, QWidget)
 
-from . import apm, buildcheck, config, hotkeys, overlay, paths, statefeed
+from . import (apm, buildcheck, config, entry, hotkeys, overlay, paths,
+               statefeed)
 from .hotkeys import keyspec
 from . import __version__ as loom_version
 from .about import AboutWindow
@@ -93,6 +95,92 @@ PLACE_COMMAND = ("place",
 
 # The gap left between the launcher and a window placed beside it.
 WINDOW_GAP = 12
+
+# How the settings are grouped into tabs. Data rather than widget code for
+# the same reason DEV_COMMANDS is: a test can check the grouping without
+# instantiating any Qt. Each row is (tab label, attribute names on the
+# window, whether the group box keeps its own title).
+#
+# The boxes that are alone under a tab lose their titles - the tab already
+# says "Alerts", and a box captioned Alerts inside it says it twice. The
+# Appearance tab holds two boxes, so those keep theirs to tell them apart.
+SETTINGS_TABS = [
+    ("Alerts", ["settings"], False),
+    ("Appearance", ["appearance", "transparency"], True),
+    ("Hotkeys", ["hotkeys_box"], False),
+]
+
+# What the developer tab is called when it is present.
+DEV_TAB_LABEL = "Developer tools"
+
+# How many columns the developer buttons wrap into. Six across one row needed
+# a window 1100px wide before the labels stopped eliding.
+DEV_BUTTON_COLUMNS = 3
+
+# The launcher's size on a screen with room for it, and the smallest it may
+# be dragged to. Below the minimum the group boxes start eliding their own
+# captions, and a scroll area cannot help with width the way it helps with
+# height.
+PREFERRED_SIZE = (720, 840)
+MINIMUM_SIZE = (560, 380)
+
+# How long the window waits after a resize or a move before writing the
+# geometry to config.json. Saving per pixel of a drag would hammer the file;
+# this is the same debounce loom/browser.py uses for the preview window.
+SAVE_GEOMETRY_AFTER_MS = 1000
+
+
+def fitted_size(preferred, minimum, area):
+    """How big to open a window on the screen it actually lands on.
+
+    preferred and minimum are (width, height); area is the screen's work area
+    as (left, top, right, bottom) - the same shape beside() takes. Returns
+    (width, height).
+
+    Pure arithmetic for the same reason as beside(): the interesting cases
+    are screens I do not own. This exists because the launcher opened at a
+    fixed 720x840 whatever it was opened on, and Qt will not honour a resize
+    below the layout's own minimumSizeHint - so on a 1080p screen with the
+    developer panel showing, the window came up taller than the desktop with
+    Start and the output pane below the bottom edge. Reported from a 1920x1080
+    Windows 10 machine; invisible here, where the work area is 1440 tall.
+
+    Never bigger than the work area, and never smaller than the minimum
+    unless the screen itself is smaller than that - a window that will not
+    fit is still better placed inside the screen than hanging off it.
+    """
+    preferred_width, preferred_height = preferred
+    minimum_width, minimum_height = minimum
+    left, top, right, bottom = area
+    available_width = max(1, right - left)
+    available_height = max(1, bottom - top)
+
+    width = max(min(preferred_width, available_width),
+                min(minimum_width, available_width))
+    height = max(min(preferred_height, available_height),
+                 min(minimum_height, available_height))
+    return width, height
+
+
+def clamped_position(position, size, area):
+    """Move a window fully onto the screen. Returns (x, y).
+
+    position is where it wants to be, size is (width, height), area is the
+    work area as (left, top, right, bottom).
+
+    The case this is for is a geometry remembered on one machine and restored
+    on another: a launcher left at the bottom of a 2560x1440 desktop reopens
+    entirely below a 1920x1080 one, and the only symptom is that Loom appears
+    not to start. Top-left wins over bottom-right when the window is larger
+    than the screen, because the title bar is the part you need to reach.
+    """
+    x, y = position
+    width, height = size
+    left, top, right, bottom = area
+
+    x = min(x, right - width)
+    y = min(y, bottom - height)
+    return max(left, x), max(top, y)
 
 
 def beside(anchor, size, area):
@@ -491,6 +579,19 @@ class BuildPicker(QGroupBox):
         return self._builds.get(self.selected_stem())
 
 
+def _stacked(widgets):
+    """Several widgets in one, for a tab that holds more than one box."""
+    holder = QWidget()
+    layout = QVBoxLayout(holder)
+    layout.setContentsMargins(0, 0, 0, 0)
+    for widget in widgets:
+        layout.addWidget(widget)
+    # Keeps the boxes at their natural height instead of stretching the last
+    # one down the tab.
+    layout.addStretch()
+    return holder
+
+
 def _next_launch_hint():
     """The one non-obvious fact about every setting box: a running overlay
     keeps the settings it started with."""
@@ -863,12 +964,29 @@ class HotkeysBox(QGroupBox):
         self.warning.setText("\n".join(complaints))
 
 
+# What a button says instead of its tooltip when this installation cannot
+# start it. Named here so the test that pins the greying can check the reason
+# is given, not just that the button is dead.
+UNAVAILABLE_TIP = (
+    "Not available in a packaged copy of Loom: this tool runs from the source"
+    " tree and needs a Python interpreter, and a bundle has neither. Run Loom"
+    " from a clone to use it.")
+
+
 class DevPanel(QGroupBox):
     """The developer tools: debug launchers and the test runner.
 
     Only one dev task runs at a time - a shared output pane showing two
     interleaved programs is worse than useless - so every button funnels
     through the window's single dev slot.
+
+    Half of these tools cannot run from a bundle at all: they are
+    `-m tools.something` and `-m pytest`, and a frozen Loom has no source
+    tree and no interpreter to hand them to. Those buttons are DISABLED here
+    rather than left to fail, because failing was not a message - argv_for
+    raised inside the clicked slot, PyQt6 aborted the process, and
+    console=False meant the traceback went nowhere. From the outside Loom
+    just disappeared. entry.can_run is the question this asks; see there.
     """
 
     def __init__(self, run_command, stop_task, parent=None):
@@ -881,15 +999,23 @@ class DevPanel(QGroupBox):
             "Which synthetic match Coach simulate replays: on pace, running"
             " late, or stalling out.")
 
-        buttons = QHBoxLayout()
-        for label, prefix, build_args, tip in DEV_COMMANDS:
+        # A grid, not a row. Six buttons across one line needed a window
+        # 1100px wide before the labels stopped eliding, and the launcher can
+        # now be dragged down to 560.
+        self.buttons = {}
+        buttons = QGridLayout()
+        for index, (label, prefix, build_args, tip) in enumerate(DEV_COMMANDS):
             button = QPushButton(label)
-            button.setToolTip(tip)
+            runnable = entry.can_run(build_args("fast_castle", "perfect"))
+            button.setEnabled(runnable)
+            button.setToolTip(tip if runnable else f"{label}: {UNAVAILABLE_TIP}")
             # name=... defaults again, for the same closure-over-loop reason.
             button.clicked.connect(
                 lambda _checked, prefix=prefix, build_args=build_args:
                 run_command(prefix, build_args))
-            buttons.addWidget(button)
+            buttons.addWidget(button, index // DEV_BUTTON_COLUMNS,
+                              index % DEV_BUTTON_COLUMNS)
+            self.buttons[label] = button
 
         stop = QPushButton("Stop task")
         stop.setToolTip("Terminate whichever developer task is running.")
@@ -917,6 +1043,20 @@ class LauncherWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Loom {loom_version}")
+
+        # First, before any widget exists. Qt delivers a moveEvent while the
+        # window is still being constructed - measured, on Windows, from
+        # inside this __init__ - and the handler reaches for this timer.
+        # Built last it was an AttributeError out of an event handler, which
+        # is the silent-death path this release is closing: PyQt6 aborts on
+        # an exception in a handler, and a packaged Loom has no console.
+        # Debounced because a drag would otherwise write config.json once
+        # per pixel - the same reason and the same interval as the preview
+        # window, see loom/browser.py.
+        self._geometry_timer = QTimer(self)
+        self._geometry_timer.setSingleShot(True)
+        self._geometry_timer.timeout.connect(self._remember_geometry)
+
         self.overlay_process = None
         self.dev_process = None
 
@@ -977,7 +1117,6 @@ class LauncherWindow(QWidget):
             " tools and the test runner.")
         self.dev_panel = DevPanel(self.run_dev_command, self.stop_dev_task)
         self.dev_toggle.setChecked(config.developer_mode())
-        self.dev_panel.setVisible(config.developer_mode())
         self.dev_toggle.toggled.connect(self._set_developer_mode)
 
         # The build preview: its own window, so the window manager is the
@@ -1056,17 +1195,60 @@ class LauncherWindow(QWidget):
         header.addStretch()
         header.addWidget(self.about_button)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(header)
+        # The settings go into tabs. They used to be one tall column -
+        # picker, Alerts, Overlay size, Overlay transparency, Hotkeys,
+        # developer tools, output pane - and that column outgrew a 1080p
+        # screen: the window opened with Start and the output below the
+        # bottom edge, and maximising it made Qt squeeze every box PAST its
+        # own minimum until the captions overlapped. A layout under pressure
+        # shrinks its children rather than refusing, so the fix is to stop
+        # asking it for the height in the first place.
+        #
+        # What stays OUT of the tabs is the spine of the app: pick a build,
+        # start the overlay, read what it says. Those are not settings and
+        # must never be a click away.
+        self.tabs = QTabWidget()
+        for label, names, keep_titles in SETTINGS_TABS:
+            boxes = [getattr(self, name) for name in names]
+            if not keep_titles:
+                # The tab already says it; the box inside need not say it
+                # twice. An empty title leaves the frame, which still reads
+                # as a panel.
+                for box in boxes:
+                    box.setTitle("")
+            # Always through _stacked, even for a single box: it carries the
+            # trailing stretch that keeps a short page's rows together at
+            # the top instead of spread down the height of the tallest tab.
+            self.tabs.addTab(_stacked(boxes), label)
+        self.dev_panel.setTitle("")
+        self._dev_tab = _stacked([self.dev_panel])
+        self._show_dev_tab(config.developer_mode())
+
+        # Everything below the header scrolls. The tabs are the ergonomics;
+        # this is the guarantee - it is what makes the window safe at a size
+        # neither I nor anyone testing it has tried, which is the only kind
+        # of screen this bug has ever appeared on.
+        column = QWidget()
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.picker)
         layout.addLayout(controls)
-        layout.addWidget(self.settings)
-        layout.addWidget(self.appearance)
-        layout.addWidget(self.transparency)
-        layout.addWidget(self.hotkeys_box)
+        layout.addWidget(self.tabs)
         layout.addLayout(toggles)
-        layout.addWidget(self.dev_panel)
-        layout.addWidget(self.output)
+        layout.addWidget(self.output, stretch=1)
+
+        scroll = QScrollArea()
+        scroll.setWidget(column)
+        # The column follows the window's width, so growing the window still
+        # widens the build list and the output pane rather than leaving a
+        # margin of nothing beside them.
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        outer = QVBoxLayout(self)
+        outer.addLayout(header)
+        outer.addWidget(scroll, stretch=1)
+        self.setMinimumSize(*MINIMUM_SIZE)
 
         # The preview mirrors whichever build is picked, now and on change.
         self.browser.set_build(self.picker.selected_build())
@@ -1087,6 +1269,52 @@ class LauncherWindow(QWidget):
         self._register_launcher_hotkeys()
         self.hotkeys_box.bindings_changed.connect(
             self._register_launcher_hotkeys)
+
+    # ---- window geometry -------------------------------------------------
+
+    def fit_to_screen(self):
+        """Size and place the window for the screen it is about to open on.
+
+        Called before show(), from loom_app. The remembered geometry wins
+        where there is one, but it is passed through the same clamp as a
+        fresh one: a size and position saved on a 2560x1440 desktop must not
+        reopen off the bottom of a 1920x1080 one, where the only symptom is
+        that Loom appears not to have started.
+        """
+        area = self._work_area()
+        width, height = fitted_size(config.launcher_window() or PREFERRED_SIZE,
+                                    MINIMUM_SIZE, area)
+        self.resize(width, height)
+
+        remembered = config.launcher_position()
+        if remembered is None:
+            return
+        self.move(*clamped_position(remembered, (width, height), area))
+
+    def _work_area(self):
+        """The usable screen, as (left, top, right, bottom)."""
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        return area.left(), area.top(), area.right(), area.bottom()
+
+    def _remember_geometry(self):
+        """Save how big the player made the window, and where they left it.
+
+        Not while maximised: the maximised size is the screen's, not a
+        choice, and saving it would have the window reopen filling the
+        desktop with no way back to the size before.
+        """
+        if self.isMaximized() or self.isMinimized():
+            return
+        config.set_launcher_window(self.width(), self.height())
+        config.set_launcher_position(self.x(), self.y())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._geometry_timer.start(SAVE_GEOMETRY_AFTER_MS)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._geometry_timer.start(SAVE_GEOMETRY_AFTER_MS)
 
     # ---- the launcher's own hotkey --------------------------------------
 
@@ -1254,7 +1482,13 @@ class LauncherWindow(QWidget):
         argv = build_args(self.picker.selected_stem() or "fast_castle",
                           self.dev_panel.scenario.currentText())
         self.output.append_line(f"[launcher] running: {' '.join(argv)}")
-        self.dev_process = self._spawn(prefix, argv, self._dev_finished)
+        try:
+            self.dev_process = self._spawn(prefix, argv, self._dev_finished)
+        except ValueError as problem:
+            # The braces to DevPanel's belt. Nothing that raises here may
+            # escape: an exception out of a Qt slot aborts the process, and
+            # a packaged Loom has no console for the traceback to land in.
+            self.output.append_line(f"[launcher] cannot run this: {problem}")
 
     def stop_dev_task(self):
         if self.dev_process is not None:
@@ -1294,7 +1528,20 @@ class LauncherWindow(QWidget):
 
     def _set_developer_mode(self, enabled):
         config.set_developer_mode(enabled)
-        self.dev_panel.setVisible(enabled)
+        self._show_dev_tab(enabled)
+
+    def _show_dev_tab(self, enabled):
+        """Add or remove the developer tab.
+
+        Removing rather than disabling: a tab nobody can open is still a tab
+        everybody has to read past, and these tools are not part of the app
+        for anyone who has not asked for them.
+        """
+        index = self.tabs.indexOf(self._dev_tab)
+        if enabled and index < 0:
+            self.tabs.addTab(self._dev_tab, DEV_TAB_LABEL)
+        elif not enabled and index >= 0:
+            self.tabs.removeTab(index)
 
     def _open_stats(self):
         self.stats_window.show()
@@ -1364,6 +1611,12 @@ class LauncherWindow(QWidget):
         Blocking waits are fine here (the UI is going away), and shutdown()
         bounds them, so the window cannot hang open indefinitely either.
         """
+        # Before anything else: the debounce means a window resized and
+        # closed inside a second would otherwise forget the size it was just
+        # given, which reads as the setting not sticking.
+        self._geometry_timer.stop()
+        self._remember_geometry()
+
         if self._launcher_hotkeys is not None:
             hotkeys.stop(self._launcher_hotkeys)
         for child in (self.overlay_process, self.dev_process,

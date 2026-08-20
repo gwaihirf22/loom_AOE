@@ -146,6 +146,38 @@ def test_garbage_browser_window_means_none():
     assert config.browser_window() is None
 
 
+def test_launcher_window_defaults_to_none():
+    # None means "never resized" - the launcher opens at its preferred size
+    # shrunk to whatever screen it lands on.
+    assert config.launcher_window() is None
+
+
+def test_launcher_window_roundtrip():
+    config.set_launcher_window(900, 700)
+    assert config.launcher_window() == (900, 700)
+
+
+def test_garbage_launcher_window_means_none():
+    """A mangled settings file must cost a player their remembered size, not
+    the ability to open the launcher at all."""
+    config.save({"launcher_window": [None]})
+    assert config.launcher_window() is None
+
+
+def test_launcher_position_roundtrip_including_a_negative_one():
+    # Same as the preview: a monitor left of the primary one has negative x,
+    # and clamping it here would move the launcher every launch. Fitting it
+    # to the screen is launcher.clamped_position's job, not this one's.
+    config.set_launcher_position(-1920, 300)
+    assert config.launcher_position() == (-1920, 300)
+
+
+def test_launcher_position_defaults_to_none():
+    """None means "never placed", which leaves the placing to the window
+    manager - right on a first run, and the only option under Wayland."""
+    assert config.launcher_position() is None
+
+
 def test_browser_position_defaults_to_none():
     # None means "never placed", which is the launcher's cue to put the
     # preview beside itself instead of letting the window manager drop it

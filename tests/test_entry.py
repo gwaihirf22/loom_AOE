@@ -73,7 +73,7 @@ def test_from_a_clone_the_interpreter_runs_the_script(monkeypatch):
     program, arguments = entry.argv_for(["loom_overlay.py", "--demo"])
 
     assert program == sys.executable
-    assert arguments == ["-u", "loom_overlay.py", "--demo"]
+    assert arguments == ["-u", "-X", "utf8", "loom_overlay.py", "--demo"]
 
 
 def test_unbuffered_is_not_optional(monkeypatch):
@@ -82,6 +82,22 @@ def test_unbuffered_is_not_optional(monkeypatch):
     monkeypatch.setattr(entry, "frozen", lambda: False)
 
     assert entry.argv_for(["loom_coach.py"])[1][0] == "-u"
+
+
+def test_the_child_speaks_the_encoding_the_launcher_reads(monkeypatch):
+    """ChildProcess._read decodes UTF-8, so the child has to write it.
+
+    A child's stdout is a pipe, and Python encodes a pipe with the locale
+    codec - cp1252 on Windows. Measured in the packaged build: Coach
+    simulate died on its first arrow with UnicodeEncodeError before printing
+    a single line, which from the launcher was indistinguishable from the
+    button being broken.
+    """
+    monkeypatch.setattr(entry, "frozen", lambda: False)
+
+    arguments = entry.argv_for(["loom_coach.py"])[1]
+
+    assert arguments[:3] == ["-u", "-X", "utf8"]
 
 
 def test_frozen_turns_a_script_into_a_mode(monkeypatch):
@@ -115,6 +131,34 @@ def test_frozen_refuses_what_it_cannot_run(monkeypatch):
 
     with pytest.raises(ValueError):
         entry.argv_for(["-m", "tools.grab_frames"])
+
+
+def test_can_run_answers_what_argv_for_would_raise_about(monkeypatch):
+    """The question a button asks before it lets itself be pressed.
+
+    argv_for raising is correct, but it raised inside a Qt slot, where PyQt6
+    aborts the process - and with console=False there was nowhere for the
+    traceback to go. From the outside Loom just closed. can_run is how the
+    launcher finds out first.
+    """
+    monkeypatch.setattr(entry, "frozen", lambda: True)
+
+    assert entry.can_run(["loom_overlay.py", "--demo"]) is True
+    assert entry.can_run(["loom_coach.py", "--simulate"]) is True
+    assert entry.can_run(["loom_read.py"]) is True
+    assert entry.can_run(["-m", "tools.grab_frames"]) is False
+    assert entry.can_run(["-m", "pytest", "tests/"]) is False
+    assert entry.can_run([]) is False
+
+
+def test_a_clone_can_run_everything(monkeypatch):
+    """The other half: nothing is greyed out where there IS a source tree
+    and an interpreter, or developing Loom would mean developing without
+    the developer tools."""
+    monkeypatch.setattr(entry, "frozen", lambda: False)
+
+    assert entry.can_run(["-m", "pytest", "tests/"]) is True
+    assert entry.can_run(["loom_overlay.py"]) is True
 
 
 def test_the_two_tables_agree():
