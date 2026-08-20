@@ -29,6 +29,20 @@ GLYPH_HEIGHT = 20
 # Below this correlation I refuse to guess.
 MIN_MATCH_SCORE = 0.55
 
+# The population band asks for more confidence than the rest, because its
+# failure mode is worse. Everywhere else a doubtful glyph costs a reading
+# and the next poll tries again; here a "1" where the screen says "4" is a
+# plausible number that the housing alerts will act on, and it repeats frame
+# after frame rather than flickering, so no filter downstream catches it.
+#
+# Measured over two stock 1080p games, at the point where the small-HUD
+# templates first made this band readable at all: at 0.55 it read 609 bands
+# and 33 of them disagreed with the villager count beside them; at 0.65 it
+# read 604 and 14 disagreed. Five readings traded for nineteen wrong ones.
+# Above 0.72 the band goes quiet again - 97 readings out of 348 - so this
+# sits at the knee rather than at the safest possible value.
+POPULATION_MATCH_SCORE = 0.65
+
 # The longest game clock worth believing. Age of Empires matches do not run
 # for hours on end, and every value above this seen so far has been a
 # mis-segmentation rather than a marathon.
@@ -654,7 +668,17 @@ def _parse_population(binary, templates, min_glyph_width,
         # shape test is what makes the exemption safe.
         bar = _is_bar(boxes.get((start, end)), tallest)
         if end - start < min_glyph_width and not bar:
-            continue
+            # Not "skip it" - REFUSE THE BAND. Everywhere else a run this
+            # narrow is a colon or a speck, but the population display has
+            # no such thing: its only narrow glyph is the "1", and that is
+            # a bar, caught above. So a narrow run here is a piece of a
+            # digit that the threshold broke in half, and reading the other
+            # piece on its own is how a "4" became a confident "1" - the
+            # last-resort housed pass split it into 2px and 3px, dropped
+            # the 2px, and read 4/5 as 1/5 for as long as the band stayed
+            # on screen. Silence costs a poll; that costs the housing
+            # alerts their meaning.
+            return None, None
         glyph = extract_glyph(binary, start, end)
         if glyph is None:
             continue
@@ -666,7 +690,7 @@ def _parse_population(binary, templates, min_glyph_width,
             continue
         label, score = classify_glyph(glyph, templates,
                                       trimmed_glyph(binary, start, end))
-        if score < MIN_MATCH_SCORE:
+        if score < POPULATION_MATCH_SCORE:
             return None, None
         labels.append(label)
 

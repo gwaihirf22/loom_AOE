@@ -77,8 +77,22 @@ def _annehk_min_glyph_width(scale):
 
 
 def _annehk_max_glyph_width(scale):
-    """Widest run before the mod's bar calls it two glyphs touching."""
-    return max(13, int(13 * scale))
+    """Widest run before the mod's bar calls it two glyphs touching.
+
+    The floor used to be 13 - the value itself - which meant it never
+    scaled DOWN, and a threshold that does not scale is the bug this
+    project keeps meeting. At 2560x1440 the mod's population runs measure
+    5-10px with a merged slash-and-digit at 16, so 13 splits the merged one
+    and leaves the singles alone. At 1920x1080 the same runs measure 2-8
+    and the merged pair lands around 12: under the floor, never split, and
+    the whole band refused because that run classifies as nothing. It cost
+    Anne_HK at 1080p 111 population readings out of 263.
+
+    The floor is now well under the smallest merged pair rather than at the
+    full-size value, so it still guards the very small HUDs it was there
+    for without blinding the reader at ordinary ones.
+    """
+    return max(8, int(13 * scale))
 
 
 def _stock_min_glyph_width(scale):
@@ -99,8 +113,14 @@ def _stock_max_glyph_width(scale):
     Scaled down from the mod's 13 in the same proportion as the font (stock
     glyphs are 12px tall against 15), so it stays clear of a single wide
     digit while still splitting a slash that brushes its neighbour.
+
+    Same floor problem as the mod's, and the same repair - see
+    _annehk_max_glyph_width. Stock has not been measured merging its slash
+    into a digit at 1080p the way the mod does, so this is prevention
+    rather than a fix, but a floor that cannot scale down is wrong for the
+    same reason in both places.
     """
-    return max(10, int(10 * scale))
+    return max(6, int(10 * scale))
 
 
 # --- the skins -----------------------------------------------------------

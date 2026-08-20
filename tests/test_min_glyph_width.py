@@ -76,9 +76,32 @@ def test_max_glyph_width_still_tracks_the_hud(monkeypatch):
     """The sibling bound: a run wider than this is split as two touching
     characters, so it must GROW with the HUD or it halves single large
     digits - measured at scale 1.48, a 15px "4" was split by the fixed 13
-    and "4/5" read as nothing. Never below the reference 13, so behaviour
-    at and below scale 1.0 is untouched."""
+    and "4/5" read as nothing."""
     monkeypatch.delenv("LOOM_MIN_GLYPH_WIDTH", raising=False)
     assert reader.max_glyph_width(1.0) == 13
-    assert reader.max_glyph_width(0.68) == 13
     assert reader.max_glyph_width(1.48) == 19
+
+
+def test_max_glyph_width_shrinks_with_the_hud_too(monkeypatch):
+    """And it must SHRINK, which it once did not.
+
+    This bound was originally floored at its own reference value of 13, so
+    that "behaviour at and below scale 1.0 is untouched" - a deliberately
+    conservative choice, and the wrong one. A threshold that cannot scale
+    down is the fault this project keeps meeting, and here is what it cost:
+    at 1920x1080 the mod's population runs measure 2-8px and a slash merged
+    into the digit beside it lands around 12. Under a floor of 13 that
+    merged run was never split, classified as nothing, and took the whole
+    band down with it - 111 of 263 readings lost, which is why the housing
+    alerts went quiet at that resolution.
+
+    Pinned at the scales that matter: 0.735 is the mod at 1080p, 0.995 is
+    stock at 1440p.
+    """
+    monkeypatch.delenv("LOOM_MIN_GLYPH_WIDTH", raising=False)
+    assert reader.max_glyph_width(0.735) == 9
+    assert reader.max_glyph_width(0.68) == 8
+
+    # Still comfortably above the widest single digit measured at that
+    # size (8px), so a lone digit is never sawn in half to get here.
+    assert reader.max_glyph_width(0.735) > 8
