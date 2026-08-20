@@ -25,8 +25,10 @@ error, which is the kind Loom is least able to notice:
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import sys
 import threading
 import time
+import types
 
 import numpy as np
 import pytest
@@ -189,3 +191,122 @@ def test_the_module_imports_without_windows():
     for name in ("open_display", "find_game_window", "window_size",
                  "window_geometry", "capture_region", "capture_window"):
         assert callable(getattr(windows, name))
+
+
+# ---- the borderless request is an attempt, not a requirement --------------
+#
+# draw_border=False asks the OS to drop the yellow "this window is being
+# captured" edge. Setting it is GraphicsCaptureSession.IsBorderRequired, which
+# Windows 11 has and Windows 10 does not - and on Windows 10 the request does
+# not degrade, it raises out of start_free_threaded before the first frame.
+# A tester on Windows 10 Pro 22H2 met that as a traceback dialog thrown over
+# the game; here it is Windows 11, which is exactly why it was never caught.
+#
+# The fake goes in as the whole windows_capture MODULE rather than over
+# _build_capture, so the real construction and callback wiring are what these
+# exercise - and so they run on Linux and macOS, where the package that would
+# raise is not installed at all.
+
+
+class FakeSession:
+    """One WindowsCapture instance, remembering how it was asked for."""
+
+    def __init__(self, draw_border, refuse_border):
+        self.draw_border = draw_border
+        self.refuse_border = refuse_border
+        self.callbacks = []
+
+    def event(self, function):
+        """The @capture.event decorator."""
+        self.callbacks.append(function.__name__)
+        return function
+
+    def start_free_threaded(self):
+        if self.refuse_border and self.draw_border is not None:
+            raise Exception(
+                "Capture session threw an exception: Graphics capture error: "
+                "Toggling the capture border is not supported by the Graphics "
+                "Capture API on this platform.")
+        return f"control(draw_border={self.draw_border})"
+
+
+class FakeLibrary(types.ModuleType):
+    """Stands in for the windows_capture package."""
+
+    def __init__(self, refuse_border=False, always_fail=False):
+        super().__init__("windows_capture")
+        self.asked = []
+        self._refuse = refuse_border
+        self._always_fail = always_fail
+        library = self
+
+        class WindowsCapture:
+            def __new__(cls, cursor_capture, draw_border, window_hwnd):
+                library.asked.append(draw_border)
+                if library._always_fail:
+                    session = FakeSession(draw_border, refuse_border=False)
+                    session.start_free_threaded = _dead_window
+                    return session
+                return FakeSession(draw_border, library._refuse)
+
+        self.WindowsCapture = WindowsCapture
+
+
+def _dead_window():
+    raise Exception("the window went away")
+
+
+@pytest.fixture
+def library(monkeypatch):
+    """Install a fake windows_capture, and hand the test its recorder."""
+    def install(**kwargs):
+        fake = FakeLibrary(**kwargs)
+        monkeypatch.setitem(sys.modules, "windows_capture", fake)
+        return fake
+    return install
+
+
+def test_the_border_is_asked_for_first(library):
+    """Windows 11 must keep exactly the behaviour it already has: no yellow
+    edge, and no wasted second attempt."""
+    recorder = library()
+    window = windows.GameWindow(hwnd=1234)
+
+    assert window._start_stream() == "control(draw_border=False)"
+    assert recorder.asked == [False], "a machine that can hide it must not retry"
+
+
+def test_a_refused_border_retries_without_it(library):
+    """Windows 10. The stream must still start - only the cosmetic preference
+    is given up, and the yellow border is a far smaller price than Loom not
+    running at all."""
+    recorder = library(refuse_border=True)
+    window = windows.GameWindow(hwnd=1234)
+
+    assert window._start_stream() == "control(draw_border=None)"
+    assert recorder.asked == [False, None], "borderless first, then plain"
+
+
+def test_the_retry_still_wires_the_frame_callbacks(library):
+    """The retry rebuilds the whole session, so the callbacks have to be
+    attached again. Missing them would be worse than the original bug: a
+    stream that starts, reports no error, and never delivers a frame."""
+    library(refuse_border=True)
+    window = windows.GameWindow(hwnd=1234)
+    window._start_stream()
+
+    assert window._capture.callbacks == ["on_frame_arrived", "on_closed"]
+
+
+def test_a_stream_that_never_starts_is_an_error(library):
+    """Both attempts refused is a real failure and must say so. A retry that
+    swallowed the problem would leave Loom waiting forever on a stream that
+    does not exist."""
+    recorder = library(always_fail=True)
+    window = windows.GameWindow(hwnd=1234)
+
+    with pytest.raises(CaptureError) as failure:
+        window._start_stream()
+
+    assert "the window went away" in str(failure.value)
+    assert recorder.asked == [False, None], "it should have tried both"

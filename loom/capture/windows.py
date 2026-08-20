@@ -194,6 +194,41 @@ class GameWindow:
         exists but has no pixels yet, which would otherwise look exactly like
         a HUD that cannot be found.
         """
+        self._control = self._start_stream()
+
+        if not self._await_first_frame():
+            self.stop()
+            raise CaptureError(
+                "the capture stream started but delivered no frames within "
+                f"{FIRST_FRAME_TIMEOUT:.0f}s. The window is probably "
+                "minimised, or the game is in exclusive fullscreen - try the "
+                "game's Windowed Fullscreen display mode.")
+
+    def _start_stream(self):
+        """Start the capture, giving up the borderless request if it is refused.
+
+        Returns the capture control. Raises CaptureError if no arrangement
+        starts at all.
+
+        draw_border=False asks the OS to drop the yellow "this window is being
+        captured" edge, and setting it is GraphicsCaptureSession.IsBorderRequired
+        - an API Windows 11 has and Windows 10 does not. On Windows 10 the
+        request does not degrade: start_free_threaded raises "Toggling the
+        capture border is not supported by the Graphics Capture API on this
+        platform", nothing catches it, and Loom dies before its first frame with
+        a traceback about a cosmetic preference. Reported from Windows 10 Pro
+        22H2; invisible here, because this machine is Windows 11.
+
+        So the request is an attempt, not a requirement. The library's own
+        default of None means "leave the border alone", which is what a machine
+        that cannot turn it off was always going to do anyway.
+
+        Retried rather than guarded by a build-number check on purpose: which
+        servicing build first carried IsBorderRequired is not something I am
+        confident about from documentation, and this backend was written by
+        measuring rather than by reading - see the module docstring. A retry
+        adapts to the machine. A version check adapts to my belief about it.
+        """
         try:
             from windows_capture import WindowsCapture
         except ImportError as missing:
@@ -202,13 +237,42 @@ class GameWindow:
                 "read the screen on Windows. Install it with: "
                 "pip install -r requirements.txt") from missing
 
-        self._capture = WindowsCapture(
+        # Preferred first, then the one every machine can do.
+        attempts = (False, None)
+        first_problem = None
+        for draw_border in attempts:
+            self._capture = self._build_capture(WindowsCapture, draw_border)
+            try:
+                control = self._capture.start_free_threaded()
+            except Exception as problem:
+                if first_problem is None:
+                    first_problem = problem
+                continue
+            if draw_border is None and first_problem is not None:
+                print("Windows will draw a yellow capture border around the "
+                      "game: hiding it needs an API this version of Windows "
+                      "does not have. Loom reads the HUD exactly the same.")
+            return control
+
+        raise CaptureError(
+            f"could not start a capture stream on the game window: "
+            f"{type(first_problem).__name__}: {first_problem}"
+        ) from first_problem
+
+    def _build_capture(self, WindowsCapture, draw_border):
+        """One configured WindowsCapture with its two callbacks attached.
+
+        Separate from _start_stream because a refused border request means
+        building the whole thing again: the setting is fixed at construction
+        and the callbacks are registered on the instance.
+        """
+        capture = WindowsCapture(
             cursor_capture=False,     # the cursor is not part of the HUD
-            draw_border=False,        # no yellow "this is being captured" edge
+            draw_border=draw_border,  # False asks for no yellow edge; see above
             window_hwnd=self.hwnd,
         )
 
-        @self._capture.event
+        @capture.event
         def on_frame_arrived(frame, capture_control):
             # The copy is not optional. frame_buffer is a zero-copy view over
             # a natively mapped frame, valid only until this callback returns;
@@ -222,27 +286,14 @@ class GameWindow:
                 self._frame = picture
                 self._frame_at = time.monotonic()
 
-        @self._capture.event
+        @capture.event
         def on_closed():
             # The window went away. Recorded rather than raised, because this
             # fires on the capture thread where nothing could catch it.
             with self._lock:
                 self._closed = True
 
-        try:
-            self._control = self._capture.start_free_threaded()
-        except Exception as problem:
-            raise CaptureError(
-                f"could not start a capture stream on the game window: "
-                f"{type(problem).__name__}: {problem}") from problem
-
-        if not self._await_first_frame():
-            self.stop()
-            raise CaptureError(
-                "the capture stream started but delivered no frames within "
-                f"{FIRST_FRAME_TIMEOUT:.0f}s. The window is probably "
-                "minimised, or the game is in exclusive fullscreen - try the "
-                "game's Windowed Fullscreen display mode.")
+        return capture
 
     def _await_first_frame(self, timeout=FIRST_FRAME_TIMEOUT):
         deadline = time.monotonic() + timeout

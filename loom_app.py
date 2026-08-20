@@ -56,6 +56,14 @@ def report_crash(kind, value, trace):
 
 
 def main():
+    # Before anything else, the launcher and every child alike. It used to sit
+    # below the --mode dispatch, which returns - so the children, the only
+    # processes that ever crashed in front of a tester, were the ones it never
+    # covered. A capture failure in the packaged overlay came out as
+    # PyInstaller's raw "Unhandled exception in script" dialog on top of the
+    # game. See report_crash.
+    sys.excepthook = report_crash
+
     # One executable, four programs. Packaged, this file IS Loom and the
     # launcher starts its children as `Loom.exe --mode overlay`; from a clone
     # the scripts are still run directly and this never fires. Checked before
@@ -71,9 +79,6 @@ def main():
         print(note)
 
     entry.windows_app_identity()
-    # Installed before the window exists, so a failure while building it is
-    # still seen. See report_crash for why this is not optional on Windows.
-    sys.excepthook = report_crash
     app = QApplication(sys.argv)
     # The application-wide icon: every window this process opens - launcher,
     # preview, statistics, How-to-use - inherits it. The .ico carries seven

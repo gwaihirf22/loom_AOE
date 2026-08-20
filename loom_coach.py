@@ -25,7 +25,7 @@ sixteen-minute game.
 import argparse
 import time
 
-from loom import pace, reader, session
+from loom import pace, reader, session, stopline
 from loom.build_order import BuildOrder, format_time
 
 # Plain ANSI escape codes: no extra dependency just to color some text.
@@ -192,7 +192,7 @@ def simulated_readings(build, scenario):
 
 
 def run_simulation(build, scenario, speed):
-    print(f"Simulating '{scenario}' at {speed}x. Ctrl+C to stop.")
+    print(f"Simulating '{scenario}' at {speed}x. {stopline.quit_hint()}.")
     time.sleep(1)
     print("\033[2J", end="")  # clear once, then redraw in place
 
@@ -213,7 +213,8 @@ def run_live(build, poll_interval):
 
     # Both waits are open-ended: start the coach first, then the game.
     try:
-        print("Waiting for the Age of Empires II window... (Ctrl+C to quit)")
+        print("Waiting for the Age of Empires II window... "
+              f"({stopline.quit_hint()})")
         hud.connect()
         width, height = hud.window_size()
         print(f"Found game window: {width} x {height}")

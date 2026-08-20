@@ -20,6 +20,8 @@ must run headless on a CI runner.
 
 import io
 
+import pytest
+
 from loom import statefeed, stopline
 
 
@@ -154,3 +156,54 @@ def test_watch_runs_on_a_daemon_thread():
     assert thread.daemon
     assert not thread.is_alive()
     assert finished == [1]
+
+
+# ---- how the program says it can be stopped -------------------------------
+#
+# The sentence, not the mechanism. Loom told everyone "Ctrl+C to quit"
+# regardless of whether there was a console to press it in - and under the
+# launcher there is not, because the child is a windowed process on a pipe.
+# A tester read that in the output pane, pressed Ctrl+C, watched nothing
+# happen and filed it as a broken hotkey. Which was fair: the program said so.
+
+
+class Terminal:
+    def isatty(self):
+        return True
+
+
+class Pipe:
+    def isatty(self):
+        return False
+
+
+class Closed:
+    def isatty(self):
+        raise ValueError("I/O operation on closed file")
+
+
+def test_a_terminal_is_told_about_ctrl_c(monkeypatch):
+    monkeypatch.setattr("sys.stdout", Terminal())
+
+    assert stopline.quit_hint() == "Ctrl+C to quit"
+
+
+def test_a_pipe_is_told_about_the_stop_button(monkeypatch):
+    """The launcher case. Ctrl+C cannot reach a windowed child, and the Stop
+    button sends the very line this module defines."""
+    monkeypatch.setattr("sys.stdout", Pipe())
+
+    hint = stopline.quit_hint()
+
+    assert "Ctrl+C" not in hint
+    assert "Stop" in hint
+
+
+@pytest.mark.parametrize("stdout", [Closed(), None])
+def test_a_stdout_that_cannot_answer_names_the_button(monkeypatch, stdout):
+    """A packaged windowed build can have no usable stdout at all. Guessing
+    Ctrl+C there would be the same wrong sentence again - nothing without a
+    console has a Ctrl+C to offer."""
+    monkeypatch.setattr("sys.stdout", stdout)
+
+    assert "Ctrl+C" not in stopline.quit_hint()

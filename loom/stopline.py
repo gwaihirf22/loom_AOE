@@ -57,6 +57,34 @@ def is_stop_line(line):
     return line.strip() == SENTINEL
 
 
+def quit_hint():
+    """How to stop this program, phrased for wherever it is running.
+
+    A child started from a terminal is quit with Ctrl+C. A child started by
+    the launcher is a windowed process whose stdout is a pipe: there is no
+    console, so there is no Ctrl+C to press, and the only way out is the
+    button that sends the stop line this module defines.
+
+    Loom told everyone the first thing regardless. A tester read "(Ctrl+C to
+    quit)" in the launcher's output pane, pressed it, watched nothing happen
+    and filed it as a broken hotkey - which was fair, because the program had
+    said so. The behaviour was right the whole time and only the sentence was
+    wrong.
+
+    Here rather than in a new module because the launcher's Stop button IS the
+    stop line: the mechanism and the sentence describing it belong together.
+    """
+    try:
+        if sys.stdout is not None and sys.stdout.isatty():
+            return "Ctrl+C to quit"
+    except (AttributeError, OSError, ValueError):
+        # A detached or already-closed stdout answers none of this. Falling
+        # through names the button, which is true in every case where asking
+        # was impossible - nothing without a console has a Ctrl+C.
+        pass
+    return "press Stop in the Loom launcher to quit"
+
+
 def read_until_stop(stream, on_stop):
     """Read lines until a stop request arrives, then call on_stop once.
 

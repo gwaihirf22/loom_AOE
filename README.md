@@ -11,6 +11,14 @@ those two numbers to drive a build order — showing the step to do now, the ste
 after it, whether you are on pace, and how your villagers are spread across
 food, wood, gold and stone versus what the build wants.
 
+> **Loom is early software.** It reads the screen, so it meets a different
+> machine in every Windows version, screen resolution, display scaling and HUD
+> mod out there — and it has only been tested on a handful of them so far. If
+> something does not work, please
+> [open an issue](https://github.com/gwaihirf22/loom_AOE/issues); a report with
+> your resolution and Windows version is genuinely the fastest way it gets
+> fixed.
+
 #### Video demo: [https://youtu.be/IjrvbCo6lIQ](https://youtu.be/IjrvbCo6lIQ) (This is only showing functionality and is not a guide of how to use this) View below for details on how to run Loom for yourself.
 
 ![Loom's overlay running over a live game](images/overlay-in-game.jpg)

@@ -710,18 +710,28 @@ def main():
         controller = DemoController(panel, build, args.speed,
                                     build_stem=args.build,
                                     follow_state=follow_state)
-        print(f"Demo mode at {args.speed}x. Ctrl+C to stop.")
+        print(f"Demo mode at {args.speed}x. {stopline.quit_hint()}.")
     else:
         hud = reader.HudReader()
         # Both waits are open-ended: start the overlay first, then the game.
         try:
-            print("Waiting for the Age of Empires II window... (Ctrl+C to quit)")
+            print("Waiting for the Age of Empires II window... "
+                  f"({stopline.quit_hint()})")
             hud.connect()
             print("Waiting for a match to start...")
             hud.wait_for_hud()
         except KeyboardInterrupt:
             print("\nStopped.")
             return
+        except capture.CaptureError as problem:
+            # Not being able to read the screen is a condition Loom
+            # understands, not a bug in it: the game may be in exclusive
+            # fullscreen, or the machine may refuse some capture option. It
+            # deserves a sentence in the launcher's output pane. Uncaught it
+            # was a traceback dialog thrown over the game mid-match, which is
+            # what a Windows 10 tester met and could do nothing with.
+            print(f"Cannot read the game: {problem}")
+            return 1
         print(f"HUD found (match {hud.hud['score']:.3f}, scale {hud.hud['scale']:.2f})")
 
         display = capture.open_display()
@@ -731,7 +741,7 @@ def main():
 
         controller = LiveController(panel, build, hud, build_stem=args.build,
                                     follow_state=follow_state)
-        print(f"Overlay running on '{build.name}'. Ctrl+C to stop.")
+        print(f"Overlay running on '{build.name}'. {stopline.quit_hint()}.")
 
     # Live mode has measured the HUD by now, so the default position can
     # sit exactly under the bar at ITS size; demo mode assumes 1.0.

@@ -20,6 +20,8 @@ at all right now.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import ast
+import pathlib
 import sys
 
 import pytest
@@ -180,3 +182,50 @@ def test_the_launcher_is_not_a_mode():
     would be a second way to spell the default."""
     assert "launcher" not in entry.MODES
     assert "app" not in entry.MODES
+
+
+# ---- the crash reporter has to cover the children too ----------------------
+
+def test_the_crash_reporter_is_installed_before_the_mode_dispatch():
+    """The children are the processes that crash in front of a player.
+
+    loom_app.main dispatches --mode with a `return`, so anything set up after
+    that line covers the launcher alone. The crash reporter was added there,
+    below it - which left the overlay, the coach and the readout, the only
+    three that ever run unattended over a game, with no reporter at all. A
+    capture failure in the packaged overlay came out as PyInstaller's raw
+    "Unhandled exception in script" dialog thrown over the match.
+
+    Checked with the AST rather than by reading, for the same reason
+    tests/test_apmwin.py checks the privacy claim that way: a comment saying
+    "before" is exactly what was already there when this was wrong.
+    """
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "loom_app.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "main")
+
+    def line_of_excepthook():
+        for node in ast.walk(main):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Attribute)
+                            and t.attr == "excepthook" for t in node.targets)):
+                return node.lineno
+        raise AssertionError("loom_app.main no longer installs sys.excepthook")
+
+    def line_of_mode_return():
+        for node in ast.walk(main):
+            # `if mode is not None: return entry.run(...)`
+            if isinstance(node, ast.If):
+                for inner in node.body:
+                    if isinstance(inner, ast.Return) and any(
+                            isinstance(call, ast.Attribute)
+                            and call.attr == "run"
+                            for call in ast.walk(inner)):
+                        return node.lineno
+        raise AssertionError("loom_app.main no longer dispatches on --mode")
+
+    assert line_of_excepthook() < line_of_mode_return(), (
+        "sys.excepthook must be installed BEFORE the --mode dispatch returns, "
+        "or no child process ever gets it")

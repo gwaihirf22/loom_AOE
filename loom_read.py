@@ -25,7 +25,7 @@ import time
 
 import cv2
 
-from loom import filters, paths, production, reader, session
+from loom import filters, paths, production, reader, session, stopline
 
 POLL_INTERVAL = 0.3
 
@@ -75,7 +75,8 @@ def main():
     # Loom is meant to be started before the game, so both waits are
     # open-ended: launch this, then go launch the game whenever.
     try:
-        print("Waiting for the Age of Empires II window... (Ctrl+C to quit)")
+        print("Waiting for the Age of Empires II window... "
+              f"({stopline.quit_hint()})")
         hud.connect()
         width, height = hud.window_size()
         print(f"Found game window: {width} x {height}")
@@ -87,7 +88,7 @@ def main():
         return
 
     print(f"HUD found (match {hud.hud['score']:.3f}, scale {hud.hud['scale']:.2f})")
-    print("Reading. Press Ctrl+C to stop.\n")
+    print(f"Reading. {stopline.quit_hint().capitalize()}.\n")
 
     tracker = production.ProductionTracker()
     last_population = None

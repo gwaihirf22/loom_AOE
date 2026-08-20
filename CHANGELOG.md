@@ -6,6 +6,57 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.3 — 2026-08-20
+
+**Loom runs on Windows 10.** It did not, and the reason was a cosmetic
+preference. Reported against 1.0.1 as issue #5 on the public repo, along with
+seven others; three of those were already fixed by 1.0.2 and this closes three
+more. Two remain open — the build preview's scrolling (#8) and the placement
+window's transparency (#4) — both reproduced, both with a cause found.
+
+### Fixed
+
+- **The capture stream starts on Windows 10.** Loom asked for the capture
+  without the yellow "this window is being captured" border, which is
+  `GraphicsCaptureSession.IsBorderRequired` - an API Windows 11 has and
+  Windows 10 does not. The request did not degrade: it raised out of
+  `start_free_threaded` before the first frame, so Loom died on a preference
+  about how the capture looks. The borderless request is now an attempt rather
+  than a requirement, retried without it if it is refused, and Windows 10 gets
+  a line saying the yellow border will appear and that the reading is
+  unaffected. Retried rather than gated on a build number deliberately: which
+  servicing build first carried that API is not something I am confident about
+  from documentation, and this backend was written by measuring rather than by
+  reading. Verified against the real library on Windows 11 - the machine that
+  can hide the border still does, in one attempt, with no retry.
+- **A child process that crashes says what happened.** `loom_app.main`
+  dispatches `--mode` with a `return`, and the crash reporter 1.0.2 added sat
+  below that line - so the launcher had it and the overlay, coach and readout,
+  the only three that ever run unattended over a game, did not. The Windows 10
+  capture failure above therefore arrived as PyInstaller's raw "Unhandled
+  exception in script" dialog thrown over the match. A test pins the ordering
+  with the AST, because a comment saying "before" is what was there while it
+  was wrong.
+- **A capture failure is a sentence, not a traceback.** `loom_overlay` now
+  catches `CaptureError` around the two open-ended waits the way it already
+  caught `KeyboardInterrupt`. Not being able to see the screen is a condition
+  Loom understands - the game may be in exclusive fullscreen, the machine may
+  refuse an option - and it belongs in the output pane as one line.
+- **The transparency labels say "Text & icons", not "Text && icons".** A
+  doubled ampersand is how a mnemonic is escaped in a button or a menu item;
+  a QLabel with no buddy does no mnemonic handling at all and renders both
+  characters. about.py and the README had always spelled it with one, so the
+  launcher was the only place that got it wrong - and the only place a player
+  ever sees it.
+- **"Ctrl+C to quit" is only printed where there is a Ctrl+C.** Under the
+  launcher every program is a windowed child on a pipe with no console at all,
+  and Loom told players to press a key that could not reach it. One of them
+  pressed it, watched nothing happen, and filed a broken hotkey - which was
+  fair, because the program had said so. `stopline.quit_hint()` now names the
+  Stop button when stdout is not a terminal, and lives in `stopline` because
+  the Stop button *is* the stop line: the mechanism and the sentence describing
+  it belong together.
+
 ## 1.0.2 — 2026-08-20
 
 **Loom can read a 1920x1080 screen.** Until now it could not, and said so

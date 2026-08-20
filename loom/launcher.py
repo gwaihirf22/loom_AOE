@@ -772,7 +772,13 @@ class OverlayTransparencyBox(QGroupBox):
             " all; at 100% the game cannot be seen through it. 80% is the"
             " designed look.")
         self.text = self._slider_row(
-            layout, "Text && icons", "50% normal / 100% bright && bold",
+            # One ampersand, not two. A doubled one is how you escape a
+            # mnemonic in a QPushButton or a menu; a QLabel with no buddy does
+            # no mnemonic handling at all, so it renders exactly what it is
+            # given and the player reads "Text && icons". about.py and the
+            # README have always spelled it with one - this line was the only
+            # place that did not.
+            layout, "Text & icons", "50% normal / 100% bright & bold",
             config.text_visibility(),
             config.set_text_visibility,
             "How visible the overlay's writing is. 50% is the designed look;"
