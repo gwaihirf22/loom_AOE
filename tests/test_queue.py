@@ -30,6 +30,12 @@ def fixture(name):
     return image
 
 
+# The HUD scale the 1080p cells were cut at. Their templates have to be resized
+# to match, exactly as QueueReader._use_templates_for does - a 40px template
+# cannot slide inside a 35px cell.
+CELL_SCALE_1080P = 0.73
+
+
 # --- tint classification -------------------------------------------------
 
 def test_green_wash_is_green():
@@ -41,6 +47,25 @@ def test_green_wash_is_green():
 def test_red_wash_is_red():
     tint, _ = queue.classify_tint(fixture("red_housed"))
     assert tint == "red"
+
+
+def test_the_loom_weave_is_artwork_not_an_amber_wash():
+    """Loom the program, defeated by Loom the technology.
+
+    The Loom tech's icon is a red-and-gold woven tartan, and its own colours
+    read 0.28-0.31 on the amber test - straddling a bar that sat at 0.30. It
+    flapped amber/untinted frame to frame, and amber means "waiting, producing
+    nothing", so a Town Centre researching Loom was reported IDLE while it
+    worked. Cut from the frame that did it, at 1080p.
+
+    A real amber cell reads 0.76 at its faintest; the busiest warm artwork
+    reads 0.36. The bar belongs in that gap, not at the edge of it.
+    """
+    cell = fixture("unwashed_loom_weave")
+
+    tint, _progress = queue.classify_tint(cell, CELL_SCALE_1080P)
+
+    assert tint is None, "the tech's own artwork was read as a wash"
 
 
 def test_amber_wash_is_amber():
@@ -109,6 +134,52 @@ def test_identifies_villager(icon_templates):
     name, score, _ = queue.identify(gray, icon_templates)
     assert name in ("villager_male", "villager_female")
     assert score >= queue.MIN_IDENTITY_SCORE
+
+
+@pytest.fixture(scope="module")
+def icon_templates_1080p():
+    return {name: [cv2.resize(t, None, fx=CELL_SCALE_1080P,
+                              fy=CELL_SCALE_1080P,
+                              interpolation=cv2.INTER_AREA)
+                   for t in variants]
+            for name, variants in queue.load_icon_templates().items()}
+
+
+@pytest.mark.parametrize("name", ["green_villager_male_x4",
+                                  "untinted_villager_male_x1"])
+def test_a_villager_carrying_a_batch_count_is_still_a_villager(
+        name, icon_templates_1080p):
+    """Both cells are real Town Centres training real villagers, and both
+    were reported as an idle TC.
+
+    The batch-count numeral is painted over the portrait, and template
+    correlation was reading it as part of the picture. Male villagers lose
+    worst - a dark low-contrast torso, so a bright digit across it is a big
+    share of what the match actually sees. Measured on these two cells:
+    villager_male scored 0.515 (beaten by wheelbarrow on 0.533) and 0.531
+    (beaten by dragon_ship on 0.539). The winner was then thrown out by the
+    tech gate, the slot read as NO identity, and production.py saw no TC work.
+
+    The failure is silent by construction - a confident wrong name and an
+    alert about an idle Town Centre that is not idle - so it gets a test.
+    """
+    gray = cv2.cvtColor(fixture(name), cv2.COLOR_BGR2GRAY)
+
+    identity, score, _margin = queue.identify(
+        queue.without_numeral(gray, CELL_SCALE_1080P), icon_templates_1080p)
+
+    assert identity == "villager_male"
+    # Confident enough to survive the gates in _identify_cached, or
+    # production.py never counts the Town Centre as working.
+    assert score >= queue.CLEAR_IDENTITY_SCORE
+
+
+def test_removing_the_numeral_leaves_a_cell_that_has_none_alone():
+    """A slot with no batch count must come back untouched - the cheap path,
+    and proof this cannot quietly erase portrait detail on its own."""
+    gray = cv2.cvtColor(fixture("green_tech_masonry"), cv2.COLOR_BGR2GRAY)
+
+    assert queue.without_numeral(gray, 1.0) is gray
 
 
 def test_identifies_hussite_wagon_through_amber(icon_templates):
@@ -232,6 +303,81 @@ def test_terrain_cell_is_not_occupied():
         # count and pasted terrain does not overwhelm the threshold. The seam
         # makes this deliberately the hardest version of the test.
         assert queue.count_occupied(gray, boxes) <= 1
+
+
+def test_an_empty_cell_stays_under_the_edge_gate():
+    """MIN_EDGE_STEP was investigated as the cause of a false idle-TC alert,
+    and cleared. This pins the finding so it is not "fixed" again.
+
+    The case against it looked strong and was entirely statistical: 10% of
+    cells the reader called occupied at native size score under the gate
+    when the same frames are rendered smaller, and lowering it to 12.0
+    "recovered" 56 frames' worth of slots at 2560x1440. Every one of those
+    numbers was measured against occupancy labelled by this very function,
+    so they could only ever agree with themselves.
+
+    Cropping the disputed cells and looking at them settled it in a glance,
+    and these two fixtures are those cells. Both were checked by eye before
+    being written down: at 1440p, bare HUD background beside the previous
+    slot's border; at 1080p, the flat trim past the last real slot. The gate
+    is right, and lowering it would hand terrain to an identity matcher with
+    five hundred templates, where something always matches a little.
+
+    The 1440p cell is the load-bearing one - it scores about 12, so it is
+    exactly what a lowered gate would have admitted as production.
+    """
+    margin = 12
+    for name in ("empty_after_one_slot_1440p", "terrain_after_slots_1080p"):
+        crop = cv2.imread(str(pathlib.Path(__file__).parent / "data"
+                              / "queue_cells" / f"{name}.png"))
+        assert crop is not None, f"missing fixture {name}"
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        box = (margin, margin,
+               crop.shape[1] - margin, crop.shape[0] - margin)
+        assert queue._edge_second_weakest(gray, box) < queue.MIN_EDGE_STEP, (
+            f"{name} scores past the occupancy gate; lowering "
+            "MIN_EDGE_STEP admits scenery as production")
+
+
+def test_terrain_cell_is_not_occupied():
+    for name in ("empty_terrain", "empty_terrain_2"):
+        frame, boxes = compose_frame([name])
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # A pasted terrain crop has edges at the paste seam, but a real empty
+        # cell sits in continuous terrain; this asserts the pasted SLOT crops
+        # count and pasted terrain does not overwhelm the threshold. The seam
+        # makes this deliberately the hardest version of the test.
+        assert queue.count_occupied(gray, boxes) <= 1
+
+
+def test_the_edge_gate_is_not_too_high_and_must_not_be_lowered():
+    """MIN_EDGE_STEP was investigated as the cause of a false idle-TC alert
+    and cleared. This records the finding so it is not "fixed" again.
+
+    The case against it looked strong and was entirely statistical: at
+    1920x1080, 10% of cells the reader called occupied at native size score
+    under the gate when the same frames are rendered smaller, and lowering
+    it to 12.0 "recovered" 56 frames' worth of slots at 2560x1440 and 47 at
+    1080p. Every one of those numbers was measured against occupancy
+    labelled by this very function, so they could only ever agree with
+    themselves.
+
+    Cropping the disputed cells and looking at them settled it in one
+    glance: at 1440p they are flat empty HUD background, and at 1080p they
+    are the map showing through past the last real slot. The gate is
+    right. Lowering it would feed terrain to the identity matcher, and with
+    five hundred templates something always matches a little.
+
+    So the invariant is two-sided. An empty cell must stay under the gate,
+    which is what stops the prefix walk running off the end of the queue.
+    """
+    for name in ("empty_terrain", "empty_terrain_2"):
+        frame, boxes = compose_frame([name])
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Box 1 onward is terrain with no paste seam of its own.
+        assert queue._edge_second_weakest(gray, boxes[2])             < queue.MIN_EDGE_STEP, (
+                "an empty cell is scoring past the occupancy gate; lowering "
+                "MIN_EDGE_STEP admits scenery as production")
 
 
 # --- the production tracker ----------------------------------------------

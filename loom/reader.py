@@ -23,6 +23,28 @@ from . import (anchor, capture, digits, filters, glyphs, hud, notifications,
 # loading screen, or the fade at the start of a match.
 MIN_ANCHOR_SCORE = 0.8
 
+# Below this HUD scale the digits get thin enough to be worth warning about.
+#
+# The direction that matters. A HUD too LARGE is simply not found, which is
+# loud and self-explaining; a HUD too small is found perfectly well and then
+# misreads - the "18 villagers read as a confident 8" family - which is the
+# exact failure the never-guess-a-reading rule exists for, and it is silent.
+#
+# 0.6 is chosen against what is known rather than measured at the boundary:
+# 1920x1080 puts the HUD at ~0.74x and reads correctly, so the real edge is
+# somewhere below that, and this sits between the two without claiming to be
+# the edge itself. It only ever prints a note; nothing behaves differently.
+SMALL_HUD_SCALE = 0.6
+
+# One in how many failed acquisitions also looks for an oversize HUD.
+#
+# wait_for_hud retries twice a second and can run for the whole of a menu or a
+# lobby, so anything it does every time is paid for minutes on end. 4 puts the
+# extra sweep on a two-second cadence: a big HUD is found within two seconds of
+# a match starting, which nobody notices, and the idle cost rises by a quarter
+# of one sweep instead of a whole one.
+LARGE_HUD_EVERY_NTH = 4
+
 # How many unreadable polls in a row before I go looking for the HUD again.
 FAILURES_BEFORE_REANCHOR = 10
 
@@ -214,6 +236,12 @@ class HudReader:
         self._warned_oversize = False
         # Same, for "something is there but no skin fits it well enough".
         self._warned_weak_anchor = False
+        # Same again, for a HUD small enough that the digits get unreliable.
+        self._warned_small_hud = False
+
+        # How many times the common range has come up empty, so the search for
+        # a larger HUD can run on its own slower cadence. See find_hud.
+        self._large_hud_attempts = 0
 
         # Load shedding: how long the previous poll took, which poll this is,
         # and the poll number each advisory reader last ran on. See
@@ -276,6 +304,47 @@ class HudReader:
     def window_size(self):
         return capture.window_size(self.window)
 
+    def reacquire_window(self):
+        """Look for the game window again, keeping the loaded templates.
+
+        connect() latches onto whichever window answered when it ran, and
+        that is not always the one a match ends up being drawn in. Start the
+        overlay at the main menu, sit there a while, then begin a game and
+        the HUD may never be found - not because the anchor search is wrong
+        but because the frames being searched come from a window that is no
+        longer the game's. Restarting the overlay fixed it, which is exactly
+        the shape of a stale handle.
+
+        Cheap on purpose, so the waiting loop can afford to call it: this
+        re-runs the window search only. The templates cost a few hundred
+        milliseconds to load and none of them depend on which window is on
+        screen, so connect()'s work is deliberately not repeated.
+
+        It heals a second failure for free, and that one may matter more:
+        capture.find_game_window restarts a stream that has stopped
+        delivering, so a session which died quietly - the thing restarting
+        the overlay was really fixing - is rebuilt without the player having
+        to notice or act.
+
+        Returns True when what it found is not the object already in use,
+        which covers both cases: a different window, and the same window
+        behind a fresh stream.
+        """
+        if self._display is None:
+            return False
+        try:
+            window = capture.find_game_window(self._display)
+        except capture.CaptureError:
+            # The game may be mid-restart, or a stream may have failed to
+            # start. Neither is a reason to give up: the next attempt is
+            # one poll away.
+            return False
+        if window is None:
+            return False
+        changed = window is not self.window
+        self.window = window
+        return changed
+
     def find_hud(self):
         """Locate the HUD and work out where the numbers are.
 
@@ -320,6 +389,41 @@ class HudReader:
             found = anchor.identify_hud(frame, self._icon_templates,
                                         wood_templates=self._wood_templates)
 
+        # Still nothing in the common range: the HUD may simply be BIGGER than
+        # that range looks. A 4K screen at the game's own 100% HUD scale puts
+        # it near 2.6x, and Loom used to refuse a HUD it reads perfectly well.
+        #
+        # A discovery sweep answers "is it about this big?", and identify_hud
+        # is then asked again with that as a near_scale - the cheap nine-step
+        # path re-anchoring already uses - so the placing costs almost nothing.
+        #
+        # Every skin's template, not just the default one. The anchor is the
+        # same game art in every skin and I expected one template to do; the
+        # measurement says otherwise, because the bar AROUND the icon is not
+        # shared. Anne_HK's anchor scores 0.68-0.79 on a stock HUD, under the
+        # 0.80 this gate needs, so a default-only sweep found nothing at all on
+        # exactly the skin most people run.
+        #
+        # Only every Nth attempt, and that is the whole reason this lives here
+        # rather than inside find_icon. wait_for_hud calls this twice a second
+        # for as long as the player sits in a menu; paying an extra sweep every
+        # time took a blank 4K frame from 234ms to 500ms an attempt. The HUD
+        # cannot change size mid-session anyway - that needs an overlay restart
+        # - so looking every few seconds finds it just as surely for a fraction
+        # of the idle cost.
+        if found is None or found["score"] < MIN_ANCHOR_SCORE:
+            self._large_hud_attempts += 1
+            if self._large_hud_attempts % LARGE_HUD_EVERY_NTH == 0:
+                for template in self._icon_templates.values():
+                    bigger = anchor.larger_icon_scale(frame, template)
+                    if bigger is None:
+                        continue
+                    found = anchor.identify_hud(
+                        frame, self._icon_templates, bigger,
+                        self._wood_templates)
+                    if found is not None and found["score"] >= MIN_ANCHOR_SCORE:
+                        break
+
         if found is None or found["score"] < MIN_ANCHOR_SCORE:
             # A HUD that is FOUND but scores under the gate used to be
             # indistinguishable from no HUD at all: wait_for_hud looped on the
@@ -328,7 +432,12 @@ class HudReader:
             # against a 0.80 gate) before it had templates of its own, and
             # with no message there was nothing to go on. Said once, because
             # the answer cannot change while the same art is on screen.
-            if found is not None and not self._warned_weak_anchor:
+            # Not until the oversize search has had a turn: on its 1-in-N
+            # cadence the first few attempts at a big HUD land here, and
+            # "a UI mod Loom has no templates for" is the wrong explanation
+            # for a HUD that is merely large and about to be found.
+            if (found is not None and not self._warned_weak_anchor
+                    and self._large_hud_attempts >= LARGE_HUD_EVERY_NTH):
                 self._warned_weak_anchor = True
                 print(f"note: the closest HUD match was "
                       f"'{found['profile'].name}' at {found['score']:.2f}, "
@@ -348,11 +457,17 @@ class HudReader:
                     frame, self._icon_templates[hud.DEFAULT])
                 if oversize is not None:
                     self._warned_oversize = True
+                    # The limit is READ from the constant, never typed. This
+                    # message used to say "limit 2.0x" in words and would have
+                    # started lying the moment the extended range landed.
                     print(f"note: the HUD appears ~{oversize:.1f}x the size "
-                          "Loom can read (limit 2.0x). This usually means the "
-                          "game is rendering below the display's resolution "
-                          "and being upscaled - set the game's resolution to "
-                          "match the display.")
+                          f"Loom was measured against, past the "
+                          f"{anchor.EXTENDED_SCALES[-1]:.1f}x it can search. "
+                          "Lower the game's HUD scale (Options > Interface) "
+                          "until Loom finds it. A game rendering below the "
+                          "display's resolution is upscaled by the compositor "
+                          "and can also land here, so matching the game's "
+                          "resolution to the display is worth a try too.")
             return False
 
         height, width = frame.shape[:2]
@@ -374,6 +489,29 @@ class HudReader:
             "max_glyph_width": max_glyph_width(found["scale"], profile),
         }
 
+        # A HUD small enough that the digits are getting thin. Said once, and
+        # only ever advisory - Loom carries on and reads it. See
+        # SMALL_HUD_SCALE for why small is the dangerous direction.
+        #
+        # This replaced a note that printed found["scale"] as a PERCENTAGE -
+        # "HUD scale looks like ~68% - Loom reads best at 100%" - which was
+        # reporting the wrong quantity. found["scale"] is the HUD's size
+        # against a 2560x1440 reference, not the in-game slider. A 1920x1080
+        # screen with the slider at 100% measures 0.74, so every 1080p player
+        # was told they were at 74% and should go to 100%, which they already
+        # were. The fixtures prove it: hud_1920x1080_100.png is named for a
+        # slider at 100 and measures 0.68. The two numbers agree only at
+        # 2560x1440, which is the resolution the reference was cut from.
+        #
+        # So this says the size it actually measured, and gives advice a
+        # player can act on: the direction to move the slider.
+        if found["scale"] < SMALL_HUD_SCALE and not self._warned_small_hud:
+            self._warned_small_hud = True
+            print(f"note: the HUD is measuring {found['scale']:.2f}x the size "
+                  "Loom was built against, small enough that digits can be "
+                  "misread. Raising the game's HUD scale (Options > Interface) "
+                  "will make the readings steadier.")
+
         # The queue hangs off its own anchor in the same bar, and that anchor
         # is skin art too. Hand the reader the matching template and grid
         # origin, or it locates the strip against the wrong picture.
@@ -387,13 +525,6 @@ class HudReader:
         self._resource_regions = resources.locate_regions(
             frame, self._resource_templates[profile], found["scale"], profile)
 
-        # Loom reads best with the in-game HUD scale at 100%: every other
-        # region scales off the anchor and follows along, but recognition
-        # quality drops as icons shrink or grow away from the templates.
-        # Say so once, honestly, rather than failing mysteriously later.
-        if abs(found["scale"] - 1.0) > 0.05:
-            print(f"note: HUD scale looks like ~{found['scale'] * 100:.0f}% "
-                  "- Loom reads best at 100% (Options > Interface).")
         return True
 
     def wait_for_hud(self, poll_interval=0.5):
@@ -536,7 +667,8 @@ class HudReader:
         if (self._queue_reader is not None
                 and (raw_clock is not None or raw_villagers is not None)
                 and self._advisory_due("queue")):
-            strip_w, strip_h, _ = queue.strip_extent(self.hud["scale"])
+            strip_w, strip_h, _ = queue.strip_extent(
+                self.hud["scale"], self._queue_reader.profile.slot_one)
             strip = capture.capture_region(self.window, 0, 0, strip_w, strip_h)
             queue_slots = self._queue_reader.read(strip, self.hud["scale"])
 

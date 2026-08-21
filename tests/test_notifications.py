@@ -116,8 +116,11 @@ def test_wrapped_attack_warning_fires_from_one_line_up():
     # FIRST of the pair, so a fresh warning shows that text one line above
     # the stack's bottom - it must still fire, and the wild-animals second
     # line (bottom-most) fires with it.
+    # A phrase now carries one template per rendering; these two have only
+    # the scale-1.0 harvest, and this panel is composed at scale 1.0.
     templates = notifications.load_phrase_templates()
-    warning = panel_with(templates["attacked"], templates["wild_animals"])
+    warning = panel_with(templates["attacked"][0][0],
+                         templates["wild_animals"][0][0])
     watcher = notifications.NotificationWatcher()
     events = watcher.watch(warning, 1.0, 100)
     assert set(events) == {"attacked", "wild_animals"}
@@ -125,14 +128,17 @@ def test_wrapped_attack_warning_fires_from_one_line_up():
 
 def test_ink_agreement_separates_words_from_other_words():
     """Correlation finds a candidate spot; ink agreement confirms the
-    actual words. Measured live: a real sighting reads 0.94+, a panel
-    holding only OTHER text reads 0.36 or less."""
+    actual words. Re-measured across the live fixtures and two capture
+    runs: a real sighting against a template harvested at its own
+    rendering reads 0.55-0.76, and a panel holding only OTHER text reads
+    0.38 or less. (This file used to claim 0.94+, which was never true of
+    the corpus and made the gate look far roomier than it is.)"""
     tcb = cv2.imread(str(paths.TEMPLATES_DIR / "notifications"
                          / "town_center_built.png"), cv2.IMREAD_GRAYSCALE)
     attacked = cv2.imread(str(paths.TEMPLATES_DIR / "notifications"
                               / "attacked.png"), cv2.IMREAD_GRAYSCALE)
     # Not 1.0: the region's adaptive threshold admits anti-aliased glyph
-    # edges the template's fixed gate excludes. Real sightings read 0.91+.
+    # edges the template's fixed gate excludes.
     assert notifications.ink_agreement(tcb, tcb) \
         >= notifications.MIN_INK_AGREEMENT
     other = attacked[:tcb.shape[0], :tcb.shape[1]]
@@ -212,3 +218,89 @@ def test_rolled_up_line_cannot_rearm_or_refire(phrase):
     # The churn brings it back to one-up: NOT fresh - it never left.
     assert watcher.watch(panel_with(phrase, newer_line()), 1.0, 124) == []
     assert watcher.watch(panel_with(phrase, newer_line()), 1.0, 127) == []
+
+
+def two_town_centres(looks_per_second=1):
+    """A script for two Town Centres: the first line arrives, is pushed off
+    early by a busy feed, and the second line arrives while the cooldown
+    from the first is still running.
+
+    The gap is derived from REARM_SECONDS rather than written down, because
+    that constant is the thing under test and a duplicated number would
+    just drift away from it.
+    """
+    gone_at = 4
+    arrives_at = gone_at + notifications.REARM_SECONDS + 3
+    end = arrives_at + 12
+    script = []
+    step = 1.0 / looks_per_second
+    moment = 0.0
+    while moment < end:
+        if moment < gone_at or moment >= arrives_at:
+            script.append((moment, "phrase"))
+        else:
+            script.append((moment, "busy"))
+        moment += step
+    return script
+
+
+def test_a_second_town_centre_inside_the_cooldown_is_still_counted(phrase):
+    """Two Town Centres finishing close together, which is the case the
+    cooldown alone got wrong and got wrong SILENTLY.
+
+    The cooldown is refreshed by every sighting in a band the phrase may
+    fire from. So when a second Town Centre's line arrives inside the
+    window, its own sightings keep pushing the window forward and the
+    fifteen seconds never elapse - the event is not delayed, it is lost.
+    Measured on two lines 16 game-seconds apart, the second was never
+    counted at all. Absence is what rescues it: the first line provably
+    left the screen, and the game does not reprint a phrase whose line is
+    still up, so what came back is a different line.
+
+    KNOWN LIMIT, and it is why this test derives its gap instead of
+    choosing one: the two Town Centres have to be separated by more than
+    REARM_SECONDS of absence. Closer than that and the second is still
+    lost, because detection flicker on a lingering line produces absences
+    of the same length - measured, 7 seconds of flicker against 8 seconds
+    for a real gap - and nothing in the pixels separates them. See
+    REARM_SECONDS.
+    """
+    watcher = notifications.NotificationWatcher()
+    seen = panel_with(phrase)
+    busy = panel_with(newer_line(), newer_line())
+
+    fired = []
+    for moment, which in two_town_centres():
+        panel = seen if which == "phrase" else busy
+        fired += [event for event in watcher.watch(panel, 1.0, moment)
+                  if event == "town_center_built"]
+
+    assert len(fired) == 2, "the second Town Centre was not counted"
+
+
+def test_the_count_does_not_depend_on_how_often_the_feed_is_looked_at(phrase):
+    """A reading that changes with the poll rate is not a reading.
+
+    Looks are as dense as the poll loop makes them, and load shedding
+    makes them sparser mid-game. Both failures this module has had were
+    rate-dependent: a lingering line counted twice at two looks per frame
+    and once at one, and a real second line counted at one and lost at
+    three. Whatever the cadence, this sequence holds two Town Centres.
+    """
+    seen = panel_with(phrase)
+    busy = panel_with(newer_line(), newer_line())
+
+    counts = []
+    for rate in (1, 2, 3, 4):
+        watcher = notifications.NotificationWatcher()
+        fired = []
+        for moment, which in two_town_centres(rate):
+            panel = seen if which == "phrase" else busy
+            fired += [event for event in watcher.watch(panel, 1.0, moment)
+                      if event == "town_center_built"]
+        counts.append(len(fired))
+
+    assert len(set(counts)) == 1, (
+        f"counted {counts} at 1/2/3/4 looks per second - the answer "
+        "depends on the poll rate")
+    assert counts[0] == 2

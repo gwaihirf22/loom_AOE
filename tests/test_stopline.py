@@ -207,3 +207,44 @@ def test_a_stdout_that_cannot_answer_names_the_button(monkeypatch, stdout):
     monkeypatch.setattr("sys.stdout", stdout)
 
     assert "Ctrl+C" not in stopline.quit_hint()
+
+
+def test_the_hide_request_is_its_own_whole_line():
+    assert stopline.is_toggle_hidden_line("LOOM_TOGGLE_HIDDEN")
+    assert stopline.is_toggle_hidden_line("LOOM_TOGGLE_HIDDEN\n")
+    # A line that merely begins with it is not a request, same rule as the
+    # stop line: these are whole lines, not prefixes with a payload.
+    assert not stopline.is_toggle_hidden_line("LOOM_TOGGLE_HIDDEN_LATER")
+    assert not stopline.is_toggle_hidden_line("LOOM_STOP")
+    assert not stopline.is_stop_line("LOOM_TOGGLE_HIDDEN")
+
+
+def test_hiding_does_not_stop_the_child():
+    """The whole point of the second command: it is a request about the
+    window, not about living or dying, so reading carries on and the stop
+    line still arrives afterwards."""
+    import io as _io
+
+    hides = []
+    stops = []
+    ended = stopline.read_until_stop(
+        _io.StringIO("LOOM_TOGGLE_HIDDEN\nLOOM_TOGGLE_HIDDEN\nLOOM_STOP\n"),
+        lambda: stops.append(True),
+        on_toggle_hidden=lambda: hides.append(True))
+
+    assert ended is True
+    assert len(hides) == 2, "both hide requests should have been delivered"
+    assert len(stops) == 1
+
+
+def test_a_reader_given_no_hide_handler_ignores_the_request():
+    """Every existing caller passes only on_stop. A hide line arriving at
+    one of those must be ignored the way any unknown line is, not raise."""
+    import io as _io
+
+    stops = []
+    ended = stopline.read_until_stop(
+        _io.StringIO("LOOM_TOGGLE_HIDDEN\nLOOM_STOP\n"),
+        lambda: stops.append(True))
+
+    assert ended is True and len(stops) == 1

@@ -34,7 +34,7 @@ import signal
 import sys
 import time
 
-from PyQt6.QtCore import QMetaObject, Qt, QTimer
+from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
@@ -42,9 +42,27 @@ from loom import alerts, apm, build_order, capture, config, entry, follow, games
 from loom import hotkeys, overlay, pace, passthrough, paths, production
 from loom.hotkeys import keyspec
 from loom import reader, report, session, statefeed, stopline
+# visible_on and screen_rects moved to loom/placement.py so the launcher can
+# ask the same question - it must not import this module, which is an entry
+# point. Re-exported under their old names because everything here, and
+# tests/test_placement.py, already calls them that.
+from loom.placement import MIN_VISIBLE, screen_rects, visible_on
 from loom.build_order import BuildOrder
 
 POLL_INTERVAL_MS = 300
+
+# While waiting for a match, how often to ask which window the game is in
+# again, counted in failed looks. connect() answers that once at startup and
+# the answer can go stale - see reader.reacquire_window. At the poll interval
+# above this is about every six seconds, which is far below the cost of
+# noticing by hand and restarting.
+REACQUIRE_EVERY_NTH_LOOK = 20
+
+# And how many failed looks before explaining what might be wrong. About
+# thirty seconds: long enough that it is not shouted at somebody still
+# loading a map, short enough to reach the player while they are still
+# wondering. Said once - the answer cannot change while nothing does.
+LOOKS_BEFORE_EXPLAINING = 100
 
 # Where the panel goes when the player has never chosen a spot: tucked into
 # the TOP-RIGHT corner, below the game's own bar. Top-right rather than
@@ -58,11 +76,6 @@ POLL_INTERVAL_MS = 300
 PANEL_TOP_MARGIN = 96
 PANEL_RIGHT_MARGIN = 16
 
-# How much of the panel must be on SOME screen for a saved position to be
-# believed. A sliver does not count: a panel showing 10 pixels of its corner
-# is lost for every practical purpose.
-MIN_VISIBLE = 60
-
 
 def default_offset(panel, width, hud_scale=1.0):
     """Where the panel goes before the player has moved it: top-right,
@@ -70,28 +83,6 @@ def default_offset(panel, width, hud_scale=1.0):
     still shows it."""
     return (max(0, width - panel.width() - PANEL_RIGHT_MARGIN),
             round(PANEL_TOP_MARGIN * hud_scale))
-
-
-def visible_on(screens, x, y, width, height):
-    """Is a meaningful amount of this rectangle on any of these screens?
-
-    screens is [(x, y, width, height)]. Pure, so the interesting inputs - a
-    monitor at negative coordinates, a rect straddling two screens, a rect
-    off every screen - are testable without arranging real monitors, exactly
-    like launcher.beside().
-    """
-    for screen_x, screen_y, screen_w, screen_h in screens:
-        overlap_w = min(x + width, screen_x + screen_w) - max(x, screen_x)
-        overlap_h = min(y + height, screen_y + screen_h) - max(y, screen_y)
-        if overlap_w >= MIN_VISIBLE and overlap_h >= MIN_VISIBLE:
-            return True
-    return False
-
-
-def screen_rects(app):
-    """Every screen's geometry as plain tuples, for visible_on."""
-    return [(g.x(), g.y(), g.width(), g.height())
-            for g in (screen.geometry() for screen in app.screens())]
 
 
 def place_panel(panel, origin_x, origin_y, width, hud_scale=1.0,
@@ -190,6 +181,18 @@ def start_hotkeys(app, controller, follow_state):
 
     def on_hotkey(action):
         moment = time.monotonic()
+        if action == "toggle_hidden":
+            # First, and outside the guard below: hiding is about the
+            # window, not about the game, and the moment a player most
+            # wants the panel gone is while it is sitting over the menus
+            # with no match to follow yet.
+            controller.toggle_hidden()
+            return
+        if not controller.following_yet():
+            # No game yet, so there is no step to move and nothing to
+            # redraw from. Silently doing nothing beats moving a cursor
+            # that the first real reading would reset anyway.
+            return
         if action == "next_step":
             follow_state.next_step(controller.auto_index(), moment)
         elif action == "previous_step":
@@ -238,6 +241,86 @@ def resume_hint():
         return keyspec.normalise(binding)
     except ValueError:
         return None
+
+
+class LauncherRequests(QObject):
+    """The launcher's stdin requests, moved onto the GUI thread.
+
+    stopline reads on a daemon thread, and Qt objects may only be touched
+    from the thread that owns them - hiding the panel from the reader thread
+    would be exactly that mistake. A signal emitted across threads is the
+    supported way over: this object is created on the GUI thread, so the
+    connection below is queued and the handler runs where the panel lives.
+
+    The stop request has its own route (QMetaObject.invokeMethod on the
+    application) because app.quit IS a slot; nothing here is.
+
+    The controller is filled in afterwards rather than passed in, because
+    the reader thread starts before there is a controller to give it - and
+    the launcher may send a request in that window.
+    """
+
+    requested = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.controller = None
+        self.requested.connect(self._toggle_hidden)
+
+    def _toggle_hidden(self):
+        if self.controller is not None:
+            self.controller.toggle_hidden()
+
+
+class Hideable:
+    """Taking the panel off the screen and putting it back.
+
+    Shared by both controllers because hiding is about the window and has
+    nothing to do with where the numbers come from. Expects self.panel.
+
+    Hiding is not stopping. Polling, alerts, the statistics recorder and the
+    APM counter all carry on with the window gone; stopping would throw away
+    the match being tracked, which is the whole reason this is a separate
+    thing from the Stop button.
+
+    The overlay owns this state and reports it upward, so the launcher's
+    button and the hotkey cannot drift apart: both ask for a toggle, and
+    what the button DISPLAYS comes from the line emitted here.
+    """
+
+    hidden = False
+    _checked_passthrough = False
+
+    def begin_hidden(self):
+        """Start with the panel off the screen, because the player asked.
+
+        Not a toggle, and not the same code path: at startup there is nothing
+        to hide yet - the panel has simply never been shown - so this records
+        the state and announces it rather than flipping anything. Announcing
+        matters as much as the state does: the launcher's button reads what
+        this emits, so without the line it would offer "Hide overlay" for a
+        panel that was never up.
+        """
+        self.hidden = True
+        print(statefeed.encode({"hidden": True}))
+
+    def toggle_hidden(self):
+        self.hidden = not self.hidden
+        self.panel.setVisible(not self.hidden)
+        print(statefeed.encode({"hidden": self.hidden}))
+
+        if not self.hidden and not self._checked_passthrough:
+            # Click-through lives in the window's X11 input region, which is
+            # applied when the window is MAPPED - so showing it again is a
+            # moment where it could plausibly be lost, and losing it quietly
+            # costs the player their cursor mid-match. Asking is cheap, and
+            # only the first re-show needs to answer it.
+            self._checked_passthrough = True
+            QTimer.singleShot(0, lambda: warn_if_not_click_through(self.panel))
+
+    def following_yet(self):
+        """Is there a game to step through? The step hotkeys need to know."""
+        return True
 
 
 class LiveController:
@@ -392,8 +475,14 @@ class LiveController:
         all stay on the reading, so the statistics remain an honest record of
         the game whatever the player happened to be looking at.
         """
-        index = self.follow.effective_index(auto_index, time.monotonic())
-        mode = self.follow.mode(time.monotonic())
+        # One clock reading for all three questions. Asking time.monotonic()
+        # separately for the index, the mode and the countdown could land
+        # them either side of the hold expiring, and a panel saying "resuming
+        # in 1s" about a hold that has already gone is a small lie.
+        now = time.monotonic()
+        index = self.follow.effective_index(auto_index, now)
+        mode = self.follow.mode(now)
+        holding_for = self.follow.seconds_left(now)
         active = self.build.active_step_at(index)
         self.panel.show_step(
             self.build,
@@ -407,6 +496,7 @@ class LiveController:
             milestone_queued=self.report.milestone_queued(active),
             follow_mode=mode,
             resume_hint=self.resume_hint,
+            seconds_left=holding_for,
         )
         # Whole-number time and pace so the emitter's change-check works:
         # float jitter would otherwise make every poll look "new".
@@ -419,10 +509,19 @@ class LiveController:
             "pace": None if delta is None else round(delta),
             "res": per_resource or None,
             "pop": population,
+            # What the panel is showing, not a second opinion - see
+            # statefeed.py. self.panel.alerts is the list AFTER the panel's
+            # own trimming, so the preview cannot show a band the overlay
+            # decided against.
+            "alerts": [[text, severity]
+                       for text, severity in self.panel.alerts],
+            # So the preview can count down too, rather than working out a
+            # deadline of its own from a mode string.
+            "hold": holding_for,
         })
 
 
-class DemoController:
+class DemoController(Hideable):
     """Replays a match with no game running, so the panel can be checked."""
 
     def __init__(self, panel, build, speed=20, build_stem="demo",
@@ -484,8 +583,10 @@ class DemoController:
         self._render(*self._last)
 
     def _render(self, auto_index, villagers, moment, delta):
-        index = self.follow.effective_index(auto_index, time.monotonic())
-        mode = self.follow.mode(time.monotonic())
+        now = time.monotonic()          # one reading, as in LiveController
+        index = self.follow.effective_index(auto_index, now)
+        mode = self.follow.mode(now)
+        holding_for = self.follow.seconds_left(now)
         self.panel.show_step(
             self.build,
             villagers,
@@ -495,6 +596,7 @@ class DemoController:
             delta,
             follow_mode=mode,
             resume_hint=self.resume_hint,
+            seconds_left=holding_for,
         )
         self.feed.emit({
             "usable": True,
@@ -505,6 +607,14 @@ class DemoController:
             "pace": None if delta is None else round(delta),
             "res": None,
             "pop": None,
+            # Demo mode publishes them too, so the preview's bands can be
+            # seen without a game - the same reason the demo scripts alerts
+            # onto the panel at all.
+            "alerts": [[text, severity]
+                       for text, severity in self.panel.alerts],
+            # So the preview can count down too, rather than working out a
+            # deadline of its own from a mode string.
+            "hold": holding_for,
         })
 
     def _demo_alerts(self):
@@ -608,6 +718,176 @@ def remember_position(panel, origin_x, origin_y):
     print(f"Saved overlay offset ({dx}, {dy}) to {config.CONFIG_PATH}")
 
 
+class LiveSession(Hideable):
+    """The overlay's whole life in live mode: waiting, then following.
+
+    This exists because the panel now appears BEFORE the game does. Loom
+    used to find the game window and then a match with two open-ended
+    blocking loops, and only call panel.show() afterwards - so a player who
+    started Loom first saw nothing at all until a match began, which looks
+    exactly like a program that failed to launch.
+
+    Showing the window earlier is not enough by itself. Those loops ran
+    before app.exec(), so with no event loop turning, a mapped window never
+    gets a paintEvent: it would have been a white ghost over the menus for
+    as long as the wait lasted. So the waiting happens HERE, one step per
+    timer tick, inside the event loop that is already running.
+
+    Two things fall out of that which are worth having on purpose. The
+    launcher's Stop now works during the wait - stopline queues app.quit()
+    onto the event loop, which did nothing at all while main() was blocked,
+    so stopping was left to runner.py escalating to terminate() and then
+    kill(), with aboutToQuit and the final statistics write never running.
+    And the hotkeys can be registered before a match, which is what makes it
+    possible to hide a panel that is sitting over the menus.
+
+    Everything downstream - the timer, the hotkeys, the quit hook - talks to
+    this object rather than to the controller, because the controller does
+    not exist yet when they are wired up.
+    """
+
+    def __init__(self, panel, build, app, follow_state, build_stem):
+        self.panel = panel
+        self.build = build
+        self.app = app
+        self.follow = follow_state
+        self.build_stem = build_stem
+
+        self.hud = reader.HudReader()
+        self.controller = None      # until a match is found
+        self.hidden = False
+        self._stage = None
+        self._checked_passthrough = False
+        self._looks = 0                 # failed looks for a HUD
+        self._warned_unreadable = False
+
+        self.show_waiting(overlay.WAITING_FOR_GAME)
+        # The launcher reads this as "no game to follow, browsing allowed",
+        # so its build preview is usable from the moment Loom starts rather
+        # than from the first poll of a match.
+        print(statefeed.encode({"usable": False}))
+
+    # ---- waiting -------------------------------------------------------
+
+    def show_waiting(self, stage):
+        """Put the build on the panel with the banner for this stage."""
+        if stage == self._stage:
+            return
+        self._stage = stage
+        self.panel.show_pregame(self.build, stage)
+
+    def tick(self):
+        """One turn of the timer: acquire, or follow."""
+        if self.controller is not None:
+            self.controller.tick()
+            return
+
+        try:
+            if self.hud.window is None:
+                # Check once and come back; connect() also loads every
+                # template when it succeeds, which is a few hundred
+                # milliseconds and deserves a tick of its own rather than
+                # being bolted onto a search that usually finds nothing.
+                if not self.hud.connect(wait_seconds=0):
+                    return
+                print("Waiting for a match to start...")
+                self.show_waiting(overlay.WAITING_FOR_MATCH)
+                return
+            if not self.hud.find_hud():
+                self._still_looking()
+                return
+        except capture.CaptureError as problem:
+            # Not being able to read the screen is a condition Loom
+            # understands, not a bug in it: the game may be in exclusive
+            # fullscreen, minimised, or mid-restart. Said once and then
+            # kept quiet about, because the next attempt is one poll away.
+            #
+            # This used to quit. That was carried over from when the wait
+            # was a blocking loop in front of the event loop, where the
+            # only thing an unreadable screen could mean was a startup
+            # that had failed - and it turned a passing hiccup into an
+            # overlay the player had to start again. There is no case for
+            # switching Loom off while it waits: waiting IS the feature.
+            if not self._warned_unreadable:
+                self._warned_unreadable = True
+                print(f"Cannot read the game yet: {problem}")
+                print("Still watching - Loom will pick the match up as soon "
+                      "as it can read the screen.")
+            self._still_looking()
+            return
+
+        self._start_following()
+
+    def _still_looking(self):
+        """One more failed look at a game that has not shown a HUD yet.
+
+        Two things happen on a schedule here, and neither of them is giving
+        up. Loom keeps trying until it is stopped, because there is no
+        version of "waiting for a match" that is improved by ceasing to
+        watch for one.
+        """
+        self._looks += 1
+
+        # Ask which window the game is in again. connect() answered that
+        # once, and a handle that was right at the main menu is not always
+        # right by the time a match is running - see reader.reacquire_window.
+        if self._looks % REACQUIRE_EVERY_NTH_LOOK == 0:
+            if self.hud.reacquire_window():
+                print("Reconnected to the game window - reading that from "
+                      "now on.")
+
+        # And say something useful, once, to a player who is sitting in a
+        # match wondering why nothing has happened. reader.find_hud already
+        # explains a HUD it nearly recognised; this is for the case where it
+        # recognised nothing at all, which that note stays silent about.
+        if self._looks == LOOKS_BEFORE_EXPLAINING:
+            print("No match detected yet. If one really is on screen, the "
+                  "likely causes are the in-game HUD scale, the resolution, "
+                  "or a UI mod whose artwork Loom has no templates for - see "
+                  "the launcher's How to use page. Loom will keep watching "
+                  "either way.")
+
+    def _start_following(self):
+        """A match is on screen: hand over to the live controller."""
+        print(f"HUD found (match {self.hud.hud['score']:.3f}, "
+              f"scale {self.hud.hud['scale']:.2f})")
+
+        # The panel has been sitting at the fallback origin at scale 1.0.
+        # Now that the game window has been measured it can go where it
+        # belongs, under the bar at the size the bar is actually drawn.
+        display = capture.open_display()
+        window = capture.find_game_window(display)
+        origin_x, origin_y, area_width, _ = capture.window_geometry(
+            window, display)
+        place_panel(self.panel, origin_x, origin_y, area_width,
+                    hud_scale=self.hud.hud["scale"],
+                    screens=screen_rects(self.app))
+
+        self.controller = LiveController(
+            self.panel, self.build, self.hud, build_stem=self.build_stem,
+            follow_state=self.follow)
+        print(f"Overlay running on '{self.build.name}'. "
+              f"{stopline.quit_hint()}.")
+
+    # ---- what the hotkeys and the quit hook need -----------------------
+
+    def auto_index(self):
+        return 0 if self.controller is None else self.controller.auto_index()
+
+    def refresh(self):
+        if self.controller is not None:
+            self.controller.refresh()
+
+    def following_yet(self):
+        # Overrides Hideable's cheerful default: before a match there is no
+        # controller, so no step to move and nothing to redraw from.
+        return self.controller is not None
+
+    def finish(self):
+        if self.controller is not None:
+            self.controller.finish()
+
+
 def warn_if_not_click_through(panel):
     """Say something loudly if the overlay can still catch the mouse.
 
@@ -671,8 +951,10 @@ def main():
     # invokeMethod rather than app.quit directly: the stop line is read on a
     # background thread, and Qt objects may only be touched from the thread
     # that owns them. A queued invocation is the supported way across.
+    requests = LauncherRequests()
     stopline.watch(lambda: QMetaObject.invokeMethod(
-        app, "quit", Qt.ConnectionType.QueuedConnection))
+        app, "quit", Qt.ConnectionType.QueuedConnection),
+        on_toggle_hidden=requests.requested.emit)
 
     # Placement leaves before the controllers exist: it needs a reference
     # corner and a draggable panel, not a game. It used to fall through the
@@ -712,44 +994,40 @@ def main():
                                     follow_state=follow_state)
         print(f"Demo mode at {args.speed}x. {stopline.quit_hint()}.")
     else:
-        hud = reader.HudReader()
-        # Both waits are open-ended: start the overlay first, then the game.
-        try:
-            print("Waiting for the Age of Empires II window... "
-                  f"({stopline.quit_hint()})")
-            hud.connect()
-            print("Waiting for a match to start...")
-            hud.wait_for_hud()
-        except KeyboardInterrupt:
-            print("\nStopped.")
-            return
-        except capture.CaptureError as problem:
-            # Not being able to read the screen is a condition Loom
-            # understands, not a bug in it: the game may be in exclusive
-            # fullscreen, or the machine may refuse some capture option. It
-            # deserves a sentence in the launcher's output pane. Uncaught it
-            # was a traceback dialog thrown over the game mid-match, which is
-            # what a Windows 10 tester met and could do nothing with.
-            print(f"Cannot read the game: {problem}")
-            return 1
-        print(f"HUD found (match {hud.hud['score']:.3f}, scale {hud.hud['scale']:.2f})")
+        # The panel goes up NOW, showing the build with its numbers at zero
+        # and a banner saying what it is waiting for. Finding the game and
+        # then a match happens on the timer below, inside the event loop -
+        # see LiveSession for why it cannot happen before it.
+        print("Waiting for the Age of Empires II window... "
+              f"({stopline.quit_hint()})")
+        controller = LiveSession(panel, build, app, follow_state,
+                                 build_stem=args.build)
 
-        display = capture.open_display()
-        window = capture.find_game_window(display)
-        origin_x, origin_y, area_width, _ = capture.window_geometry(
-            window, display)
-
-        controller = LiveController(panel, build, hud, build_stem=args.build,
-                                    follow_state=follow_state)
-        print(f"Overlay running on '{build.name}'. {stopline.quit_hint()}.")
-
-    # Live mode has measured the HUD by now, so the default position can
-    # sit exactly under the bar at ITS size; demo mode assumes 1.0.
-    hud_scale = 1.0 if args.demo else hud.hud["scale"]
-    place_panel(panel, origin_x, origin_y, area_width, hud_scale=hud_scale,
+    # Demo mode assumes a 1.0 HUD; live mode has not measured one yet and
+    # starts from the same guess against the primary screen, then places
+    # itself properly against the game window once a match is found.
+    place_panel(panel, origin_x, origin_y, area_width, hud_scale=1.0,
                 screens=screen_rects(app))
 
-    panel.show()
+    # "No overlay" in the build preview is a REMEMBERED preference about how
+    # the panel starts, not the same thing as whether it is hidden right now.
+    # Someone playing from the preview on a second monitor should not have to
+    # hide the panel by hand every time they press Start; the Hide button and
+    # Ctrl+Shift+0 stay the this-session version and are never written down.
+    #
+    # Demo and placement modes never get here, and deliberately: pressing
+    # "Overlay demo" or "Place overlay" is asking to LOOK at the panel, and
+    # obeying a preference that hides it would make both buttons look broken.
+    if config.overlay_disabled() and not args.demo:
+        controller.begin_hidden()
+    else:
+        panel.show()
+
+    # Now that there is something to hide, the launcher's Hide button has
+    # somewhere to land. Its requests were being read from stdin before
+    # this and simply went nowhere, which is the right answer for a button
+    # pressed in the split second before the panel existed.
+    requests.controller = controller
 
     listener = start_hotkeys(app, controller, follow_state)
     counter = start_apm(app, panel)

@@ -123,6 +123,28 @@ class ChildProcess(QObject):
         return (self._process is not None
                 and self._process.state() != QProcess.ProcessState.NotRunning)
 
+    def request_toggle_hidden(self):
+        """Ask the overlay to hide its panel, or to bring it back.
+
+        The same stdin pipe the stop line uses, but deliberately WITHOUT
+        closeWriteChannel: that sends EOF, which is how stop makes itself
+        certain, and here it would leave no way to ask a second time. This
+        request is one the player may make over and over.
+
+        A toggle rather than an explicit hide or show, because the overlay
+        is the only thing that knows whether its window is up; asking it to
+        flip whatever it has cannot leave the two sides disagreeing.
+        """
+        if self._process is None:
+            return
+        try:
+            self._process.write(stopline.encode_toggle_hidden())
+        except (RuntimeError, OSError):
+            # The child may already be gone. Nothing to say about it: the
+            # button's state comes back from the overlay, so a request that
+            # never lands simply leaves the button where it was.
+            pass
+
     # ---- internals -----------------------------------------------------
 
     def _ask_politely(self, process):

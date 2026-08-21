@@ -138,14 +138,24 @@ MIN_EDGE_STEP = 20.0
 #          0.40, a tech wash still early in its fill reads 0.15; skin and
 #          waiting portraits read 0.00, so the bar sits low at 0.10.
 #   amber: hue 12-35, saturated AND bright. A pop-capped wash lights the
-#          whole cell (0.98+); skin tops out at 0.18. Bar at 0.30.
+#          whole cell (0.98+); skin tops out at 0.18. The bar was 0.30 for
+#          skin's sake and that put it UNDER the artwork it had to clear:
+#          the Loom technology's icon is a red-and-gold woven tartan and
+#          reads 0.28-0.31, straddling the bar. It flapped amber/untinted
+#          frame to frame, and amber means "waiting, producing nothing", so
+#          a Town Centre researching Loom was reported IDLE - Loom the
+#          program defeated by Loom the technology. Re-measured across every
+#          fixture: a REAL amber cell reads 0.76 at its faintest (0.762,
+#          0.878, 0.880, 0.971) while the busiest warm ARTWORK reads 0.36.
+#          0.55 sits in the middle of that gap instead of at the edge of
+#          one side, which is what the pixel-constant rule asks for.
 #   red:   wrap-around hues, saturated, NO brightness floor - a housed wash
 #          is dark crimson and much of it sits under V=80. Unfloored, a true
 #          wash reads 0.59 and skin tops out at 0.27. Bar at 0.40.
 MIN_TINT_SATURATION = 90
 MIN_TINT_VALUE = 80
 GREEN_HUES, GREEN_FRACTION = (40, 85), 0.10
-AMBER_HUES, AMBER_FRACTION = (12, 35), 0.30
+AMBER_HUES, AMBER_FRACTION = (12, 35), 0.55
 RED_TINT_FRACTION = 0.40
 
 # Identity: the best-scoring icon template must clear this, or the slot stays
@@ -317,7 +327,7 @@ def locate_slots(frame_bgr, wood_template, scale, slot_one=None):
     }
 
 
-def strip_extent(scale):
+def strip_extent(scale, slot_one=None):
     """How much of the frame's top-left corner the queue can occupy.
 
     Returns (width, height, search_height) in pixels at the given HUD scale.
@@ -325,10 +335,21 @@ def strip_extent(scale):
     the top of the bar, so ~80 reference pixels of depth is always enough.
     Callers that capture only this strip (rather than the whole window) hand
     the reader a fraction of the pixels with nothing lost.
+
+    "with nothing lost" is why slot_one is a parameter rather than the
+    module default. The default is the MOD's cell, and stock's sits four
+    reference pixels lower (its slot_one ends at 112 against 108.5), so
+    sizing a stock strip from the mod's geometry cropped the bottom of the
+    second row - the strip was measured against the wrong skin. Nothing has
+    misread because of it yet, second rows being rare, but a skin whose
+    cells sat lower still would silently lose slots. Callers know their
+    profile; they should say so.
     """
+    if slot_one is None:
+        slot_one = SLOT_ONE
     search_height = int(80 * scale) + 20
-    height = search_height + int((SLOT_ONE[3] + ROW_PITCH + 12) * scale)
-    width = int((SLOT_ONE[2] + SLOTS_PER_ROW * SLOT_PITCH + 20) * scale) + 80
+    height = search_height + int((slot_one[3] + ROW_PITCH + 12) * scale)
+    width = int((slot_one[2] + SLOTS_PER_ROW * SLOT_PITCH + 20) * scale) + 80
     return width, height, search_height
 
 
@@ -495,6 +516,84 @@ def read_count(cell_bgr, count_templates, scale=1.0):
     found, _ = digits.read_binary(mask, count_templates,
                                   min_glyph_width=min_glyph)
     return None if found is None else digits.digits_to_int(found)
+
+
+# The batch-count numeral is painted OVER the portrait, and it wrecks
+# identification. Measured on a live game at 1080p: a male villager cell
+# scored villager_male 0.515 while wheelbarrow won on 0.533, and another
+# scored villager_male 0.531 behind dragon_ship on 0.539 - beaten by a
+# hundredth, out of five hundred templates. The winner was then thrown away
+# by the tech gate, the slot read as no identity at all, and the Town Centre
+# training those villagers was reported IDLE.
+#
+# Male villagers lose worst, exactly as reported. The female icon is pale
+# clothing with strong structure of its own; the male is a dark, low-contrast
+# torso, so a bright numeral laid across it is a far larger share of what the
+# correlation actually sees. With the numeral removed the same two cells score
+# 0.919 and 0.868 and win outright.
+#
+# WHITE TOP-HAT rather than a brightness threshold, and that is the whole
+# trick: read_count's mask asks "is this pixel bright?", which a green
+# progress wash defeats - it lifts the digit and the portrait together, so
+# the mask came back EMPTY on every washed cell (measured; which also means
+# the count itself is unreadable there, noted in the issue). A top-hat asks
+# "does this stand out from its own surroundings?", and a wash cannot take
+# that away because it lifts the surroundings too.
+#
+# Nothing here touches tints. Which washes mean "producing" is decided in
+# production.py and is deliberately not this module's business.
+NUMERAL_CORNER = (1, 1, 27, 37)      # x1, y1, x2, y2 in reference pixels
+
+# The top-hat window, in REFERENCE pixels, so it scales with the HUD like
+# everything else measured in pixels must. It has to be wider than a digit
+# stroke or the digit survives its own removal; ~12 reference pixels is a
+# little over one numeral's width, and lands on the 9px kernel this was
+# tuned at on a 0.73-scale HUD.
+NUMERAL_TOPHAT_WINDOW = 12
+
+# How far above its surroundings a pixel must stand to be numeral rather than
+# portrait detail. The floor is an absolute contrast, not a length, so unlike
+# the window it does not scale.
+NUMERAL_TOPHAT_FLOOR = 25
+NUMERAL_TOPHAT_FRACTION = 0.5
+
+
+def without_numeral(cell_gray, scale):
+    """The slot crop with the batch-count numeral painted out.
+
+    Returns the cell unchanged when no numeral is found, so a slot that never
+    had one costs one morphology pass and nothing else. See the comment above
+    for why this exists and why it is a top-hat.
+    """
+    x1, y1, x2, y2 = (int(round(v * scale)) for v in NUMERAL_CORNER)
+    corner = cell_gray[y1:y2, x1:x2]
+    if corner.size == 0:
+        return cell_gray
+
+    window = max(3, int(round(NUMERAL_TOPHAT_WINDOW * scale)) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (window, window))
+    hat = cv2.morphologyEx(corner, cv2.MORPH_TOPHAT, kernel)
+    threshold = max(NUMERAL_TOPHAT_FLOOR,
+                    int(hat.max() * NUMERAL_TOPHAT_FRACTION))
+
+    # Shaped like a numeral, not merely bright. Without this the top-hat
+    # removes any small bright detail it finds, which on a busy tech icon is
+    # part of the picture - and since only the CELL is cleaned and never the
+    # template, erasing real detail is an asymmetry that could cost more than
+    # the numeral ever did. The same connected-component filter the resource
+    # numbers use: a digit is tall for its size, a highlight speck is not.
+    digits_only = resources._keep_digit_shapes(
+        (hat >= threshold).astype(np.uint8) * 255)
+
+    mask = np.zeros(cell_gray.shape, np.uint8)
+    mask[y1:y2, x1:x2] = digits_only
+    if not mask.any():
+        return cell_gray
+    # Grown by one pixel: the numeral carries a dark outline that is not
+    # bright enough to be masked and would otherwise be left behind as a
+    # digit-shaped hole, which correlates about as badly as the digit did.
+    grown = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+    return cv2.inpaint(cell_gray, grown, 3, cv2.INPAINT_TELEA)
 
 
 def _match_variants(cell_gray, variants):
@@ -671,7 +770,8 @@ class QueueReader:
         # gets converted to grey - a full-frame cvtColor at 1440p costs more
         # than everything else in this method put together. The strip starts
         # at (0,0), so its coordinates are frame coordinates.
-        strip_width, strip_height, search_height = strip_extent(scale)
+        strip_width, strip_height, search_height = strip_extent(
+            scale, self.profile.slot_one)
         frame_gray = cv2.cvtColor(
             frame_bgr[:min(strip_height, frame_bgr.shape[0]),
                       :min(strip_width, frame_bgr.shape[1])],
@@ -702,8 +802,13 @@ class QueueReader:
 
             tint, progress = classify_tint(cell_bgr, scale)
             count = read_count(cell_bgr, self.count_templates, scale)
+            # Identity alone reads the numeral-free cell. Everything else -
+            # the tint, the count, the decor test, the occupancy edges - wants
+            # the real pixels, and only template correlation is confused by
+            # having a number drawn across its subject.
             identity, score, margin = self._identify_cached(
-                index, cell_gray, tint is not None or count is not None)
+                index, without_numeral(cell_gray, scale),
+                tint is not None or count is not None)
             identity, count = reconcile_identity_and_count(identity, score,
                                                            count)
 

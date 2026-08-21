@@ -12,7 +12,8 @@ kind of bug the eye forgives until it costs a game.
 # debugging and review. The design and code are my own work.
 
 from loom.browser import (CARD_WIDTH, MAX_CARD_SCALE, MIN_CARD_SCALE,
-                          card_scale, live_focus, visible_indices)
+                          STACK_MARGIN, card_scale, live_focus,
+                          usable_card_width, visible_indices)
 
 
 def test_visible_indices_mid_build():
@@ -81,3 +82,42 @@ def test_card_scale_clamps_at_both_ends():
     # not produce poster-sized villagers.
     assert card_scale(10) == MIN_CARD_SCALE
     assert card_scale(100000) == MAX_CARD_SCALE
+
+
+# ---- the width a card may actually occupy ---------------------------------
+#
+# The preview showed a horizontal scrollbar at every window size, and clipped
+# the right-hand edge of every card. One cause, seen from two sides: the scale
+# was computed from the whole viewport and the card was then made exactly that
+# wide, so the stack's margins pushed the column wider than the viewport it
+# had to fit inside. The margins were the platform's default - 11px a side,
+# measured - and nothing had ever subtracted them.
+
+
+def test_the_card_leaves_room_for_the_margins_around_it():
+    """A card sized to the full viewport is a card that does not fit in it."""
+    assert usable_card_width(600, 17) == 600 - 2 * STACK_MARGIN - 17
+
+
+def test_a_card_and_its_chrome_fit_the_viewport_they_were_measured_from():
+    """The property the always-off horizontal scrollbar depends on. With no
+    bar to reach it, content wider than the viewport is not scrolled to - it
+    is simply gone."""
+    for viewport in (300, 420, 640, 900, 1920):
+        for bar in (0, 15, 17, 24):
+            usable = usable_card_width(viewport, bar)
+            assert usable + 2 * STACK_MARGIN + bar <= viewport
+
+
+def test_the_scrollbar_is_subtracted_even_when_it_is_not_showing():
+    """Sizing to the bar-less width makes the bar appear, which narrows the
+    viewport, which makes the card too wide. That oscillation is what the old
+    CARD_MARGINS fudge was damping."""
+    assert usable_card_width(600, 17) < usable_card_width(600, 0)
+
+
+def test_a_viewport_smaller_than_its_own_chrome_still_gives_a_usable_width():
+    """Mid-construction a viewport can report almost nothing. Returning zero
+    or a negative there would divide the scale into nonsense."""
+    assert usable_card_width(4, 17) >= 1
+    assert usable_card_width(0, 0) >= 1

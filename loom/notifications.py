@@ -9,15 +9,56 @@ is: the global queue can only ever suggest how many Town Centres exist, but
 "--Town Center Built--" states it outright.
 
 Recognition is phrase-level template matching: the font, size and wording
-are fixed, and the vocabulary Loom cares about is tiny, so one grayscale
-template per phrase (harvested from a capture frame, in
-templates/notifications/) beats anything cleverer. The white outlined text
-scores ~0.9 against its own phrase and nothing else comes close.
+are fixed, and the vocabulary Loom cares about is tiny, so grayscale
+templates harvested from capture frames (in templates/notifications/) beat
+anything cleverer. The white outlined text scores ~0.9 against its own
+phrase and nothing else comes close.
+
+One template per phrase is not enough, though, and believing it was cost two
+phantom Town Centres in a live game. The game does not draw this feed by
+scaling a single master: at 1920x1080 it lays the text out at a smaller
+point size, and those glyph shapes are its own rather than a shrunken copy
+of the 1440p ones. Matching the 1440p harvest resized down compares against
+a shape the screen never drew - the digit-template lesson in another band -
+and the ink gate quietly stopped passing. So a phrase carries one template
+PER RENDERING, each named with the anchor scale it was cut at; see
+load_phrase_templates, MIN_INK_AGREEMENT, and tools/cut_phrase_template.py
+for how to add the next one.
+
+Why that mattered so much is worth keeping in view: every echo guard below
+is built on "was this phrase sighted on the previous look". They are sound
+reasoning from reliable sightings and worthless without them, so anything
+that halves detection does not halve the damage - it removes the guards
+altogether. Detection reliability IS the anti-echo mechanism.
+
+EVERY TIMING BELOW IS CONDITIONAL ON A GAME SETTING, and that was not
+written down until it had already cost something. The game lets the player
+choose how long notifications stay on screen (Options -> Interface), and
+every measurement here - COOLDOWN_SECONDS, REARM_SECONDS,
+EXTRA_QUIET_SECONDS, and the "about ten seconds" below - was taken with it
+at its SHORTEST. A longer setting does not just stretch those numbers, it
+changes the behaviour they describe: lines linger, so more real events go
+unannounced (the game will not reprint a line that is still up), and the
+feed fades less often, so history is redisplayed less often too. The docs
+ask players to use the shortest setting for that reason. Nothing measures
+or enforces it yet; the roadmap has the shape that would.
 
 A notification lingers for around ten seconds and scrolls as newer lines
 arrive, so one event is sighted on many consecutive polls. The watcher
-reports each phrase once per appearance: a rising edge starts a cooldown,
-and re-sightings inside it are the same event.
+reports each phrase once per appearance, and the rule for "another
+appearance" is the game's own: it does not reprint a phrase whose line is
+still on screen, so a sighting is a new event exactly when the line already
+counted has PROVABLY left. Nothing else is needed - a lingering line never
+proves absence, so it cannot re-fire however long it stays or however often
+it is looked at.
+
+That replaced a cooldown, and the cooldown's failure is worth keeping
+because it was invisible: it was measured from the last SIGHTING and
+refreshed on every one, so a second Town Centre's own line kept pushing the
+window forward and the event was not delayed but LOST. Two Town Centres
+whose lines were sixteen game-seconds apart - far outside any cooldown -
+counted as one. What makes absence the better rule is that it is a fact
+about the game rather than a timer over the reader.
 
 The trap in that: the panel does not just fade lines out, it brings them
 BACK. After ~8 idle seconds the whole feed fades, and the next message -
@@ -64,11 +105,33 @@ MIN_PHRASE_SCORE = 0.8
 
 # Second gate: the WORDS themselves. Correlation finds a candidate spot;
 # this confirms the text shape by comparing binarized ink (IoU of white
-# pixels between the template and the matched region). Measured: a real
-# sighting reads 0.94+, panels with only other text read <= 0.36 - a gate
-# at 0.6 sits in open water. Exists as defence in depth: a mistaken TC
-# count poisons the idle logic for a whole game, so this channel gets two
-# independent checks.
+# pixels between the template and the matched region). Exists as defence in
+# depth: a mistaken TC count poisons the idle logic for a whole game, so
+# this channel gets two independent checks.
+#
+# It is a NARROWER gate than it looks, and the "0.94+" this comment used to
+# claim was never true of the corpus. Re-measured across the live fixtures
+# and two capture runs: a real sighting reads 0.55-0.76 against a template
+# harvested at its own rendering, and other text reads <= 0.38. Real, but
+# not the open water the old number described.
+#
+# It is also asymmetric by construction - the template is thresholded at a
+# fixed 200, the region relative to its own brightest pixel - so it decays
+# as a template is resized away from its harvest size: shrinking averages
+# the white core into the black outline and the template's own ink set
+# thins out. Measured on town_center_built, the DIMMEST of the three
+# harvests: compared against ITSELF it scores 0.72 at scale 1.0 and 0.598
+# at 0.735, i.e. under this gate. At 1920x1080 a perfect, noise-free match
+# could not pass, live detection was 23 looks in 46, and since every guard
+# in watch() is built on "was it sighted last look", one lingering line
+# fired three times and minted two phantom Town Centres.
+#
+# The fix is a template per rendering (see load_phrase_templates), not a
+# looser gate. Thresholding both sides relatively was tried and measured
+# WORSE on real pixels - 0.50-0.59 against 0.55-0.76 - because self-
+# agreement is not the quantity that matters here; template against screen
+# is. Whatever else changes, a template resized to the HUD scale in front
+# of it must still clear this gate against itself, and there is a test.
 MIN_INK_AGREEMENT = 0.6
 INK_THRESHOLD = 200
 
@@ -77,13 +140,74 @@ INK_THRESHOLD = 200
 # brightness alone fails on the translucent HUD, where sunlit snow behind
 # the panel is as bright as the font. The bright gate sits at 140 because
 # attack warnings render in the attacker's player colour and red text
-# peaks near 176 in grayscale. All in pixels at HUD scale 1.0.
+# peaks near 176 in grayscale. Both are grey LEVELS, so neither scales.
 TEXT_BRIGHT = 140          # a glyph pixel is at least this bright...
 TEXT_OUTLINE_DARK = 70     # ...and touches a pixel at most this dark
-MIN_LINE_INK = 8           # rows with fewer text pixels are noise
-LINE_ROW_GAP = 6           # rows this close belong to the same line
-MIN_LINE_HEIGHT = 10       # real lines band ~15 rows; sub-10 is noise
 STRIP_PAD = 12             # slack around a band when cropping its strip
+
+# The feed's line pitch in reference pixels - the distance from one message
+# to the next. Measured off the panel at both sizes: 21 rows at anchor scale
+# 0.735 and 28 at 0.98, i.e. 28 * scale. Every row measurement below is a
+# fraction of it, because the one thing that reliably sets the size of a
+# text line is the size of the text.
+LINE_PITCH = 28.0
+
+# How much of a row must be inked before it can belong to a line, as a
+# fraction of the PANEL'S WIDTH. That dimension is the correction: this is
+# a count of inked COLUMNS, so it has to scale with how many columns there
+# are - which follows the frame, not the HUD slider. It used to be eight
+# pixels times the HUD scale, which at 1920x1080 lowered the noise floor to
+# six exactly where the panel is smaller and terrain speckle is relatively
+# bigger. That is how bands appeared BELOW the feed (rows 123 and 141 of a
+# 162-row panel) and above it (row 8), and every positional guard in
+# watch() reads bands[-1] as "the newest line".
+MIN_LINE_INK_FRACTION = 0.02
+
+# Row spacing within one line, minimum height of a line, and the margin the
+# darkness gate samples - all fractions of the pitch.
+LINE_ROW_GAP_FRACTION = 0.20
+MIN_LINE_HEIGHT_FRACTION = 0.30
+BOX_MARGIN_FRACTION = 0.15
+
+# A band taller than this many pitches is more than one line fused together
+# and is split at the valleys of its row-ink profile. Fusion is not rare at
+# 1920x1080 and it is not harmless: three visible lines were read as two
+# (one 35-row band across two slots) and five as four (a 74-row band across
+# three). A fused band shifts every line's index, so a redisplayed echo
+# sitting at the TOP of the stack was reported as one line up from the
+# bottom - a band the phrase is allowed to fire from - and counted as a
+# Town Centre that was never built.
+#
+# Where 1.1 comes from: band heights are sharply bimodal. Measured over
+# three capture runs at both resolutions, 177 of 220 accepted bands are
+# 0.5 pitches tall and the single-line tail reaches 0.8; a fused PAIR runs
+# from the top of one line to the bottom of the next, which is one pitch
+# plus one line, about 1.5. The gap between 0.8 and 1.5 is where this sits.
+# It was 1.6 first, chosen by eye, and that let a 32-row pair through
+# against a 32.9-row threshold - the kind of margin that is really a coin
+# toss.
+FUSED_BAND_PITCHES = 1.1
+
+# The test that a band is text on the notification box rather than scenery
+# behind it: the fraction of pixels around it that are near-black. The box
+# is drawn UNDER the text, so a real line sits on a lot of dark; terrain
+# showing through the translucent HUD has bright pixels next to dark ones
+# all day but no box. Measured per band across four capture runs, both
+# skins and both resolutions:
+#
+#   real text lines             0.37 - 0.91
+#   terrain, speckle, panel edges  0.01 - 0.23
+#
+# and of the bands tall enough to survive the height filter at all, the
+# terrain ones read 0.14 or less. 0.30 sits in open water both ways.
+# Checked against the case most likely to break it: Anne_HK with the
+# TRANSPARENT UI mod reads a minimum of 0.37 and passes on every band, so
+# that mod clears the border artwork and not the feed's own box. Stock at
+# 1080p reads 0.53 at worst.
+#
+# glyphs.find_lines has the same idea at 0.10, which is too low - it passes
+# the 0.15-0.23 that the panel's own top and bottom edges read.
+MIN_BOX_DARKNESS = 0.30
 
 # Which line of its message a template shows, counted from the message's
 # last line. The attack warning wraps: "--Warning: You are being attacked
@@ -127,36 +251,110 @@ EXTRA_QUIET_SECONDS = 60
 SCALE_BRACKET = (-0.02, -0.01, 0.0, 0.01, 0.02)
 
 
-def text_line_bands(panel_gray, scale=1.0):
-    """The y-bands of the panel's text lines, top to bottom.
+def _ink_rows(panel_gray):
+    """How many outlined-bright pixels each row of the panel holds.
 
-    A band is a contiguous run of rows containing outlined-bright text
-    pixels. Measured on live panels (opaque and translucent HUD both): real
-    lines band 14-20 rows tall at scale 1.0 on a ~28-row pitch, while
-    terrain showing through a translucent panel produces either no band or
-    sub-10-row flecks that the height filter drops.
+    Bright NEXT TO near-black, not merely bright: sunlit terrain behind a
+    translucent panel is as bright as the font, but it has no outline.
     """
     bright = (panel_gray > TEXT_BRIGHT).astype("uint8")
     dark = (panel_gray < TEXT_OUTLINE_DARK).astype("uint8")
     near_dark = cv2.dilate(dark, np.ones((3, 3), "uint8"))
-    rows = (bright & near_dark).sum(axis=1)
-    inky = np.where(rows >= max(2, int(round(MIN_LINE_INK * scale))))[0]
+    return (bright & near_dark).sum(axis=1)
+
+
+def _split_fused_band(rows, top, bottom, pitch, min_height):
+    """One band back into the lines it fused, cut at its quietest rows.
+
+    A message boundary is where the row-ink profile dips, and the dip is
+    shallow rather than empty - descenders and the box's own texture keep
+    it inked - so the cut goes to the LOWEST row near where the pitch says
+    a boundary should be, instead of waiting for the profile to reach zero.
+    """
+    height = bottom - top
+    if height <= pitch * FUSED_BAND_PITCHES:
+        return [(top, bottom)]
+    # n lines fused span (n - 1) pitches plus one line of text, and a line
+    # is about half a pitch - so n is height/pitch + 0.5, not height/pitch.
+    # Rounding the ratio alone reads a three-line fusion (2.5 pitches) as
+    # two, and Python rounds 2.5 DOWN, so it did.
+    lines = max(2, int(round(height / pitch + 0.5)))
+    step = height / lines
+    reach = max(1, int(round(pitch * 0.25)))
+    cuts = [top]
+    for index in range(1, lines):
+        target = top + int(index * step)
+        low = max(top + min_height, target - reach)
+        high = min(bottom - min_height, target + reach)
+        if low >= high:
+            continue
+        cuts.append(min(range(low, high), key=lambda row: rows[row]))
+    cuts.append(bottom)
+    return list(zip(cuts, cuts[1:]))
+
+
+def text_line_bands(panel_gray, scale=1.0):
+    """The y-bands of the panel's text lines, top to bottom.
+
+    A band is a contiguous run of rows holding outlined-bright pixels, then
+    two corrections that the 1920x1080 panel forced - both of them the same
+    mistake, which was measuring rows of a small panel with numbers taken
+    off a big one.
+
+      * Lines FUSE. Two messages 21 rows apart, each 12 rows of text, leave
+        a gutter that the box's own texture inks right through, so they
+        arrive as one band. Anything too tall to be a single line is cut
+        back apart at the pitch (see FUSED_BAND_PITCHES) - it has to be,
+        because a fused band silently renumbers every line beneath it and
+        the whole watcher is written in terms of "one line up from the
+        bottom".
+      * TERRAIN fakes a line. It is bright and it is next to dark, and
+        below the feed there is nothing else to disagree with it. What
+        separates them is the notification box: real text is drawn ON it,
+        so it sits on near-black, and scenery does not (MIN_BOX_DARKNESS).
+
+    Returns inclusive (top, bottom) row pairs, densely, top to bottom.
+    Callers index this list from the END - bands[-1] is the newest line -
+    and an EMPTY list is read by watch() as proof the feed is blank, which
+    is stronger than "nothing recognised". Returning [] with text on screen
+    would mint phantom events, so it is the one answer never to guess at.
+    """
+    pitch = LINE_PITCH * scale
+    rows = _ink_rows(panel_gray)
+    floor = max(2, int(round(panel_gray.shape[1] * MIN_LINE_INK_FRACTION)))
+    inky = np.where(rows >= floor)[0]
     if len(inky) == 0:
         return []
-    gap = max(1, int(round(LINE_ROW_GAP * scale)))
-    min_height = max(2, int(round(MIN_LINE_HEIGHT * scale)))
-    bands = []
+
+    gap = max(1, int(round(pitch * LINE_ROW_GAP_FRACTION)))
+    min_height = max(2, int(round(pitch * MIN_LINE_HEIGHT_FRACTION)))
+    margin = max(1, int(round(pitch * BOX_MARGIN_FRACTION)))
+
+    runs = []
     start = prev = int(inky[0])
     for row in inky[1:]:
         row = int(row)
         if row - prev <= gap:
             prev = row
         else:
-            bands.append((start, prev))
+            runs.append((start, prev))
             start = prev = row
-    bands.append((start, prev))
-    return [(top, bottom) for top, bottom in bands
-            if bottom - top >= min_height]
+    runs.append((start, prev))
+
+    bands = []
+    for top, bottom in runs:
+        for piece_top, piece_bottom in _split_fused_band(
+                rows, top, bottom, pitch, min_height):
+            if piece_bottom - piece_top < min_height:
+                continue
+            # The box proves itself AROUND the ink as much as under it -
+            # a row of glyphs can be wall-to-wall bright on its own.
+            box = panel_gray[max(0, piece_top - margin):
+                             piece_bottom + margin + 1]
+            if box.size and (box < TEXT_OUTLINE_DARK).mean() \
+                    >= MIN_BOX_DARKNESS:
+                bands.append((piece_top, piece_bottom))
+    return bands
 
 
 def ink_agreement(template_gray, region_gray):
@@ -180,31 +378,93 @@ def ink_agreement(template_gray, region_gray):
 # event, in game seconds. Notifications linger ~10s; 15 adds margin.
 COOLDOWN_SECONDS = 15
 
-# How many consecutive looks a phrase must be missing from its allowed
-# bands before its cooldown clears (see _tick_absence in the watcher).
-# The game never reprints a line that is already on screen, so a reprint
-# after real absence IS a new event however recent the last one - while a
-# lingering line is sighted every look and can never rearm itself, which
-# is what makes this safe where shortening the cooldown was not
+# How long a phrase must be missing from its allowed bands before its
+# cooldown clears (see _tick_absence in the watcher). The game never
+# reprints a line that is already on screen, so a reprint after real
+# absence IS a new event however recent the last one - while a lingering
+# line is sighted every look and should never be able to rearm itself,
+# which is what makes this safe where shortening the cooldown was not
 # (measured: a 0.3s cooldown refired one lingering line thirteen times).
-# Three looks is about a second of real time, so one misread glance
-# cannot rearm a line that is still on screen.
+#
+# BOTH conditions, and the second one was learned the hard way. "Three
+# looks is about a second of real time" was the original reasoning, and it
+# is not true: looks are as dense as the poll loop makes them, and a
+# handful of consecutive misreads is one bad moment rather than a line
+# leaving the screen. Traced frame by frame on a 1920x1080 game - the TC
+# line arrived and fired correctly, was then missed on four consecutive
+# looks while plainly still on screen, and the third of those cleared a
+# five-second-old cooldown so the next sighting fired a second, imaginary
+# Town Centre. A count of looks cannot tell "gone" from "not seen".
+#
+# What separates the two is how much the feed itself is saying. A BLANK
+# feed is proof: no text at all means this line is certainly gone, and
+# nothing about template matching can argue with an empty panel. Text on
+# screen WITHOUT this phrase found in it is only evidence, because "not
+# found" and "not there" are the same answer from a matcher having a bad
+# moment - and in the traced failure the feed was showing two to three
+# lines throughout.
+#
+# So a blank feed rearms on the look count alone, as it always did, and
+# an unrecognised phrase in a populated feed must ALSO have been missing
+# for REARM_SECONDS of game time.
+#
+# That number is set conservatively, and the reason is worth stating
+# plainly rather than dressing up: the two things it has to tell apart
+# OVERLAP on the data I have. Measured on the 1080p run that produced the
+# phantom, reading the game's own clock rather than assuming a frame
+# rate - the first attempt at this assumed one and was wrong by a factor
+# of three - detection flicker hid a line that was plainly on screen for
+# 7 game seconds. A genuinely new Town Centre line arriving 16 seconds
+# after the previous one fired leaves a gap of 8. Seven and eight; no
+# threshold splits those.
+#
+# So this is deliberately above BOTH, which means the time route almost
+# never fires and the real work is done by the cooldown (any line more
+# than COOLDOWN_SECONDS after the last fire) and by the blank-feed proof.
+# The cost is a known undercount: two Town Centres whose lines fall
+# inside the cooldown, with the first pushed off early, count as one.
+# That is the direction this module has always chosen to fail in - an
+# imaginary Town Centre nags for the rest of the game, a missed one costs
+# one alert - but it is a real cost and it is NOT settled. Deciding it
+# needs captures of several Town Centres built close together, which is
+# what tools/replay_notifications.py --sweep exists to measure.
 REARM_LOOKS = 3
+REARM_SECONDS = 12
 
 
 def load_phrase_templates():
-    """Load {phrase_name: grayscale template} from templates/notifications/.
+    """Load {phrase_name: [(template, harvest_scale), ...]} from
+    templates/notifications/.
 
     Phrases are harvested from capture frames (the exact pixels the game
     drew), not rendered from a font - so they match the game's own
     anti-aliasing and outline exactly.
+
+    A phrase may have SEVERAL templates, one per rendering, because the game
+    does not draw this feed by scaling a single master: at 1920x1080 it lays
+    the text out at a smaller point size and the glyph shapes are its own.
+    Resizing the 1440p harvest down compares against a shape the screen never
+    drew, which is the digit-template lesson in another band, and it cost
+    exactly what that costs - see the module docstring. So the file name
+    carries the anchor scale the pixels were cut at ("name@0.745.png"), a
+    bare "name.png" means 1.0, and _template_at resizes from there.
+
+    A file whose suffix after "@" is not a number is ignored rather than
+    guessed at: a wrong harvest scale would silently mis-size every match.
     """
     templates = {}
     for path in sorted(glob.glob(str(paths.TEMPLATES_DIR / "notifications"
                                      / "*.png"))):
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if image is not None:
-            templates[os.path.splitext(os.path.basename(path))[0]] = image
+        if image is None:
+            continue
+        stem = os.path.splitext(os.path.basename(path))[0]
+        name, _, harvested_at = stem.partition("@")
+        try:
+            harvest_scale = float(harvested_at) if harvested_at else 1.0
+        except ValueError:
+            continue
+        templates.setdefault(name, []).append((image, harvest_scale))
     return templates
 
 
@@ -265,6 +525,14 @@ class NotificationWatcher:
         # safe where shortening the cooldown was not (measured: a 0.3s
         # cooldown refired one lingering line thirteen times).
         self._absent_looks = {}
+        # Phrase -> game time its current absence began, so the rearm can
+        # ask how long it has been gone rather than only how many looks
+        # failed to recognise it.
+        self._absent_since = {}
+        # Phrases whose line has PROVABLY left the screen since they last
+        # fired, and which may therefore fire again. This is the whole
+        # re-fire rule; see the fire decision in watch().
+        self._absent_proved = set()
 
     def watch(self, panel_bgr, scale, game_time):
         """Look at the feed once. Returns phrase names newly sighted.
@@ -290,7 +558,7 @@ class NotificationWatcher:
             self._sighted = set()
             self._suspect = set()
             self._visible = set()
-            self._tick_absence(set())       # a blank feed is absence too
+            self._tick_absence(set(), game_time, True)   # blank: proof
             return []
 
         events = []
@@ -364,9 +632,51 @@ class NotificationWatcher:
             if not (primary_hit or extra_is_fresh):
                 continue                    # a roll-up: watched, silent
 
+            # A sighting is a NEW event only if the line I already counted
+            # has since provably left the screen (_tick_absence decides
+            # what counts as proof). The game does not reprint a phrase
+            # whose line is still up, so this is the game's own rule stated
+            # directly, and it needs no cooldown behind it: a lingering
+            # line never proves absence, so it can never re-fire however
+            # long it lingers or however often it is looked at.
+            #
+            # The cooldown this replaces was measured from the last
+            # SIGHTING and refreshed on every one, which quietly made a
+            # second Town Centre unreportable: its own line kept pushing
+            # the window forward, so the fifteen seconds never elapsed and
+            # the event was lost rather than delayed. Measured on two
+            # Town Centres whose lines were 16 game-seconds apart - well
+            # outside any cooldown - the second one was never counted.
+            # Three independent reasons a sighting can be a NEW event, and
+            # each covers a case the others miss.
+            #
+            #   never fired          - the first one, obviously.
+            #   cooldown elapsed     - the original rule. A line sighted in
+            #                          a band it may fire from refreshes
+            #                          this clock below, so a lingering
+            #                          line can never reach it; an echo
+            #                          does NOT reach the refresh, so a
+            #                          real event after an echo still
+            #                          counts.
+            #   provably gone        - the line I counted has left the
+            #                          screen (see _tick_absence). The game
+            #                          does not reprint a phrase whose line
+            #                          is still up, so a sighting after
+            #                          real absence is a different line
+            #                          however recently the last one fired.
+            #
+            # That last one is not a nicety. Without it a second Town
+            # Centre inside the cooldown is not delayed but LOST, because
+            # its own line refreshes the clock on every look and the
+            # fifteen seconds never elapse. Measured on two Town Centres
+            # whose lines were 16 game-seconds apart - well outside the
+            # cooldown - the second was never counted at all.
             fired = self._last_fired.get(name)
-            is_new = fired is None or game_time - fired >= COOLDOWN_SECONDS
+            is_new = (fired is None
+                      or game_time - fired >= COOLDOWN_SECONDS
+                      or name in self._absent_proved)
             self._last_fired[name] = game_time
+            self._absent_proved.discard(name)
             if is_new:
                 events.append(name)
                 # Bottom AND one-up at once, both freshly arrived: two
@@ -383,26 +693,36 @@ class NotificationWatcher:
         # PREVIOUS sighting time, not this look's own.
         for name in names_fireable:
             self._last_fireable[name] = game_time
-        self._tick_absence(names_on_screen)
+        self._tick_absence(names_on_screen, game_time, False)
         return events
 
-    def _tick_absence(self, names_on_screen):
-        """Advance each phrase's gone-from-the-feed streak; rearm at the
-        threshold.
+    def _tick_absence(self, names_on_screen, game_time, feed_blank):
+        """Advance each phrase's gone-from-the-feed streak, and rearm it
+        once the feed has PROVED the line is gone.
 
         ANY sighting resets the streak - trusted, roll-up, or echo
         suspect - because all of them mean the line's pixels are still on
         screen, and only true absence proves the game is free to print
         the phrase again.
+
+        What counts as proof depends on what else the feed is showing; see
+        REARM_SECONDS. A blank panel settles it outright. A phrase merely
+        not recognised among other lines does not, and treating those two
+        as the same thing is what minted a phantom Town Centre out of four
+        consecutive misreads.
         """
         for name in self.templates:
             if name in names_on_screen:
                 self._absent_looks[name] = 0
+                self._absent_since.pop(name, None)
                 continue
             gone = self._absent_looks.get(name, 0) + 1
             self._absent_looks[name] = gone
-            if gone == REARM_LOOKS:
-                self._last_fired.pop(name, None)
+            since = self._absent_since.setdefault(name, game_time)
+            really_gone = (feed_blank
+                           or game_time - since >= REARM_SECONDS)
+            if gone >= REARM_LOOKS and really_gone:
+                self._absent_proved.add(name)
 
     def _phrase_in_band(self, panel_gray, band, name, scale):
         """Is this phrase's line drawn in this band?
@@ -412,35 +732,65 @@ class NotificationWatcher:
         clears both the correlation gate and the ink gate.
         """
         top, bottom = band
-        for delta in SCALE_BRACKET:
-            sized = self._template_at(name, scale + delta)
-            # The band is the line's glyph CORE; the template also carries
-            # outline and padding rows around it, so the strip needs at
-            # least the template's overhang on top of the fixed slack.
-            pad = max(int(round(STRIP_PAD * scale)),
-                      sized.shape[0] - (bottom - top))
-            strip = panel_gray[max(0, top - pad):bottom + pad]
-            if (sized.shape[0] > strip.shape[0]
-                    or sized.shape[1] > strip.shape[1]):
-                continue
-            scores = cv2.matchTemplate(strip, sized, cv2.TM_CCOEFF_NORMED)
-            _, score, _, where = cv2.minMaxLoc(scores)
-            if score < MIN_PHRASE_SCORE:
-                continue
-            region = strip[where[1]:where[1] + sized.shape[0],
-                           where[0]:where[0] + sized.shape[1]]
-            if ink_agreement(sized, region) >= MIN_INK_AGREEMENT:
-                return True
+        for index in self._variants_near(name, scale):
+            for delta in SCALE_BRACKET:
+                sized = self._template_at(name, index, scale + delta)
+                # The band is the line's glyph CORE; the template also
+                # carries outline and padding rows around it, so the strip
+                # needs at least the template's overhang on top of the fixed
+                # slack.
+                pad = max(int(round(STRIP_PAD * scale)),
+                          sized.shape[0] - (bottom - top))
+                strip = panel_gray[max(0, top - pad):bottom + pad]
+                if (sized.shape[0] > strip.shape[0]
+                        or sized.shape[1] > strip.shape[1]):
+                    continue
+                scores = cv2.matchTemplate(strip, sized,
+                                           cv2.TM_CCOEFF_NORMED)
+                _, score, _, where = cv2.minMaxLoc(scores)
+                if score < MIN_PHRASE_SCORE:
+                    continue
+                region = strip[where[1]:where[1] + sized.shape[0],
+                               where[0]:where[0] + sized.shape[1]]
+                if ink_agreement(sized, region) >= MIN_INK_AGREEMENT:
+                    return True
         return False
 
-    def _template_at(self, name, scale):
-        """The phrase template resized to one scale, cached."""
-        key = (name, round(scale, 3))
+    def _variants_near(self, name, scale):
+        """This phrase's template indices, closest harvest scale first.
+
+        Closest first because _phrase_in_band stops at the first variant
+        that clears both gates, and the nearest rendering is both the most
+        likely to clear them and the cheapest to resize.
+        """
+        variants = self.templates[name]
+        return sorted(range(len(variants)),
+                      key=lambda index: abs(variants[index][1] - scale))
+
+    def _template_at(self, name, index, scale):
+        """One of a phrase's templates, resized to one scale, cached.
+
+        Resizing is from the template's OWN harvest scale, not from 1.0: a
+        variant cut at 0.745 is already the right size for a 0.745 HUD and
+        must not be shrunk again. When it is already right, it is used
+        untouched - resampling a template to the size it already is only
+        costs it sharpness, and sharpness is what ink_agreement measures.
+        """
+        key = (name, index, round(scale, 3))
         sized = self._sized.get(key)
         if sized is None:
-            sized = cv2.resize(self.templates[name], None,
-                               fx=scale, fy=scale,
-                               interpolation=cv2.INTER_AREA)
+            image, harvest_scale = self.templates[name][index]
+            factor = scale / harvest_scale
+            if abs(factor - 1.0) < 0.005:
+                sized = image
+            else:
+                # INTER_AREA is the right filter for shrinking and a poor
+                # one for growing, where it degenerates towards nearest
+                # neighbour and hands the matcher stair-stepped outlines.
+                sized = cv2.resize(
+                    image, None, fx=factor, fy=factor,
+                    interpolation=(cv2.INTER_AREA if factor < 1.0
+                                   else cv2.INTER_CUBIC))
             self._sized[key] = sized
         return sized
 
@@ -452,4 +802,6 @@ class NotificationWatcher:
         self._visible = set()
         self._feed_visible = False
         self._absent_looks.clear()
+        self._absent_since.clear()
+        self._absent_proved.clear()
         self._last_fireable.clear()

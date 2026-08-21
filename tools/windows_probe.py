@@ -235,7 +235,8 @@ def hud_verdict(frame, templates, wood_templates):
 
     This is the end-to-end question. A path can return perfectly real pixels
     and still be useless if what it returns is the desktop rather than the
-    game, or the game at a scale outside anchor.py's 0.5x-2.0x sweep.
+    game, or the game at a scale outside anchor.py's sweep (0.5x-2.0x,
+    falling through to 4.0x when nothing is found in it).
     """
     if frame is None:
         return "no frame to search"

@@ -101,11 +101,32 @@ civ, and the NEWEST civs — the very ones whose artwork causes the most
 trouble — are the least likely to be covered yet.</p>
 <p>Both are recommended, neither is required. Loom reads the stock HUD as
 it ships.</p>
-<p><b>Set the in-game HUD scale to 100%.</b> Loom follows the HUD at other
-sizes, but it reads best at 100%, and below about 90% Loom may not find the
-HUD at all — keep the slider at 90% or above. (It often reports 99% however
-you set it — that is fine.) If you change the scale, or switch UI mods,
-restart the overlay so it measures the new one.</p>
+<p><b>Start with the in-game HUD scale at 100%</b> and only change it if
+Loom cannot find your HUD. Loom follows the HUD at whatever size it is,
+across a wide range of sizes, but there are limits at both ends and they
+depend on your screen as much as on the slider.</p>
+<p><b>Set the notification duration to its shortest</b>, in the same
+Options &rarr; Interface panel. Loom counts your Town Centres by reading the
+game's own <i>&#8212;Town Center Built&#8212;</i> line, and how long a message
+stays on screen changes what that feed shows: the game will not reprint a
+line that is still up, and it brings recent messages back whenever the feed
+has faded. Every timing Loom uses here was measured at the shortest setting.
+The others are untested rather than known bad &mdash; but if one misbehaves,
+what you will see is an idle-Town-Centre warning for a Town Centre you do not
+have.</p>
+<p>You can start the overlay before the game. The panel comes up straight
+away with your build on it, its numbers at zero and a banner across the top
+saying what it is waiting for &mdash; <b>WAITING FOR THE GAME</b> until Age of
+Empires is running, then <b>WAITING FOR A MATCH</b> until one starts. The
+zeros are not a reading; the banner is there to say so, and it disappears the
+moment Loom can see the HUD.</p>
+<p>If Loom sits on <b>WAITING FOR A MATCH</b> forever with a match clearly on
+screen, the HUD is probably outside that range, and Loom will
+say so and name the direction. As a rule: <b>on a small screen, or if the
+readings are jumpy, raise the HUD scale</b> &mdash; small digits are what
+Loom misreads. <b>On a very large screen, if it cannot find the HUD at all,
+lower it.</b> If you change the scale, or switch UI mods, restart the
+overlay so it measures the new one.</p>
 """),
 
     ("Getting started", """
@@ -114,6 +135,25 @@ restart the overlay so it measures the new one.</p>
 launcher - Loom ships a starting library, and <b>Import build</b> adds any
 you find or write. The preview window beside the launcher shows the whole
 build; during a match it follows along on its own.</p>
+<p>The preview is a window you can work in. Arrow keys and the mouse wheel
+walk the build, the scrollbar says where in it you are, and the <b>+</b> and
+<b>-</b> buttons resize the cards - <b>&#8634;</b> hands that decision back to
+the window. Make the window taller and it shows more of the build. The step
+you are on always sits second from the top, with the one before it above and
+the rest ahead below, tinted faintly red behind you and green in front.</p>
+<p><b>Playing on a second monitor.</b> Two tick boxes at the top of the
+preview window set this up, and both are remembered.</p>
+<p><b>Alerts here</b> shows the same TC IDLE and HOUSE SOON bands the overlay
+does, so the preview warns you as loudly as the panel would.</p>
+<p><b>No overlay</b> keeps the panel off the game for good - it will not
+appear when you press Start overlay, and stays away until you untick it. Loom
+still reads the game, still records the match and still feeds this window;
+only the thing drawn over the game is gone. Tick both and Loom lives entirely
+on your other screen.</p>
+<p>The launcher's <b>Hide overlay</b> button and <b>Ctrl+Shift+0</b> are the
+temporary version of that: they hide the panel for as long as Loom is running
+and are forgotten when it closes, so a quick peek never changes what happens
+next time.</p>
 <p><b>2. Place the panel.</b> Use <b>Place overlay</b> to drag the panel
 wherever you want it, then close it - no game needed, though with one
 running it lines up exactly. Loom remembers the spot relative to the game
@@ -187,6 +227,18 @@ seconds is adjustable in the launcher.</p>
 overlay drives on your keys alone and the panel says <b>MANUAL</b> across the
 top, naming the key that gets you back. A new match always returns to
 following the game.</p>
+<h3>Getting the panel out of the way</h3>
+<p><b>Ctrl+Shift+0</b> — hide the panel, or bring it back. The launcher's
+<b>Hide overlay</b> button does the same thing, and turns green while the
+panel is hidden.</p>
+<p>Hiding is not stopping. Loom carries on reading the game, recording the
+match and counting APM the whole time — only the window goes away, and
+everything is still there when you bring it back. Stopping the overlay would
+throw the match away.</p>
+<p>One thing to know about this key in particular: it sits in the same family
+as the game's control groups (Ctrl and a number assigns one, Shift and a
+number adds to a selection). If you have remapped into that territory, give
+this a different key in the launcher.</p>
 <p>There is also an optional <b>start/stop overlay</b> key — one key doing
 what the launcher's Start and Stop buttons do, so the overlay can be launched
 mid-game without alt-tabbing. It ships unbound; give it keys in the launcher

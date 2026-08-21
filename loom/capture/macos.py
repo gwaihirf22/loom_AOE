@@ -258,8 +258,10 @@ def _display_scale(content, window):
     desk with a 2x built-in screen and a 1x 4K monitor, taking the maximum
     doubled a window that was already in real pixels: a 3840-point window was
     captured at 7680, which invents no detail and pushes the HUD to anchor
-    scale 2.04 - past the 2.0 ceiling of anchor.COARSE_SCALES, where the
-    search can no longer refine. Measured on exactly that desk.
+    scale 2.04 - which was past the old 2.0 ceiling of anchor.COARSE_SCALES,
+    where the search could no longer refine. Measured on exactly that desk.
+    anchor.EXTENDED_SCALES now reaches 4.0, so this would be found today; the
+    doubling is still wrong and still worth not doing.
 
     SCDisplay reports both its point frame and its pixel size, and its frame
     shares SCWindow's top-left-origin coordinate space, so the window can be

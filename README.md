@@ -137,13 +137,21 @@ faith.
 
 ## Set up the game
 
-One setting matters, under **Options → Interface**:
+Two settings matter, both under **Options → Interface**:
 
 - **HUD scale at 100%.** Loom follows the HUD at other sizes, but it reads
   best at 100% and below about 90% it may not find the HUD at all. (The
   slider tends to report 99% however it is set — that is fine.) If you
   change the scale, or switch UI mods, restart the overlay so it measures
   the new one.
+- **Notification duration at its shortest.** Loom counts your Town Centres
+  by reading the game's own `--Town Center Built--` line, and how long that
+  line stays on screen changes the answer: the game never reprints a
+  message that is still showing, and it redisplays recent history whenever
+  the feed has faded. Every timing Loom uses here was measured at the
+  shortest setting. A longer one is not known to be broken, it is
+  **untested** — and the symptom if it goes wrong is a Town Centre counted
+  twice, which shows up as an idle-TC warning that will not go away.
 
 Loom reads the HUD at **1920x1080 and 2560x1440**, on both skins — every
 band is checked against recorded games at both sizes. If you play at a
@@ -232,6 +240,12 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
   not time out: while it is off the panel says **MANUAL** across the top,
   naming the key that gets you back. A new match always returns to
   following the game.
+- **Ctrl+Shift+0** — hide the panel, or bring it back. The launcher's **Hide
+  overlay** button does the same thing and turns green while it is hidden.
+  Hiding is not stopping: Loom keeps reading the game, recording the match
+  and counting APM the whole time, and only the window goes away. Note this
+  one sits in the same family as the game's control groups (Ctrl and a
+  number), so rebind it if you have remapped into that territory.
 - An optional **start/stop overlay** key does what the launcher's Start and
   Stop buttons do, so the overlay can be started mid-game without
   alt-tabbing. It ships unbound; give it keys in the launcher to switch it

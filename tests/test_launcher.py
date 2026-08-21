@@ -14,7 +14,8 @@ the table is plain data, which is exactly why it is a table.
 from loom import entry
 from loom.launcher import (COACH_SCENARIOS, DEV_COMMANDS, MINIMUM_SIZE,
                            PLACE_COMMAND, PREFERRED_SIZE, SETTINGS_TABS,
-                           WINDOW_GAP, beside, clamped_position, fitted_size)
+                           WINDOW_GAP, beside, clamped_position, fitted_size,
+                           overlay_status_text)
 
 
 def argv_for(label, stem="scoutsrush18pop", scenario="behind"):
@@ -257,3 +258,35 @@ def _can_run_frozen(argv):
         return entry.can_run(argv)
     finally:
         entry.frozen = real
+
+
+def test_the_status_line_says_what_the_overlay_is_doing():
+    assert overlay_status_text(running=False) == "overlay: not running"
+    assert overlay_status_text(running=True) == "overlay: running"
+    assert overlay_status_text(running=True, hidden=True) == "overlay: hidden"
+
+
+def test_a_stopped_overlay_is_never_described_as_hidden():
+    """Hidden only means anything to an overlay that is running. A stopped
+    one whose last known state was hidden must not keep saying so - the
+    panel is gone because the program is, and "hidden" would imply a key
+    exists to bring it back."""
+    assert overlay_status_text(running=False, hidden=True) \
+        == "overlay: not running"
+
+
+def test_every_hotkey_action_has_a_label_in_the_settings_window():
+    """HotkeysBox indexes LABELS for every action in config.HOTKEY_ACTIONS
+    with no fallback, so an action added without a label is a KeyError when
+    the settings window is BUILT - not when the key is pressed. That failure
+    is a window that will not open, blamed on whatever was touched last.
+    """
+    from loom import config
+    from loom.launcher import HotkeysBox
+
+    for action in config.HOTKEY_ACTIONS:
+        assert action in HotkeysBox.LABELS, (
+            f"{action} has no entry in HotkeysBox.LABELS; the settings "
+            f"window would raise KeyError on open")
+        label, tip = HotkeysBox.LABELS[action]
+        assert label and tip, f"{action} has an empty label or tooltip"

@@ -46,7 +46,7 @@ taken on faith.
 
 ## Game settings
 
-Two settings matter, both under **Options → Interface**:
+Three settings matter, all under **Options → Interface**:
 
 - **HUD scale at 100%.** Loom detects the HUD at whatever size it is drawn, but
   digit recognition degrades away from 100%, and Loom prints a warning when it
@@ -57,6 +57,16 @@ Two settings matter, both under **Options → Interface**:
 - **The stock HUD, or the Anne_HK Better UI mod.** Loom knows both and works out
   which is on screen by itself. Another UI mod that replaces the resource-bar
   artwork needs its own profile; Loom says so rather than waiting silently.
+- **Notification duration at its shortest.** Loom counts your Town Centres by
+  reading the game's own `--Town Center Built--` line out of the message feed,
+  and how long a message lingers changes what that feed shows. The game will
+  not reprint a line that is still on screen, and it redisplays recent history
+  whenever the feed has faded and something new arrives — so the duration
+  decides both how often a real Town Centre goes unannounced and how often an
+  old announcement comes back. Every timing Loom uses for this was measured at
+  the shortest setting. The other settings are untested rather than known bad;
+  the symptom if one misbehaves is an idle-TC warning for a Town Centre you do
+  not have.
 
 **Resolution.** Loom reads the HUD at **1920x1080 and 2560x1440**, on both
 skins, and every band is checked against recorded games at both. Anything
@@ -101,11 +111,18 @@ it. The originals are left where they are.
 
 ## Hotkeys and APM
 
-Loom registers three key combinations while it runs (**Ctrl+Shift+W** forward a
+Loom registers four key combinations while it runs (**Ctrl+Shift+W** forward a
 step, **Ctrl+Shift+Q** back, **Ctrl+Shift+R** stop or resume following the
-game). All three are rebindable and can be switched off in the launcher. The
-step keys only pause automatic following for ten seconds and then resume by
-themselves; the panel says **MANUAL** whenever it is not tracking the game.
+game, **Ctrl+Shift+0** hide the panel or bring it back). All four are
+rebindable and can be switched off in the launcher. The step keys only pause
+automatic following for ten seconds and then resume by themselves; the panel
+says **MANUAL** whenever it is not tracking the game.
+
+Hiding is not stopping — Loom keeps reading, recording and counting while the
+panel is off screen, and the launcher's **Hide overlay** button does the same
+job for anyone who would rather not spend a key on it. Ctrl+Shift+0 is the one
+binding worth a second thought before you keep it: it sits in the same family
+as the game's control groups, so remap it if you use those.
 
 **Track APM** counts keystrokes and clicks for the post-game statistics. It
 uses the Windows Raw Input API, which reports that a key went down without

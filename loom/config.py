@@ -240,6 +240,53 @@ def set_build_browser(enabled):
     settings = load()
     settings["show_build_browser"] = bool(enabled)
     save(settings)
+
+
+def preview_alerts():
+    """Whether the build preview shows the overlay's alert bands. Default: no.
+
+    Deliberately separate from hiding the overlay, so the two can be combined
+    however a player's desk actually works: alerts in both windows while they
+    try it out, the preview alone on a second monitor with the overlay hidden,
+    or the overlay hidden and the preview left as a quiet reference. One
+    control for "hide the panel" and one for "warn me over here" is two ideas
+    rather than one mode.
+
+    Off by default: this window has been a quiet browser for its whole life
+    and a flashing band nobody asked for is a poor surprise.
+    """
+    return load().get("preview_alerts") is True
+
+
+def set_preview_alerts(enabled):
+    """Remember whether the build preview shows alert bands."""
+    settings = load()
+    settings["preview_alerts"] = bool(enabled)
+    save(settings)
+
+
+def overlay_disabled():
+    """Whether the overlay panel should start hidden. Default: no.
+
+    A PREFERENCE about how the overlay starts, deliberately not the same thing
+    as whether it is hidden right now. Someone playing from the build preview
+    on a second monitor should not have to hide the panel by hand every time
+    they press Start; the Hide overlay button and Ctrl+Shift+0 stay a
+    this-session toggle that is never remembered, so a mid-match peek cannot
+    quietly change what happens tomorrow.
+
+    Read by loom_overlay at startup, which owns the hidden state and reports
+    it upward on the statefeed exactly as it always has - so the launcher's
+    button, the hotkey and this all agree from the first moment.
+    """
+    return load().get("overlay_disabled") is True
+
+
+def set_overlay_disabled(disabled):
+    """Remember whether the overlay panel starts hidden."""
+    settings = load()
+    settings["overlay_disabled"] = bool(disabled)
+    save(settings)
     return settings
 
 
@@ -420,13 +467,20 @@ def clear_overlay_offset():
 #   previous_step  step the panel back one
 #   next_step      step the panel forward one
 #   toggle_follow  stop/resume following the game automatically
+#   toggle_hidden  take the panel off the screen, and put it back
 #
 # Hotkeys are a CORRECTION for a reading that has drifted, not the way Loom is
 # meant to be used - see loom/follow.py. That is why the two step actions only
 # suspend automatic following for manual_hold_seconds rather than switching it
 # off: the player nudges the step, reads it, and Loom takes over again without
 # being asked.
-OVERLAY_HOTKEY_ACTIONS = ("previous_step", "next_step", "toggle_follow")
+#
+# toggle_hidden is the exception to that framing: it changes nothing about
+# what Loom believes, only whether the panel is on screen. Polling, alerts,
+# statistics and APM all carry on while it is hidden - hiding is not stopping,
+# and stopping would throw away the tracked game.
+OVERLAY_HOTKEY_ACTIONS = ("previous_step", "next_step", "toggle_follow",
+                          "toggle_hidden")
 
 # The launcher's, active for its whole session - necessarily, because the one
 # thing this key does is start a process that does not exist yet:
@@ -444,10 +498,17 @@ HOTKEY_ACTIONS = OVERLAY_HOTKEY_ACTIONS + LAUNCHER_HOTKEY_ACTIONS
 # start_stop_overlay ships UNBOUND: an empty binding is the grammar's own
 # "switched off", and a key that starts and stops a whole program is one a
 # player should choose to have, not discover by accident.
+#
+# toggle_hidden is Ctrl+Shift+0, chosen by the author. Worth knowing that it
+# sits in the same family as the game's control groups - Ctrl+digit assigns
+# one, Shift+digit adds to a selection - so a player who has remapped into
+# Ctrl+Shift+digit will want to move it. That is what rebinding is for, and
+# the launcher's Hide button does the same job without any key at all.
 DEFAULT_HOTKEYS = {
     "previous_step": "Ctrl+Shift+Q",
     "next_step": "Ctrl+Shift+W",
     "toggle_follow": "Ctrl+Shift+R",
+    "toggle_hidden": "Ctrl+Shift+0",
     "start_stop_overlay": "",
 }
 

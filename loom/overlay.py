@@ -421,10 +421,12 @@ class Overlay(QWidget):
         self.next_segments = None
         self.pace_text = ""
         self.pace_color = DIM_TEXT
-        # "" while the game is driving, which is the normal case and draws
-        # nothing at all.
-        self.follow_note = ""
-        self.follow_color = NOT_FOLLOWING_COLOR
+        # The header's centre slot: "" while the game is driving, which is
+        # the normal case and draws nothing at all. Two different things
+        # borrow it, never at once - the MANUAL note once a game is running,
+        # and the waiting banner before one is.
+        self.header_note = ""
+        self.header_note_color = NOT_FOLLOWING_COLOR
         self.have_reading = False
         self.alerts = []            # [(text, severity)], most urgent first
         self.report_rows = None     # build-complete report, replaces the step
@@ -436,6 +438,33 @@ class Overlay(QWidget):
         self.have_reading = False
         self.status_line = message
         self.alerts = []
+        self.update()
+
+    def show_pregame(self, build, stage):
+        """The chosen build, with no game behind it yet.
+
+        The overlay now appears the moment it is started rather than when a
+        match does, so that a player who launches Loom first can see that it
+        is up and waiting instead of an empty screen that looks identical to
+        a program that failed to start.
+
+        Everything real is at zero and the banner says why. The numbers come
+        from nowhere: villagers and the clock are literally 0, and passing no
+        per-resource reading makes the resource row print the build's bare
+        targets rather than have/want pairs. Step -1 is the documented
+        "before the first step", so what shows is the build's opening move.
+
+        The zeros are the part worth being careful about, because a panel
+        showing numbers it did not read is the exact failure the rest of Loom
+        is built to avoid. What makes them honest is the banner - and that
+        show_step overwrites it on the first real reading, so it cannot be
+        left behind once the game is driving.
+        """
+        self.show_step(build, 0, 0,
+                       build.active_step_at(-1),
+                       build.following_step_at(-1),
+                       None)
+        self.header_note, self.header_note_color = describe_waiting(stage)
         self.update()
 
     def show_alerts(self, alerts_list):
@@ -466,7 +495,7 @@ class Overlay(QWidget):
 
     def show_step(self, build, villagers, game_time, active, following, delta,
                   per_resource=None, extra=0, milestone_queued=False,
-                  follow_mode=None, resume_hint=None):
+                  follow_mode=None, resume_hint=None, seconds_left=None):
         """Update the panel from one poll's worth of state.
 
         `active` is the step to be working on NOW - the first one not yet
@@ -528,8 +557,8 @@ class Overlay(QWidget):
             self.next_when = f"{when_minutes}:{when_seconds:02d} · {following.villager_count} vills"
 
         self.pace_text, self.pace_color = describe_pace(delta, extra)
-        self.follow_note, self.follow_color = describe_follow(
-            follow_mode, resume_hint)
+        self.header_note, self.header_note_color = describe_follow(
+            follow_mode, resume_hint, seconds_left)
         self.update()
 
     # ---- drawing -------------------------------------------------------
@@ -647,18 +676,18 @@ class Overlay(QWidget):
         painter.drawText(self.width() - L.x(16) - width, L.y(24),
                          self.pace_text)
 
-        # The not-following note sits in the gap between the two, which is
-        # empty in every normal frame - the status line runs to about a
-        # quarter of the width and pace is a few characters right-aligned.
-        # Centring it there means the usual panel is untouched and this costs
-        # no height, which a 186px panel cannot spare.
-        if self.follow_note:
+        # The header note sits in the gap between the two, which is empty
+        # in every normal frame - the status line runs to about a quarter of
+        # the width and pace is a few characters right-aligned. Centring it
+        # there means the usual panel is untouched and this costs no height,
+        # which a 186px panel cannot spare.
+        if self.header_note:
             painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
-            painter.setPen(self._pen(self.follow_color))
+            painter.setPen(self._pen(self.header_note_color))
             note_metrics = painter.fontMetrics()
-            note_width = note_metrics.horizontalAdvance(self.follow_note)
+            note_width = note_metrics.horizontalAdvance(self.header_note)
             painter.drawText((self.width() - note_width) // 2, L.y(24),
-                             self.follow_note)
+                             self.header_note)
 
         painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), L.y(34), self.width() - L.x(14), L.y(34))
@@ -881,7 +910,38 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
     return x
 
 
-def describe_follow(mode, resume_hint=None):
+# The two things Loom can be waiting for before a match is on screen, named
+# rather than left as a bare boolean because they mean different things to
+# the player: one is "your game is not running", the other is "your game is
+# running and I am watching for a match".
+WAITING_FOR_GAME = "waiting_for_game"
+WAITING_FOR_MATCH = "waiting_for_match"
+
+
+def describe_waiting(stage):
+    """The header banner for a panel with no game behind it yet.
+
+    Returns (text, colour); "" means draw nothing, so the same slot is free
+    the moment a real reading arrives.
+
+    Pure, like describe_follow and describe_pace below it, so the wording is
+    checkable without a window - which is how every test in this module's
+    suite is written.
+
+    Why the panel says this at all: it now appears as soon as the overlay
+    starts, before the game is up, showing the chosen build with its numbers
+    at zero. Zeros with nothing to explain them would be a panel claiming a
+    reading it does not have, which is the one thing Loom must never do. The
+    banner is what makes them honest.
+    """
+    if stage == WAITING_FOR_GAME:
+        return "WAITING FOR THE GAME", NOT_FOLLOWING_COLOR
+    if stage == WAITING_FOR_MATCH:
+        return "WAITING FOR A MATCH", NOT_FOLLOWING_COLOR
+    return "", NOT_FOLLOWING_COLOR
+
+
+def describe_follow(mode, resume_hint=None, seconds_left=None):
     """The header note for a panel that is not following the game.
 
     Returns (text, colour); the text is "" while the game is driving, which
@@ -906,9 +966,16 @@ def describe_follow(mode, resume_hint=None):
         # Hotkeys are off or unavailable, so there is no key to name. Saying
         # so anyway beats implying the panel is still tracking the game.
         return "MANUAL · not following the game", NOT_FOLLOWING_COLOR
-    # Holding: this fixes itself in a few seconds, so it is stated quietly.
-    # No countdown - a number ticking down in the corner of a game is a
-    # distraction, and the panel returning to normal is the real signal.
+    # Holding: this fixes itself in a few seconds, so it is stated quietly -
+    # but it says HOW MANY. This comment used to argue the opposite, that a
+    # number ticking down in the corner of a game is a distraction and the
+    # panel returning to normal is the real signal. Living with it said
+    # otherwise: "resuming shortly" leaves you watching the panel wondering
+    # whether it has stuck, and a number answers that at a glance. The author
+    # asked for the countdown; the seconds come from follow.seconds_left,
+    # which has existed and been tested since the hold was written.
+    if seconds_left:
+        return f"manual · resuming in {seconds_left}s", HOLDING_COLOR
     return "manual · resuming shortly", HOLDING_COLOR
 
 

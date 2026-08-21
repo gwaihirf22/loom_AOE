@@ -52,13 +52,48 @@ CLOCK_BAND = (545, -8, 810, 30)
 # x=140, so 162 loses nothing.
 POPULATION_BAND = (58, 14, 162, 44)
 
-# The icon can be anywhere from half to double its reference size.
+# The sizes the icon is looked for at FIRST, and where almost every HUD is.
 # I search coarsely first, then refine around the winner: the clock sits
 # ~590 reference-pixels from the anchor, so a 3% scale error there becomes
 # ~18px of drift. Offset error grows with distance from the anchor.
 COARSE_SCALES = np.linspace(0.5, 2.0, 31)
 REFINE_STEPS = 21
 REFINE_RADIUS = 0.05
+
+# Bigger than the common range, swept only when the common range found nothing.
+#
+# 2.0 was a hard ceiling until a 4K screen met it: at the game's own 100% HUD
+# scale the HUD measures ~2.6x the reference, so Loom refused a HUD it could
+# read perfectly well. The comment that used to sit on BEYOND_RANGE_SCALES
+# claimed reading up here was unsupported because "the width constants stop
+# holding". That was worth testing rather than believing, and it is not true:
+# measured over real capture frames upscaled to 2.25x, 2.64x, 2.99x and 3.74x,
+# the villager count, the clock and the population all read IDENTICALLY to the
+# native-size read, on both skins. The two width constants it was worried about
+# had already been fixed - min_glyph_width is capped and max_glyph_width scales.
+#
+# The step must stay 0.05. The fine sweep brackets the coarse winner by
+# REFINE_RADIUS, which is 0.05, so a coarser step here would let the refine
+# pass miss the truth entirely.
+#
+# Why a SECOND sweep instead of simply widening the first one: measured on a
+# 3840x2160 frame, the coarse sweep costs 110ms over 0.5-2.0 and 265ms over
+# 0.5-4.0. Widening would charge every player 2.4x on acquisition - on the path
+# whose comments below record it once costing 15 seconds at 4K - to serve the
+# few whose HUD is genuinely huge. Kept separate, an ordinary HUD pays nothing
+# and only a HUD that was not found in the common range pays the extra 156ms.
+#
+# 4.0 rather than higher because it is the last useful value: _best_over_scales
+# skips a scale whose template outgrows the search area, and the strip is 12% of
+# the frame halved again, so on a 1080p frame nothing above ~3.4x is findable at
+# any setting. 4.0 covers a 4K screen up to about 150% in-game HUD scale.
+EXTENDED_SCALES = np.linspace(2.0, 4.0, 41)
+
+# The coarse score below which the common range is judged not to have found the
+# icon at all, so it is worth asking whether it is simply bigger. A real match
+# on the half-size strip scores 0.93-0.96; a sweep that missed scores ~0.47.
+# There is a lot of room between those, and this sits in it.
+EXTENDED_SEARCH_BELOW = 0.8
 
 # Only the top slice of the frame can contain the resource bar.
 SEARCH_HEIGHT_FRACTION = 0.12
@@ -87,13 +122,13 @@ COARSE_DOWNSCALE = 0.5
 REANCHOR_RADIUS = 0.10
 REANCHOR_STEPS = 9
 
-# Scales past the normal ceiling, checked only to EXPLAIN a failure. A game
-# rendering below the display's resolution gets upscaled by the compositor -
-# 1080p on a 4K screen puts the HUD at roughly 2.9x the reference, beyond
-# everything COARSE_SCALES can see, and Loom just hung waiting for a HUD that
-# was never findable. Reading at these sizes is not supported (the width
-# constants stop holding); naming the cause is.
-BEYOND_RANGE_SCALES = np.linspace(2.0, 3.4, 8)
+# Scales past even the extended range, checked only to EXPLAIN a failure.
+# Loom just hung waiting for a HUD that was never findable, and the difference
+# between "no HUD yet" and "this HUD can never be found" is a player's whole
+# evening. Reading is not attempted up here - nothing has been measured at
+# these sizes, and on most frames the template no longer fits the search strip
+# anyway - but naming the cause costs one sweep, once.
+BEYOND_RANGE_SCALES = np.linspace(4.0, 6.0, 8)
 
 
 def load_template(profile=None):
@@ -146,6 +181,7 @@ def find_icon(frame_bgr, template_gray, near_scale=None):
                            interpolation=cv2.INTER_AREA)
         coarse = _best_over_scales(small, template_gray,
                                    COARSE_SCALES * COARSE_DOWNSCALE)
+
         if coarse is None:
             return None
         coarse_scale = coarse[3] / COARSE_DOWNSCALE
@@ -175,23 +211,52 @@ def find_icon(frame_bgr, template_gray, near_scale=None):
     return _best_over_scales(search_area, template_gray, COARSE_SCALES)
 
 
-def icon_beyond_range(frame_bgr, template_gray):
-    """Is the icon on screen but LARGER than the search can see?
+def _coarse_scale_over(frame_bgr, template_gray, scales, min_score=0.8):
+    """Roughly how big is the icon, if it is here at these scales at all?
 
-    Returns the matched scale, or None. Coarse-only and on a half-size copy,
-    because this runs exactly once to turn "Loom hangs forever" into a
-    sentence naming the cause - it never feeds a reading.
+    Returns the matched scale, or None. Coarse-only and on a half-size copy:
+    both callers want one number - "is it about this big?" - and neither
+    places anything with it. Whoever needs a position asks find_icon after,
+    with this as its near_scale, which turns a full sweep into a nine-step one.
     """
     frame_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     search_height = int(frame_gray.shape[0] * SEARCH_HEIGHT_FRACTION)
     small = cv2.resize(frame_gray[0:search_height, :], None,
                        fx=COARSE_DOWNSCALE, fy=COARSE_DOWNSCALE,
                        interpolation=cv2.INTER_AREA)
-    found = _best_over_scales(small, template_gray,
-                              BEYOND_RANGE_SCALES * COARSE_DOWNSCALE)
-    if found is None or found[0] < 0.8:
+    found = _best_over_scales(small, template_gray, scales * COARSE_DOWNSCALE)
+    if found is None or found[0] < min_score:
         return None
     return found[3] / COARSE_DOWNSCALE
+
+
+def larger_icon_scale(frame_bgr, template_gray):
+    """Is the icon here but bigger than the common range looks?
+
+    Returns a scale inside EXTENDED_SCALES, or None. This is the READABLE
+    oversize case - a 4K screen at the game's own 100% HUD scale puts the icon
+    near 2.6x - and the answer feeds a real acquisition.
+
+    Deliberately NOT folded into find_icon. Tried that first and measured what
+    it cost: identify_hud tries every skin's template, so the skin that is not
+    on screen fell through to the extended sweep every single time, and
+    wait_for_hud runs that loop twice a second while the player sits in a menu.
+    A blank 4K frame went from 234ms to 500ms an attempt - against a docstring
+    on wait_for_hud promising the slow case stays under a third of one core.
+    Kept out here, the common path is untouched and the caller decides how
+    often the extra search is worth paying for. See reader.find_hud.
+    """
+    return _coarse_scale_over(frame_bgr, template_gray, EXTENDED_SCALES,
+                              EXTENDED_SEARCH_BELOW)
+
+
+def icon_beyond_range(frame_bgr, template_gray):
+    """Is the icon on screen but larger than even the extended search?
+
+    Returns the matched scale, or None. This one never feeds a reading: it
+    exists to turn "Loom hangs forever" into a sentence naming the cause.
+    """
+    return _coarse_scale_over(frame_bgr, template_gray, BEYOND_RANGE_SCALES)
 
 
 def _refine_near(search_area, template_gray, scales, x, y, scale):

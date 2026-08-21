@@ -6,6 +6,510 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.4 — 2026-08-21
+
+**The release where the build preview became somewhere you can play from, and
+where the windows started remembering things properly.** It also closes the
+rest of dfinchau's report - #1 through #9 bar one - and two Town Centre bugs
+that had been quietly telling players their TCs were idle while they worked.
+
+The larger threads, in the order they matter:
+
+- the overlay appears when you start it rather than when the game does, and
+  can be hidden - or kept off the game permanently
+- the build preview carries the overlay's alerts, so a second monitor can hold
+  Loom and the game can hold none of it
+- neither window scrolls sideways any more, and both reopen where you left
+  them, including on a second monitor
+- two separate causes of a false TC IDLE, both found in one captured game
+
+**The overlay comes up when you start it, not when the game does.** It used to
+stay invisible until a match was on screen, so starting Loom first showed you
+nothing at all — indistinguishable from a program that had failed to launch.
+The panel now appears straight away with your build on it, its numbers at
+zero, and a banner saying what it is waiting for: **WAITING FOR THE GAME**
+until Age of Empires is running, then **WAITING FOR A MATCH** until one
+starts.
+
+The zeros are the delicate part, and the banner is what makes them honest — a
+panel showing numbers it did not read is the one failure the rest of Loom is
+built to avoid. It shares the header slot the MANUAL note uses, so it costs no
+panel height, and the first real reading clears it.
+
+- **Waiting had to move inside the event loop to make this possible.** Finding
+  the game window and then a match were two open-ended blocking loops that ran
+  *before* `app.exec()`. Showing the window earlier would not have been
+  enough: with no event loop turning, a mapped window never receives a paint
+  event, so it would have been a white ghost over the menus. Acquisition now
+  happens one step per timer tick, like everything else.
+- **Stop works during that wait now**, which it did not before. The stop line
+  queues `app.quit()` onto the event loop, and there was no event loop yet, so
+  stopping fell through to `terminate()` and then `kill()` — with `aboutToQuit`
+  never running, which is the final statistics write.
+
+**And it never stops watching for one.** Waiting is the feature, so nothing in
+that loop is allowed to give up.
+
+- **An unreadable screen used to quit the overlay.** A minimised window, a
+  game mid-restart, a loading screen with no frame yet — any of them ended
+  the program, and the player had to start it again. That behaviour was carried
+  over from when the wait was a blocking loop in front of the event loop,
+  where an unreadable screen could only mean a startup that had failed. It
+  now says so once and carries on looking.
+- **The game window is looked for again while waiting**, roughly every six
+  seconds, instead of being latched once by `connect()`. Start the overlay at
+  the main menu, sit there a minute, then begin a match and the HUD could
+  never be found — the frames being searched were coming from a window that
+  was no longer the game's, and restarting the overlay was what really fixed
+  it. The same call also rebuilds a capture stream that has quietly stopped
+  delivering, which restarting was probably fixing too.
+- **A note after about thirty seconds of finding nothing**, naming the likely
+  causes — the in-game HUD scale, the resolution, or a UI mod Loom has no
+  templates for — and saying plainly that it is still watching. It complements
+  the existing note, which only fires for a HUD Loom *nearly* recognised and
+  stays silent when it recognised nothing at all.
+
+**Ctrl+Shift+0 hides the panel, and a Hide overlay button does the same.** The
+button turns green while the panel is hidden and the launcher says
+`overlay: hidden`.
+
+- **Hiding is not stopping.** Loom keeps reading the game, recording the match
+  and counting APM the whole time; only the window goes away. Stopping would
+  throw away the game being tracked, which is why this is a separate thing
+  from the Stop button.
+- **The overlay owns the state and reports it upward**, so the button and the
+  hotkey cannot drift apart: both ask for a *toggle*, and what the button
+  displays comes back on the statefeed as its own line. It has to be its own
+  line rather than a field on the per-poll payload, because that payload is
+  not emitted at all while the reading is unusable — which includes the whole
+  pre-game wait, one of the times hiding is most likely.
+- The key is rebindable and can be emptied like every other one, and it is the
+  one worth a second thought before keeping: `Ctrl+Shift+0` sits in the same
+  family as the game's control groups. The launcher's button needs no key at
+  all.
+- Click-through is re-checked the first time the panel comes back, because the
+  X11 input region that provides it is applied when a window is mapped — and
+  losing it quietly costs the player their cursor mid-match.
+
+**Loom no longer invents Town Centres at 1920x1080.** A match where three Town
+Centres produced almost constantly was told **"2 TCs IDLE"** for 149 unbroken
+game-seconds, and its saved statistics charge **674 of 1675 seconds** as idle
+TC time against a believed count of five.
+
+The count came from the game's own "--Town Center Built--" line, which is meant
+to be the one exact source there is. Two of its four sightings were the same
+line, read again.
+
+### Fixed
+
+- **The phrase template was a 1440p rendering stretched to 1080p.** The game
+  does not draw its notification feed by scaling one master - at 1920x1080 it
+  lays the text out at a smaller point size - so resizing the harvested
+  template down compared it against a shape the screen never drew. `ink_agree-
+  ment` also thresholds the template absolutely and the matched region
+  relatively, so shrinking a template thins its own ink and the score decays
+  with size: `town_center_built` scored **0.598 against itself** at 0.735,
+  under its own 0.6 gate. At 1080p a perfect, noise-free match could not pass.
+  Measured over 336 frames, the line was recognised on 23 looks out of 46.
+  Phrases now carry one template per rendering, named with the scale they were
+  cut at, and `tools/cut_phrase_template.py` cuts the next one. Recognition on
+  that run went to **44 of 48**, and the new template separates *better* from
+  other text (0.38 against 0.58) rather than worse.
+- **A missed look was being read as a line leaving the screen.** Every
+  anti-echo guard in the watcher rests on "was this phrase sighted last look",
+  so at half detection they were not weakened, they were absent. The rearm was
+  the one that bit: three unrecognised looks cleared the phrase's cooldown, and
+  the next sighting of the same lingering line counted as another Town Centre.
+  Traced frame by frame - the line arrives and fires correctly, is missed four
+  looks running while plainly still on screen, and fires again five seconds
+  later. Absence now needs its own evidence. A blank feed is proof and rearms
+  at once, as before; a phrase merely unrecognised among other lines must also
+  have been gone for ten game seconds, which is about how long a notification
+  lingers and more than twice the worst detection flicker measured.
+- **Counting looks was the deeper mistake, and it made the bug depend on the
+  poll rate.** "Three looks is about a second of real time" stopped being true
+  under load shedding. Replayed at one, two, three and four looks per captured
+  frame, the same pixels now yield the same two Town Centres every time; before
+  this the answer changed with the cadence.
+- **A second Town Centre inside the cooldown was being lost, not delayed.**
+  Found while checking that the fixes above had not made close-together Town
+  Centres worse - and they had, but so had the original code, in a way nobody
+  had looked for. The cooldown is refreshed by every sighting, so when a second
+  Town Centre's line arrives inside the window its own sightings keep pushing
+  the window forward and the fifteen seconds never elapse. Measured on two
+  lines **16 game-seconds apart** - well outside any cooldown - the second was
+  never counted. A sighting after the previous line has provably left the
+  screen is now a new event in its own right, which is the game's own rule:
+  it does not reprint a phrase whose line is still up. This is purely
+  additive, so nothing that counted before stops counting.
+- **A Town Centre that is built and never produced from is invisible to the
+  queue**, which only sees a building once it makes something. The
+  notification is the only evidence such a TC exists - and that is exactly the
+  one the idle alert is for - so undercounting here is not a cheap failure.
+
+### The setting none of this was written against
+
+- **AoE2 lets you choose how long notifications stay on screen, and every
+  timing in this module was measured with it at the shortest.** That was never
+  recorded anywhere, which made a pile of game-second constants quietly
+  conditional on a setting no player was told about. The README, all three
+  install guides and the launcher's How-to-use page now ask for the shortest
+  setting, under **Options → Interface**, alongside HUD scale 100%.
+
+  It is not a footnote. The duration decides how the feed *behaves*, not just
+  how long a line sits there: the game will not reprint a message that is
+  still on screen, so longer messages mean more real Town Centres go
+  unannounced - and the feed redisplays recent history whenever it has faded,
+  so longer messages also mean fewer fades and fewer echoes. Both failure
+  directions move at once, in opposite directions. Measured at the shortest
+  setting on the game that started all this: the Town Centre phrase's pixels
+  appear in **16 separate spans** for **2 real Town Centres**, and the feed
+  goes fully blank 38 times with gaps up to 19 seconds.
+
+  The other settings are **untested rather than known bad**, and the docs say
+  so in those words. Measuring each one, and detecting a wrong one during play
+  to warn about at the *next* start, is on the roadmap - the observation only
+  exists after a game has already been miscounted, so a log line would be no
+  use to anyone.
+
+### Measured, and not settled
+
+- **The two things the absence rule has to tell apart overlap.** Reading the
+  game's own clock off the frames rather than assuming a frame rate - the
+  first attempt assumed one and was out by nearly a factor of two -
+  detection flicker hides a line that is plainly on screen for **7 game
+  seconds**, while a genuinely new Town Centre line 16 seconds after the last
+  one leaves a gap of **8**. Seven and eight; no threshold splits those.
+  `REARM_SECONDS` is therefore set to 12, above both, which means the time
+  route almost never fires and the real work is done by the cooldown and the
+  blank-feed proof. The cost is a known undercount for Town Centres built
+  close together. Choosing better needs captures of exactly that, which is
+  what `tools/replay_notifications.py --sweep` exists to measure.
+- **The line finder was wrong at 1920x1080 in both directions, and it was the
+  last phantom.** Every position-based guard in the watcher depends on
+  `bands[-1]` meaning "the bottom line", so a miscount does not degrade the
+  reading - it renumbers every line and aims each guard at the wrong one.
+  Measured on frames whose feed content was read by eye: three visible lines
+  reported as **two**, because one 35-row band spanned two line slots; five
+  rendered lines reported as **four**, a 74-row band covering three; and
+  terrain showing through the translucent panel counted as text at y=8, y=123
+  and y=141, outside the feed altogether. All four now report their true
+  counts.
+
+  The cause was `MIN_LINE_INK`: a count of inked **columns**, multiplied by
+  the **HUD scale**. Wrong dimension - the number of columns follows the
+  panel's width, which follows the frame - so at 1080p the noise floor
+  dropped from 8 to 6 exactly where the panel is smaller and terrain speckle
+  relatively larger. It is now a fraction of the panel's own width, and every
+  row measurement is a fraction of the feed's line pitch (`28 * scale`,
+  measured 21 rows at 0.735 and 28 at 0.98).
+
+  Two things the finder never had at all:
+  **it now splits fused lines** at the valleys of the row-ink profile, which
+  is what stops an echo at the top of the stack being reported as one line up
+  from the bottom; and **it now checks the band is on the notification box.**
+  That box is drawn under the text, so a real line sits on near-black and
+  scenery does not. Measured per band across four capture runs, both skins and
+  both resolutions: real lines read **0.37-0.91** near-black, terrain and
+  panel edges **0.01-0.23**. The gate sits at 0.30. Checked against the case
+  most likely to break it - Anne_HK with the **Transparent UI** mod reads a
+  minimum of 0.37 and passes on every band, so that mod clears the border
+  artwork and not the feed's own box.
+
+  Net for that capture: the live run counted **4** Town Centre lines, the
+  released code counts **3**, and this counts **2**, which is the truth - at
+  one, two and three looks per frame alike.
+- **`queue.strip_extent` sized its capture from the Anne_HK cell whatever skin
+  was on screen.** Stock's slot row sits four reference pixels lower, so a
+  stock strip clipped the bottom of the queue's second row. Nothing has been
+  misread because of it - second rows are rare - but it would have lost slots
+  silently on a skin whose cells sat lower still.
+
+### Investigated and left alone
+
+- **`queue.MIN_EDGE_STEP` is not truncating the queue**, though four separate
+  measurements said it was. Cropping the disputed cells and looking at them
+  showed empty HUD background at 1440p and bare terrain at 1080p: the gate is
+  correct at both, and "recovering" those slots would have admitted scenery as
+  production. The statistics were circular - occupancy had been labelled by the
+  very reader under suspicion. Recorded in CLAUDE.md, because it is the same
+  cheap habit that found three earlier bugs and this time it prevented one.
+- **The believed Town Centre count still only ever rises.** It is a stuck
+  filter, which the project's own rules warn about, but every rule that would
+  retract a phantom also cancels the warning for a Town Centre that really is
+  idle - which is the whole point of the alert. The detector is fixed instead,
+  and the count's correctness now rests on it.
+
+**Loom reads a HUD up to 4.0x the reference size**, where it stopped at 2.0x
+before. Found by running Loom on a 4K screen under Parallels: at the game's own
+100% HUD scale the HUD measures ~2.6x, so Loom refused a HUD it reads perfectly
+well, and the only way to use it was to wind the in-game HUD scale down to 75%.
+
+### Fixed
+
+- **The 2.0x ceiling was a search limit, not a reading limit.** The comment
+  guarding it claimed reading up there was unsupported because "the width
+  constants stop holding". That was worth testing rather than believing, and it
+  is not true: over real capture frames upscaled to 2.25x, 2.64x, 2.99x and
+  3.74x, the villager count, the clock and the population all read *identically*
+  to the native-size read, on both skins. The two width constants it worried
+  about had already been fixed - `min_glyph_width` is capped and
+  `max_glyph_width` scales with the HUD.
+- **The search falls through to 2.0-4.0x only when the common range finds
+  nothing**, rather than sweeping one wider range. Measured on a 3840x2160
+  frame: the common sweep costs 110ms and a single 0.5-4.0 sweep costs 265ms, so
+  widening would charge every player 2.4x on acquisition to serve the few with a
+  huge HUD. The first attempt at this put the fallback inside `find_icon` and
+  measured what that cost: `identify_hud` tries every skin's template, so the
+  skin *not* on screen fell through every single time, and `wait_for_hud` runs
+  that twice a second while a player sits in a menu - a blank 4K frame went from
+  234ms to 500ms an attempt, against a docstring promising the slow case stays
+  under a third of one core. It lives in `reader.find_hud` now, on a one-in-four
+  cadence, and the idle loop is back to what it was.
+- **"HUD scale looks like ~68%" was reporting the wrong number.** That note
+  printed the anchor scale as if it were the in-game slider, and they are not the
+  same thing: the anchor scale is the HUD's size against a 2560x1440 reference,
+  so a 1920x1080 screen with the slider at 100% measures 0.74. Every 1080p player
+  was told they were at 74% and should go to 100%, which they already were. The
+  test fixtures prove it - `hud_1920x1080_100.png` is named for a slider at 100
+  and measures 0.68. Replaced with a note that states the size actually measured
+  and gives advice that can be acted on.
+- **The oversize note names the HUD scale slider first**, since that is what
+  fixes it, and derives its limit from the constant instead of the words "limit
+  2.0x", which would have started lying the moment this landed. The
+  resolution-mismatch cause it used to lead with is kept as one possibility - it
+  was the only explanation offered, and on the machine that prompted this it was
+  already correct and changing nothing.
+- **A new note when the HUD is very small** (under 0.6x), because that is the
+  direction that produces wrong numbers rather than no numbers - thin digits
+  misread, which is the failure the never-guess-a-reading rule exists for. It
+  says so and points at the slider. Advisory only; Loom still reads it.
+- **"a UI mod Loom has no templates for" is no longer said before the size
+  question has been asked**, so a merely-large HUD is not blamed on a mod for
+  the two seconds before the oversize search finds it.
+- **The batch-count numeral no longer hides the villager under it** (issue #9).
+  The count is painted across the portrait, and template matching was reading
+  it as part of the picture. Male villagers lost worst, exactly as reported:
+  the female icon is pale clothing with strong structure of its own, while the
+  male is a dark low-contrast torso, so a bright digit laid over it is a much
+  larger share of what the correlation actually sees. Measured on two cells
+  from a real 1080p game - a Town Centre training villagers in both -
+  villager_male scored 0.515 and lost to `wheelbarrow` on 0.533, and scored
+  0.531 and lost to `dragon_ship` on 0.539. Beaten by a hundredth, out of five
+  hundred templates. The winner was then thrown out by the tech gate, the slot
+  read as no identity at all, and production.py counted no Town Centre work:
+  **TC IDLE while a villager was being trained.** With the numeral removed the
+  same two cells score 0.87 and 0.95 and win outright.
+
+  Removed with a white top-hat rather than a brightness threshold, and that is
+  the point: the existing numeral mask asks "is this pixel bright?", which a
+  green progress wash defeats - it lifts digit and portrait together, and the
+  mask came back **empty on every washed cell**. A top-hat asks "does this
+  stand out from its own surroundings?", which a wash cannot take away. The
+  result is filtered to digit-shaped components, so a cell with no numeral is
+  returned untouched rather than having real detail erased - only the cell is
+  cleaned, never the template, and that asymmetry would cost more than the
+  numeral did. Across the whole capture the mean identity score rose from
+  0.651 to 0.811 and unknown slots fell from 13 to 7.
+
+  Tints are untouched by that change. Which washes mean "producing" stays
+  production.py's decision and is deliberately not the queue reader's business.
+- **Loom, defeated by Loom** (issue #9, second cause). The same spurious TC
+  IDLE had a second, unrelated mechanism, found in the same game: the Loom
+  technology's queue icon is a red-and-gold woven tartan, and its own colours
+  score 0.28-0.31 on the "is this an amber wash" test against a bar sitting at
+  0.30. It straddled the threshold and flapped amber/untinted frame to frame -
+  and amber means "waiting behind something, producing nothing", so a Town
+  Centre researching Loom was reported idle while it worked.
+
+  The bar was 0.30 because bare skin tops out at 0.18, and skin was the only
+  thing it had ever been measured against; nobody had asked what the *icons*
+  score. Re-measured over every queue fixture: a real amber cell reads 0.76 at
+  its faintest (0.762, 0.878, 0.880, 0.971) while the busiest warm artwork
+  reads 0.36. The bar now sits at 0.55, in the middle of that gap rather than
+  at the edge of one side.
+
+  This also explains the "first few seconds, before the green wash" part of the
+  report: as the wash spreads it replaces the warm weave and the amber score
+  falls away (0.31, 0.25, 0.20, 0.15, 0.04), so it stops tripping once enough
+  of the icon is green. It moves in the safe direction for the tint rule too -
+  the cells it changes are not washed at all, and untinted already counts as
+  producing, while a genuinely pop-capped cell keeps 0.21 of margin.
+
+- **Neither window scrolls sideways any more.** Dragging the launcher small
+  pushed its right-hand side into a horizontal scroll, which also clipped the
+  build list's own scrollbar; the build preview showed a horizontal bar at
+  every size it could be opened at (issue #8, item 5).
+
+  The launcher's scrolling column reported a **minimum width of 1108px against
+  a 560px window**, so the bar was arithmetic rather than a quirk. One cause
+  throughout: Qt reports a label's or a button's whole text width as its
+  minimum, and nothing in the window wrapped. The worst row was the one that
+  looks least guilty - the overlay controls at 1078px, being 838 of buttons
+  plus a 240px status label. Every row of controls now uses a new
+  `loom/flowlayout.py`, whose minimum is its *widest single child* rather than
+  the sum of them, and the captions word-wrap, whose minimum is the longest
+  *word* rather than the longest line. The column now asks for 490.
+
+  The preview's bar had its own cause, already found while answering issue #8:
+  the card is sized to exactly the viewport width, but the stack's margins had
+  never been set and so were the platform's 11px a side - the column always
+  wanted 22px more than it could have. That is the same fault as the clipped
+  right-hand edge of every card, seen from the other side.
+
+  With those fixed, the horizontal bar is switched off in both windows. That is
+  a guarantee rather than a preference: with everything able to reflow, a
+  horizontal bar could only mean this regressed, and content wider than a
+  viewport with no bar to reach it is not scrolled to, it is gone. The preview
+  therefore also gains a **minimum window size derived from its own constants**,
+  so a card at the smallest scale always still fits.
+- **The preview's cards are rescaled by the viewport, not by the window.** They
+  had always been driven by the window's resize event, which looks equivalent
+  and is not - the two do not change in lockstep. Measured: dragging to the new
+  330px minimum fired the window's event while the viewport still reported its
+  old 638px, the scale was computed from that, and nothing fired again once the
+  layout settled to 292. The cards stayed 612px wide inside a 292px viewport. A
+  latent bug the margin fix above turned into a visible one, since there is now
+  no scrollbar to reach what overflows.
+
+- **The build preview shows as much of the build as the window has room for**,
+  rather than always exactly four steps. The count follows the height, between
+  three and twelve. The step you are on stays SECOND from the top whatever the
+  count - a taller window buys more lookahead, not more history, because a
+  build order is a thing you are about to do.
+- **The cards carry where they sit in the build as a tint**: a breath of red on
+  the step behind you, a breath of green on the ones ahead. Deliberately close
+  to the plain background - it has to survive being read out of the corner of
+  an eye on a second monitor without the stack turning into a traffic light,
+  and the current card must stay the thing the eye lands on.
+- **Zoom buttons, top left.** The author's rule: `+` and `-` resize the cards
+  and nothing else, and resizing the window then leaves them alone - until the
+  window is too small for them, when they shrink to fit as they always did. So
+  a chosen size is a CEILING rather than a size, and `↺` hands the decision
+  back to the window.
+- **Arrow keys walk the build** - up and down, with Page Up/Down by a windowful
+  and Home/End to the ends. Dead while the overlay is following the game, like
+  the mouse already was: a key that quietly fought the game for the cursor
+  would be the "panel stopped following without saying so" failure in a second
+  window.
+- **One scrollbar, meaning "where am I in the build".** There were two answers
+  to that question and they disagreed: the scroll area owned a bar whose range
+  was the four-card stack, while the wheel walked the whole build. So the bar
+  reached its end and stopped while the wheel kept going, its thumb never
+  matched how much build was left, and its arrows moved a few pixels where the
+  wheel moved a step. All three were reported separately (issue #8, items 1-3)
+  and they were one bug. The card count now follows the window's height, so the
+  stack always fits and the scroll area has nothing of its own to scroll.
+- **A maximised window no longer draws poster-sized cards** (issue #8, item 6).
+  Automatic fitting spends the whole width, and the 3.0 ceiling meant a 1600px
+  window drew one card 1530px wide and 360 tall. At 2.0 the same window shows
+  more of the build at a size still comfortably large, and the zoom buttons
+  cover anyone who wants otherwise.
+
+  The empty cards at the start and end of a build stay (issue #8, item 7).
+  They are deliberate - they keep the stack's shape instead of letting it jump
+  at the ends - and confirmed as wanted.
+
+### Added
+
+- **The build preview can carry the overlay's alerts**, so a second monitor can
+  be the place you play from. Tick **Alerts in preview** and the same TC IDLE
+  and HOUSE SOON bands appear under the cards, in the same colours, flashing at
+  the same rate - imported from the overlay rather than copied, because two
+  windows warning about the same thing in two different reds is how a player
+  learns to trust neither.
+
+  The alerts ride the statefeed rather than being worked out again. The policy
+  behind them is thresholds, hysteresis and the player's own settings, and a
+  second implementation of it would drift from the first the day any of those
+  changed. One producer decides and everyone watching agrees by construction.
+
+  Deliberately **separate from Hide overlay**, which already existed: two
+  controls for two ideas. Warnings in both windows while you try it out, the
+  preview alone with the panel hidden, or the panel hidden and the preview left
+  as a quiet reference - a single combined switch would have made "hidden" and
+  "warns me" the same decision, and they are not.
+
+  The bands are hidden and cost no height when there is nothing to say, and
+  they clear the moment the overlay stops following a game - an alert is a
+  statement about a match in progress, and one held on screen after the game
+  went away is the stale-reading failure in a new window.
+
+- **The launcher reopens where you left it.** It never did on a
+  multi-monitor desk, and the position was being saved correctly the whole
+  time - the live config held `launcher_position = [2811, -236]`, which is on
+  the second monitor. `fit_to_screen` then clamped it against
+  `self.screen()`, and a window that has not been shown yet reports the
+  PRIMARY screen as its own, so the saved spot was squashed into the primary
+  display's work area and came back as `(1359, 0)`. The launcher walked back
+  across the desk on every launch, which looks exactly like a position that
+  was never saved.
+
+  Clamping was the wrong question. The right one is weaker and already
+  written down: *is a meaningful amount of this window on ANY screen?* - the
+  rule the overlay panel has always used for its own saved spot. It now lives
+  in `loom/placement.py` where the launcher can reach it, since the launcher
+  must never import `loom_overlay`. A position that lands anywhere is believed
+  exactly as saved; one that lands nowhere falls back to the default and says
+  so. The build preview had the opposite half of the same bug - it never
+  clamped at all, so it remembered a second monitor correctly and was stranded
+  off the desktop when that monitor went away.
+- **The preview's two switches live in the preview.** *Alerts here* moved out
+  of the launcher: reaching across to another screen to turn on alerts in the
+  window you are looking at was the wrong shape. It sits in the header with
+  the zoom buttons, which now wrap when the window is narrow - so at the 348px
+  minimum the controls take one line and the *manual* warning takes another,
+  exactly when it most wants to be noticed.
+
+  The chip that used to say "browsing - click a step or scroll" now says
+  nothing, which is what freed the space. Its other two states stay: "manual"
+  is the panel telling you it has stopped following the game, which CLAUDE.md
+  requires it never do quietly, and this window must not contradict the panel
+  about it.
+
+### Added
+
+- **"No overlay" in the build preview**, remembered, for anyone who would
+  rather play from a second monitor. The panel does not appear when you press
+  Start overlay and stays away until the box is unticked; Loom still reads the
+  game, still records the match and still feeds the preview. With *Alerts
+  here* beside it, Loom lives entirely on the other screen and the game
+  carries none of it.
+
+  A PREFERENCE about how the overlay starts, deliberately not the same thing
+  as whether it is hidden right now. The Hide overlay button and Ctrl+Shift+0
+  stay a this-session toggle and are never written down, so a mid-match peek
+  cannot quietly change what happens tomorrow. `loom_overlay` reads the
+  preference itself and begins with the panel unshown, announcing it on the
+  statefeed like any other hide - the overlay owns that state and reports it
+  upward, which is what stops the button and the hotkey drifting apart.
+  Demo and placement modes ignore it: pressing *Overlay demo* or *Place
+  overlay* is asking to look at the panel.
+
+- **A held step says how long it is held for**, in both windows: "manual ·
+  resuming in 7s" rather than "resuming shortly". The seconds have been
+  available since the hold was written - `follow.seconds_left` was there and
+  tested and simply never wired to anything, because the comment beside it
+  argued a ticking number in the corner of a game would be a distraction.
+  Living with it said otherwise: "shortly" leaves you watching the panel
+  wondering whether it has stuck.
+- **The build preview knew about the hold at all.** It reported "following
+  game" for the whole hold, which is the opposite of what the panel said for
+  those seconds - the one thing these two windows must never do. It now
+  carries the same wording and the same countdown, off the same clock: the
+  seconds ride the statefeed rather than each window keeping a deadline of
+  its own, which would drift apart within a match.
+
+- **The hotkey boxes line up again.** Every field started wherever its own
+  caption happened to end, so no two were the same width - collateral from
+  dropping the fixed 150px caption width that was stopping the settings column
+  from shrinking. They share a grid now, so the captions are one column and
+  the fields another and they align by construction rather than by everyone
+  agreeing to be the same size. The bindings are right-aligned, because they
+  all share a "Ctrl+Shift+" prefix and differ in the last character - ending
+  them at the same place puts the part that varies in one column. The hold
+  spinbox joins the same grid, so its caption lines up too.
+
 ## 1.0.3 — 2026-08-20
 
 **Loom runs on Windows 10.** It did not, and the reason was a cosmetic

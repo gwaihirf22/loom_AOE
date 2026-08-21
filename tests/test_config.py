@@ -178,6 +178,32 @@ def test_launcher_position_defaults_to_none():
     assert config.launcher_position() is None
 
 
+def test_preview_alerts_defaults_off_and_roundtrips():
+    """Off by default: the preview has been a quiet browser its whole life,
+    and a flashing band nobody asked for is a poor surprise."""
+    assert config.preview_alerts() is False
+    config.set_preview_alerts(True)
+    assert config.preview_alerts() is True
+
+
+def test_overlay_disabled_defaults_off_and_roundtrips():
+    """A PREFERENCE about how the overlay starts, which is deliberately not
+    the same thing as whether it is hidden right now - the Hide button and
+    the hotkey stay a this-session toggle and are never written here."""
+    assert config.overlay_disabled() is False
+    config.set_overlay_disabled(True)
+    assert config.overlay_disabled() is True
+
+
+@pytest.mark.parametrize("getter", [config.preview_alerts,
+                                    config.overlay_disabled])
+def test_garbage_leaves_both_switches_off(getter):
+    """Default-off polarity, like developer_mode: anything but a deliberate
+    True means off. A mangled settings file must not hide somebody's overlay."""
+    config.save({"preview_alerts": "yes please", "overlay_disabled": 1})
+    assert getter() is False
+
+
 def test_browser_position_defaults_to_none():
     # None means "never placed", which is the launcher's cue to put the
     # preview beside itself instead of letting the window manager drop it
@@ -449,3 +475,34 @@ def test_the_overlay_position_can_be_forgotten():
 def test_forgetting_an_unset_position_is_not_an_error():
     config.clear_overlay_offset()
     assert config.overlay_offset() is None
+
+
+def test_hiding_the_panel_is_the_overlays_own_key():
+    """It must be registered by the overlay, not the launcher: the launcher
+    holds its key for its whole session, and a combination may be
+    registered by exactly one process. Getting this partition wrong prints
+    'already in use' on every overlay start."""
+    assert "toggle_hidden" in config.OVERLAY_HOTKEY_ACTIONS
+    assert "toggle_hidden" not in config.LAUNCHER_HOTKEY_ACTIONS
+
+
+def test_every_default_binding_is_usable_and_unique():
+    """A default that does not parse, or that collides with another
+    default, would ship as a key that silently does nothing."""
+    from loom.hotkeys import keyspec
+
+    bindings = config.DEFAULT_HOTKEYS
+    for action, binding in bindings.items():
+        assert keyspec.problem(binding) is None, \
+            f"{action} ships an unusable default: {binding!r}"
+    assert keyspec.conflicts(bindings) == [], \
+        "two actions ship on the same combination"
+
+
+def test_the_hide_key_has_a_modifier_like_every_other_one():
+    """The load-bearing rule: a bare key would be taken from the game."""
+    from loom.hotkeys import keyspec
+
+    spec = keyspec.parse(config.DEFAULT_HOTKEYS["toggle_hidden"])
+    assert spec.modifiers, "a global hotkey without a modifier is a bug"
+    assert spec.key == "0"

@@ -138,6 +138,29 @@ def test_manual_still_says_so_with_no_key_to_name():
     assert "not following" in text
 
 
+def test_a_hold_says_how_many_seconds_are_left():
+    """"Resuming shortly" leaves you watching the panel wondering whether it
+    has stuck. A number answers that at a glance, and both windows read it
+    from the same clock so they cannot disagree about it."""
+    from loom import follow
+    from loom.overlay import describe_follow
+
+    text, _ = describe_follow(follow.HOLDING, "Ctrl+Shift+R", seconds_left=7)
+
+    assert "7" in text
+
+
+def test_a_hold_with_no_number_still_says_something():
+    """The seconds ride the statefeed, and a payload from an older overlay
+    would not carry them. Saying nothing at all there would leave the panel
+    claiming to follow a game it is not following."""
+    from loom import follow
+    from loom.overlay import describe_follow
+
+    assert describe_follow(follow.HOLDING, "Ctrl+Shift+R")[0]
+    assert describe_follow(follow.HOLDING, "Ctrl+Shift+R", seconds_left=0)[0]
+
+
 def test_holding_is_quieter_than_manual():
     """A hold fixes itself in seconds; shouting about it would train the
     player to ignore the notice that matters."""

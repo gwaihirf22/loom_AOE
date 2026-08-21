@@ -24,14 +24,16 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont, QPixmap
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
-                             QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+                             QFrame, QGridLayout, QGroupBox,
+                             QHBoxLayout,
                              QLabel, QLineEdit, QListWidget, QListWidgetItem,
                              QMessageBox, QPlainTextEdit, QPushButton,
                              QScrollArea, QSlider, QSpinBox, QTabWidget,
                              QVBoxLayout, QWidget)
 
 from . import (apm, buildcheck, config, entry, hotkeys, overlay, paths,
-               statefeed)
+               placement, statefeed)
+from .flowlayout import flow_row
 from .hotkeys import keyspec
 from . import __version__ as loom_version
 from .about import AboutWindow
@@ -113,10 +115,6 @@ SETTINGS_TABS = [
 # What the developer tab is called when it is present.
 DEV_TAB_LABEL = "Developer tools"
 
-# How many columns the developer buttons wrap into. Six across one row needed
-# a window 1100px wide before the labels stopped eliding.
-DEV_BUTTON_COLUMNS = 3
-
 # The launcher's size on a screen with room for it, and the smallest it may
 # be dragged to. Below the minimum the group boxes start eliding their own
 # captions, and a scroll area cannot help with width the way it helps with
@@ -128,6 +126,24 @@ MINIMUM_SIZE = (560, 380)
 # geometry to config.json. Saving per pixel of a drag would hammer the file;
 # this is the same debounce loom/browser.py uses for the preview window.
 SAVE_GEOMETRY_AFTER_MS = 1000
+
+
+def overlay_status_text(running, hidden=False):
+    """What the launcher says the overlay is doing.
+
+    Pure, like beside and fitted_size below, so the wording is testable
+    without building a window - which is how everything else in this
+    module's suite is checked.
+
+    "hidden" rather than "running, hidden": hiding only means anything to an
+    overlay that IS running, and the Stop button staying enabled beside it
+    already says the process is alive. The key that brings it back is not
+    named here because the button next to this label does the same job and
+    cannot be forgotten or rebound out from under the player.
+    """
+    if not running:
+        return "overlay: not running"
+    return "overlay: hidden" if hidden else "overlay: running"
 
 
 def fitted_size(preferred, minimum, area):
@@ -596,6 +612,7 @@ def _next_launch_hint():
     """The one non-obvious fact about every setting box: a running overlay
     keeps the settings it started with."""
     hint = QLabel("Changes apply the next time the overlay starts.")
+    hint.setWordWrap(True)
     hint.setStyleSheet("color: gray;")
     return hint
 
@@ -627,12 +644,11 @@ class AlertSettingsBox(QGroupBox):
         self.soften.valueChanged.connect(self._save_limits)
         self.silence.valueChanged.connect(self._save_limits)
 
-        taper = QHBoxLayout()
-        taper.addWidget(QLabel("Idle-TC alert softens at"))
-        taper.addWidget(self.soften)
-        taper.addWidget(QLabel("villagers, silences at"))
-        taper.addWidget(self.silence)
-        taper.addStretch()
+        # Wrapping, like every other row of controls in this window: a
+        # sentence with spinboxes in it is the widest thing in the Alerts box
+        # and reported a 792px minimum, which the launcher cannot honour.
+        taper = flow_row([QLabel("Idle-TC alert softens at"), self.soften,
+                           QLabel("villagers, silences at"), self.silence])
 
         # The pre-emptive HOUSE SOON threshold: how much pop space remaining
         # should raise the warning. A boom eats more per house than a
@@ -645,11 +661,8 @@ class AlertSettingsBox(QGroupBox):
             " raise it if you keep getting housed anyway.")
         self.headroom.valueChanged.connect(config.set_house_headroom)
 
-        house = QHBoxLayout()
-        house.addWidget(QLabel("HOUSE SOON warns at"))
-        house.addWidget(self.headroom)
-        house.addWidget(QLabel("pop space left"))
-        house.addStretch()
+        house = flow_row([QLabel("HOUSE SOON warns at"), self.headroom,
+                           QLabel("pop space left")])
 
         toggles = config.alert_toggles()
         self.checkboxes = {}
@@ -664,7 +677,7 @@ class AlertSettingsBox(QGroupBox):
              "Alert just BEFORE hitting the pop cap, while a house can"
              " still prevent the stall."),
         ]
-        boxes = QHBoxLayout()
+        made = []
         for name, text, tip in labels:
             box = QCheckBox(text)
             box.setChecked(toggles[name])
@@ -675,13 +688,13 @@ class AlertSettingsBox(QGroupBox):
                 lambda checked, name=name:
                 config.set_alert_toggle(name, checked))
             self.checkboxes[name] = box
-            boxes.addWidget(box)
-        boxes.addStretch()
+            made.append(box)
+        boxes = flow_row(made)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(taper)
-        layout.addLayout(house)
-        layout.addLayout(boxes)
+        layout.addWidget(taper)
+        layout.addWidget(house)
+        layout.addWidget(boxes)
         layout.addWidget(_next_launch_hint())
 
     def _save_limits(self):
@@ -809,9 +822,13 @@ class OverlayTransparencyBox(QGroupBox):
         slider.valueChanged.connect(changed)
 
         caption_label = QLabel(caption)
-        caption_label.setMinimumWidth(90)
+        # Wrapped rather than pinned to a width. A wrapped label's minimum is
+        # its longest WORD, not its longest line, and that is what lets the
+        # settings column shrink instead of forcing a sideways scroll.
+        caption_label.setWordWrap(True)
         caption_label.setToolTip(tip)
         hint = QLabel(scale_hint)
+        hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
 
         row = QHBoxLayout()
@@ -847,6 +864,12 @@ class HotkeysBox(QGroupBox):
                           " again. Unlike the two step keys this does not"
                           " time out - the panel says MANUAL until you press"
                           " it again."),
+        "toggle_hidden": ("Hide / show the panel",
+                          "Take the overlay off the screen without stopping"
+                          " it, and bring it back. Loom keeps reading the"
+                          " game, recording the match and counting APM the"
+                          " whole time - only the window goes away. The"
+                          " launcher's Hide button does the same thing."),
         "start_stop_overlay": (
             "Start / stop overlay",
             "One key that does what the Start and Stop buttons do, so the"
@@ -878,8 +901,16 @@ class HotkeysBox(QGroupBox):
 
         bindings = config.hotkeys()
         self.fields = {}
-        rows = QVBoxLayout()
-        for action in config.HOTKEY_ACTIONS:
+        # A grid, so the captions share one column and the fields share
+        # another. They were a stack of separate rows, which meant every
+        # field started wherever its own caption happened to end and no two
+        # were the same width - fine while the captions were pinned to a
+        # fixed 150px, ragged the moment that was dropped so the settings
+        # column could shrink. A grid aligns them by construction, and still
+        # lets the captions wrap when the window is narrow.
+        rows = QGridLayout()
+        rows.setColumnStretch(1, 1)
+        for line, action in enumerate(config.HOTKEY_ACTIONS):
             label, tip = self.LABELS[action]
             field = QLineEdit(bindings[action])
             field.setPlaceholderText("(no key)")
@@ -889,16 +920,17 @@ class HotkeysBox(QGroupBox):
                 f" game.")
             # name=action for the same reason the alert checkboxes need it:
             # without it every lambda closes over the last loop variable.
+            # Right-aligned: the bindings share a "Ctrl+Shift+" prefix and
+            # differ in the last character, so ending them at the same place
+            # puts the part that actually varies in one column.
+            field.setAlignment(Qt.AlignmentFlag.AlignRight)
             field.textChanged.connect(
                 lambda text, name=action: self._save(name, text))
             self.fields[action] = field
 
-            row = QHBoxLayout()
             caption = QLabel(label)
-            caption.setMinimumWidth(150)
-            row.addWidget(caption)
-            row.addWidget(field)
-            rows.addLayout(row)
+            rows.addWidget(caption, line, 0)
+            rows.addWidget(field, line, 1)
 
         self.hold = QSpinBox()
         low, high = config.MANUAL_HOLD_BOUNDS
@@ -912,10 +944,13 @@ class HotkeysBox(QGroupBox):
             " lasts.")
         self.hold.valueChanged.connect(config.set_manual_hold_seconds)
 
-        hold_row = QHBoxLayout()
-        hold_row.addWidget(QLabel("A step key holds sync off for"))
-        hold_row.addWidget(self.hold)
-        hold_row.addStretch()
+        hold_caption = QLabel("A step key holds sync off for")
+        hold_line = len(config.HOTKEY_ACTIONS)
+        rows.addWidget(hold_caption, hold_line, 0)
+        # Left in its column rather than stretched across it: a spinbox as
+        # wide as a hotkey field would look like somewhere to type a binding.
+        rows.addWidget(self.hold, hold_line, 1,
+                       alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.warning = QLabel("")
         self.warning.setWordWrap(True)
@@ -924,7 +959,6 @@ class HotkeysBox(QGroupBox):
         layout = QVBoxLayout(self)
         layout.addWidget(self.enabled)
         layout.addLayout(rows)
-        layout.addLayout(hold_row)
         layout.addWidget(self.warning)
         if not hotkeys.available():
             unsupported = QLabel(
@@ -1005,11 +1039,12 @@ class DevPanel(QGroupBox):
             "Which synthetic match Coach simulate replays: on pace, running"
             " late, or stalling out.")
 
-        # A grid, not a row. Six buttons across one line needed a window
-        # 1100px wide before the labels stopped eliding, and the launcher can
-        # now be dragged down to 560.
+        # A wrapping row. This was a fixed three-column grid, which is the
+        # same idea guessed in advance: three columns is right at one width
+        # and wrong at every other. The flow layout picks the number of rows
+        # from the width it is actually given.
         self.buttons = {}
-        buttons = QGridLayout()
+        made = []
         for index, (label, prefix, build_args, tip) in enumerate(DEV_COMMANDS):
             button = QPushButton(label)
             runnable = entry.can_run(build_args("fast_castle", "perfect"))
@@ -1019,9 +1054,9 @@ class DevPanel(QGroupBox):
             button.clicked.connect(
                 lambda _checked, prefix=prefix, build_args=build_args:
                 run_command(prefix, build_args))
-            buttons.addWidget(button, index // DEV_BUTTON_COLUMNS,
-                              index % DEV_BUTTON_COLUMNS)
+            made.append(button)
             self.buttons[label] = button
+        buttons = flow_row(made)
 
         stop = QPushButton("Stop task")
         stop.setToolTip("Terminate whichever developer task is running.")
@@ -1034,7 +1069,7 @@ class DevPanel(QGroupBox):
         row.addWidget(stop)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(buttons)
+        layout.addWidget(buttons)
         layout.addLayout(row)
 
 
@@ -1108,13 +1143,20 @@ class LauncherWindow(QWidget):
             " spot (top right, under the game's bar). The rescue for a"
             " position that ended up off the screen.")
         self.reset_place_button.clicked.connect(self.reset_overlay_position)
-        controls = QHBoxLayout()
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.stop_button)
-        controls.addWidget(self.place_button)
-        controls.addWidget(self.reset_place_button)
-        controls.addWidget(self.status)
-        controls.addStretch()
+        self.hide_button = QPushButton("Hide overlay")
+        self.hide_button.setToolTip(
+            "Take the panel off the screen without stopping it. Loom keeps"
+            " reading the game, keeps recording the match and keeps counting"
+            " APM - only the window goes away. The overlay's own hotkey does"
+            " the same thing without alt-tabbing out here.")
+        self.hide_button.clicked.connect(self.toggle_overlay_hidden)
+        # A wrapping row, not a fixed one. Six controls side by side reported
+        # a minimum width of 1078px - 838 of buttons plus a 240px status
+        # label - against a window that can be dragged to 560, so the launcher
+        # could not honour its own minimum without scrolling sideways.
+        controls = flow_row([self.start_button, self.stop_button,
+                              self.hide_button, self.place_button,
+                              self.reset_place_button, self.status])
 
         # Developer mode: a persisted checkbox revealing the tools panel.
         self.dev_toggle = QCheckBox("Developer mode")
@@ -1138,6 +1180,25 @@ class LauncherWindow(QWidget):
         self.browser_toggle.toggled.connect(self._set_build_browser)
         self.browser.closed.connect(
             lambda: self.browser_toggle.setChecked(False))
+
+        # Alerts in the preview, deliberately SEPARATE from hiding the
+        # overlay. Two controls for two ideas, so a desk can be set up
+        # whichever way suits it: warnings in both windows while trying it
+        # out, the preview alone on a second monitor with the panel hidden,
+        # or the panel hidden and the preview left as a quiet reference. One
+        # combined switch would have made "hidden" and "warns me" the same
+        # decision, and they are not.
+        # Alerts and "no overlay" are the preview's own switches now - they
+        # belong in the window they are about rather than on whichever screen
+        # the launcher happens to be on. Only the overlay-disabled one comes
+        # back here, because only the launcher owns the overlay process.
+        self.browser.set_show_alerts(config.preview_alerts())
+        self.browser.overlay_disabled_changed.connect(
+            self._apply_overlay_disabled)
+        # What the overlay last said about its own panel, so a preference
+        # change can tell whether anything actually needs doing.
+        self._overlay_hidden = False
+
         if config.build_browser():
             self._show_browser()
 
@@ -1166,12 +1227,8 @@ class LauncherWindow(QWidget):
             "Which HUD mods Loom works with, and how to set it up.")
         self.about_button.clicked.connect(self._open_about)
 
-        toggles = QHBoxLayout()
-        toggles.addWidget(self.dev_toggle)
-        toggles.addWidget(self.browser_toggle)
-        toggles.addWidget(self.apm_toggle)
-        toggles.addWidget(self.stats_button)
-        toggles.addStretch()
+        toggles = flow_row([self.dev_toggle, self.browser_toggle,
+                             self.apm_toggle, self.stats_button])
 
         # How to use sits alone at the TOP RIGHT, in blue - the one control
         # a lost new player needs, put where lost people look and coloured
@@ -1238,9 +1295,9 @@ class LauncherWindow(QWidget):
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.picker)
-        layout.addLayout(controls)
+        layout.addWidget(controls)
         layout.addWidget(self.tabs)
-        layout.addLayout(toggles)
+        layout.addWidget(toggles)
         layout.addWidget(self.output, stretch=1)
 
         scroll = QScrollArea()
@@ -1250,6 +1307,15 @@ class LauncherWindow(QWidget):
         # margin of nothing beside them.
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Vertical only, and that is a promise rather than a preference.
+        # Sideways scrolling put the right-hand side of the window out of
+        # reach and clipped the build list's own scrollbar on the way. Every
+        # row of controls in here wraps now and every caption word-wraps, so
+        # the column's minimum width is 490 against a 560 window - a
+        # horizontal bar could only mean that stopped being true, and a test
+        # holds the number.
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         outer = QVBoxLayout(self)
         outer.addLayout(header)
@@ -1295,6 +1361,26 @@ class LauncherWindow(QWidget):
         remembered = config.launcher_position()
         if remembered is None:
             return
+
+        # Believed if it lands on ANY screen, not clamped onto one.
+        #
+        # Clamping needs a screen to clamp against, and this picked the wrong
+        # one: a window that has not been shown yet reports the PRIMARY screen
+        # as its own, so a position saved on a second monitor was squashed
+        # into the primary screen's work area and the launcher walked back
+        # across the desk on every launch. Measured on a two-monitor desk - a
+        # saved (2811, -236) came back as (1359, 0), which looks exactly like
+        # the position was never saved at all.
+        #
+        # The weaker question is the right one, and loom/placement.py is the
+        # same rule the overlay panel has always used for its own saved spot.
+        screens = placement.screen_rects(QApplication.instance())
+        if placement.visible_on(screens, *remembered, width, height):
+            self.move(*remembered)
+            return
+
+        print(f"[launcher] the saved window position {remembered} is off "
+              f"every screen - opening in the default spot instead")
         self.move(*clamped_position(remembered, (width, height), area))
 
     def _work_area(self):
@@ -1405,6 +1491,17 @@ class LauncherWindow(QWidget):
         if self.apm_process is not None:
             self.apm_process.stop()
 
+    def toggle_overlay_hidden(self):
+        """Ask the overlay to hide or come back.
+
+        Nothing about the button changes here. The overlay owns whether its
+        panel is up, and says so on the statefeed - so pressing this and
+        pressing the overlay's own hotkey take the same route and cannot
+        leave the button showing one thing while the panel does another.
+        """
+        if self.overlay_process is not None:
+            self.overlay_process.request_toggle_hidden()
+
     def reset_overlay_position(self):
         """Forget the saved overlay spot. Applies on the next overlay start,
         like every overlay setting."""
@@ -1468,15 +1565,24 @@ class LauncherWindow(QWidget):
         except (OSError, json.JSONDecodeError) as error:
             self.output.append_line(f"[launcher] could not add APM: {error}")
 
-    def _show_overlay_state(self, running):
+    def _show_overlay_state(self, running, hidden=False):
         # Disabling the irrelevant button is the status display doing double
         # duty: it also makes double-starts impossible.
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.place_button.setEnabled(not running)
         self.reset_place_button.setEnabled(not running)
-        self.status.setText("overlay: running" if running
-                            else "overlay: not running")
+        self.status.setText(overlay_status_text(running, hidden))
+
+        self.hide_button.setEnabled(running)
+        self.hide_button.setText("Show overlay" if hidden else "Hide overlay")
+        # Green while hidden, so the one button that leaves no trace on
+        # screen still says what it did. :enabled scoped like the others -
+        # a stopped overlay's button should read as unclickable, not as a
+        # colourful one that does nothing.
+        self.hide_button.setStyleSheet(
+            "QPushButton:enabled { background-color: #2e7d32; color: white; }"
+            if hidden else "")
 
     # ---- the dev slot --------------------------------------------------
 
@@ -1525,6 +1631,16 @@ class LauncherWindow(QWidget):
             self._apm_buckets.append((time.monotonic(),
                                       bucket.get("keys", 0),
                                       bucket.get("clicks", 0)))
+            return
+        if "hidden" in payload:
+            # The overlay saying its panel went away or came back, however
+            # it was asked. Told apart by key, the same way the APM payload
+            # is - and returning here matters: falling through would hand
+            # the browser a payload with no "usable" in it, which it reads
+            # as "no game", freeing a preview that is still following one.
+            self._overlay_hidden = bool(payload["hidden"])
+            self._show_overlay_state(running=True,
+                                     hidden=self._overlay_hidden)
             return
         # Overlay state: feed the preview, and remember the wall<->game
         # pairing that later places APM buckets on the game clock.
@@ -1578,6 +1694,23 @@ class LauncherWindow(QWidget):
         x = min(self.x() + offset, area.right() - (window.width() or 620))
         y = min(self.y() + offset, area.bottom() - (window.height() or 520))
         return max(area.left(), x), max(area.top(), y)
+
+    def _apply_overlay_disabled(self, disabled):
+        """The preview's "No overlay" box changed. Make it so, now.
+
+        The preference decides how the overlay STARTS, and loom_overlay reads
+        it for itself - but ticking a box and watching the panel stay put is
+        exactly the hassle this was meant to remove, so a session already
+        running is brought into line too.
+
+        Only when the two actually differ. The request is a TOGGLE, because
+        the overlay owns the hidden state and everyone else asks - so firing
+        it blindly at an overlay that is already hidden would show it.
+        """
+        if self.overlay_process is None or not self.overlay_process.is_running():
+            return
+        if bool(disabled) != self._overlay_hidden:
+            self.overlay_process.request_toggle_hidden()
 
     def _set_build_browser(self, enabled):
         config.set_build_browser(enabled)

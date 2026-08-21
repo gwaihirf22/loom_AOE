@@ -46,6 +46,13 @@ That replays a whole match on your desktop in about a minute.
   out which is on screen by itself. Another UI mod that replaces the
   resource-bar artwork needs its own profile; Loom says so rather than waiting
   silently.
+- **Notification duration at its shortest** (Options → Interface). Loom counts
+  Town Centres by reading the game's own `--Town Center Built--` line, and how
+  long a message lingers changes what the feed shows: the game will not
+  reprint a line that is still up, and it redisplays recent history after the
+  feed fades. Every timing Loom uses for this was measured at the shortest
+  setting; the others are untested rather than known bad. The symptom if one
+  misbehaves is an idle-TC warning for a Town Centre you do not have.
 
 Two mods are worth installing alongside Loom — recommended, not required:
 

@@ -17,11 +17,11 @@ The questions, in the order it answers them:
   2. Can the game's window be found, and by what? Feral's port is
      com.feralinteractive.ageofempires2, and a bundle id is exact where a
      window title is a guess.
-  3. What pixel scale comes back? This Mac's display is 2x, and Loom's anchor
-     search only looks between 0.5x and 2.0x. A native-resolution capture
-     therefore lands on the very edge of what anchor.py can find, which is the
-     single biggest risk in the port. --native exists to see that failure
-     happen rather than take my word for it.
+  3. What pixel scale comes back? This Mac's display is 2x. Loom's anchor
+     search looks between 0.5x and 2.0x and falls through to 4.0x when that
+     finds nothing, so a native-resolution capture is comfortably inside it -
+     but it sat on the very edge when this probe was written, and --native
+     exists to see the answer rather than take my word for it.
   4. Do the existing Linux-cut templates still match the Feral HUD, and how
      well? That decides whether templates have to be re-cut.
 

@@ -39,11 +39,18 @@ SCALE_TOLERANCE = anchor.REFINE_RADIUS
 POSITION_TOLERANCE = 2
 
 
-def naive_find_icon(frame_bgr, template_gray):
-    """The pre-optimisation search: full resolution, whole strip, both passes."""
+def naive_find_icon(frame_bgr, template_gray, scales=None):
+    """The pre-optimisation search: full resolution, whole strip, both passes.
+
+    scales says which range to sweep, so the same reference can check the
+    extended one without charging every in-range fixture for 41 scales it
+    will never match.
+    """
+    if scales is None:
+        scales = anchor.COARSE_SCALES
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     area = gray[0:int(gray.shape[0] * anchor.SEARCH_HEIGHT_FRACTION), :]
-    coarse = anchor._best_over_scales(area, template_gray, anchor.COARSE_SCALES)
+    coarse = anchor._best_over_scales(area, template_gray, scales)
     if coarse is None:
         return None
     fine = np.linspace(coarse[3] - anchor.REFINE_RADIUS,
@@ -107,3 +114,75 @@ def test_a_badly_wrong_hint_still_finds_the_icon(template):
     # properly - but it must not confidently report the wrong place.
     if misled is not None and misled[0] >= 0.8:
         assert abs(misled[1] - truth[1]) <= POSITION_TOLERANCE
+
+
+# ---- the extended range ----------------------------------------------------
+#
+# 2.0 was a hard ceiling until a 4K screen met it: at the game's own 100% HUD
+# scale the HUD measures ~2.6x the reference, and Loom refused a HUD it reads
+# perfectly well. Measured over real frames upscaled to 2.25x / 2.64x / 2.99x /
+# 3.74x, villagers, clock and population all read identically to the native
+# read on both skins - so the ceiling was a search limit, not a reading one.
+#
+# The fixture is made here by upscaling rather than committed: a 4K PNG of a
+# HUD nobody can re-measure is weight without evidence.
+
+
+def test_a_hud_past_the_common_range_can_be_found_and_placed(template):
+    """The whole point of the change, over the path reader.find_hud uses:
+    one coarse discovery sweep, then find_icon with that as a near_scale.
+
+    Position matters as much as finding it - the clock band sits ~590
+    reference-pixels from the anchor, so a scale that is merely close puts the
+    clock read somewhere else entirely.
+    """
+    frame = cv2.imread(str(FRAMES[0]))
+    big = cv2.resize(frame, None, fx=3.5, fy=3.5, interpolation=cv2.INTER_CUBIC)
+
+    discovered = anchor.larger_icon_scale(big, template)
+    assert discovered is not None, "an oversize HUD was not discovered"
+    assert discovered > anchor.COARSE_SCALES[-1], "this fixture should be oversize"
+
+    placed = anchor.find_icon(big, template, near_scale=discovered)
+    assert placed is not None
+
+    slow = naive_find_icon(big, template, anchor.EXTENDED_SCALES)
+    assert abs(placed[3] - slow[3]) <= SCALE_TOLERANCE, "scale drifted"
+    assert abs(placed[1] - slow[1]) <= POSITION_TOLERANCE, "x drifted"
+    assert abs(placed[2] - slow[2]) <= POSITION_TOLERANCE, "y drifted"
+
+
+@pytest.mark.parametrize("path", FRAMES, ids=lambda p: p.name)
+def test_find_icon_never_sweeps_the_extended_range(template, path, monkeypatch):
+    """The performance promise, and the reason the extended sweep lives in
+    reader.find_hud rather than in here.
+
+    Folding it into find_icon was tried first and measured: identify_hud tries
+    every skin's template, so the skin NOT on screen fell through to the
+    extended sweep every single time, and wait_for_hud runs that twice a second
+    for as long as a player sits in a menu. A blank 4K frame went from 234ms to
+    500ms an attempt, against a docstring promising the slow case stays under a
+    third of one core. Nothing about a slower acquisition looks like a bug, so
+    only a test holds this.
+    """
+    swept = []
+    real = anchor._best_over_scales
+    monkeypatch.setattr(anchor, "_best_over_scales",
+                        lambda area, tmpl, scales: (
+                            swept.append(float(max(scales))) or
+                            real(area, tmpl, scales)))
+
+    anchor.find_icon(cv2.imread(str(path)), template)
+
+    ceiling = anchor.EXTENDED_SCALES[-1] * anchor.COARSE_DOWNSCALE
+    assert not any(abs(top - ceiling) < 1e-9 for top in swept), (
+        "find_icon swept the extended range; that cost belongs to the caller")
+
+
+def test_an_empty_frame_is_not_handed_a_confident_giant_match(template):
+    """Looking in a bigger range must not turn "nothing here" into a large
+    match. This is the never-guess-a-reading rule: no HUD has to stay no HUD,
+    or Loom hangs its whole read geometry off noise."""
+    blank = np.zeros((1080, 1920, 3), np.uint8)
+
+    assert anchor.larger_icon_scale(blank, template) is None

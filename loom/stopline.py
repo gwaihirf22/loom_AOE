@@ -1,12 +1,22 @@
 """
-Loom — asking a child to stop, as a line on its stdin.
+Loom — asking a child to do something, as a line on its stdin.
 
 The mirror image of statefeed: that module carries the overlay's state up to
-the launcher on stdout, and this one carries "please stop" back down on stdin.
+the launcher on stdout, and this one carries requests back down on stdin.
 Same pipe, already owned by the launcher, already open.
 
-Nothing but the sentinel stops a child. End-of-stream deliberately does not -
-read_until_stop explains what that cost when an earlier draft let it.
+Two things can be asked, each its own whole-line sentinel:
+
+    LOOM_STOP            stop, saving what you have
+    LOOM_TOGGLE_HIDDEN   take the panel off the screen, or put it back
+
+The module is still called stopline because stopping is what it exists for
+and what every hard-won paragraph below is about; hiding is a passenger on a
+channel that already worked. If a third request ever turns up, the honest
+move is to rename it rather than keep pretending.
+
+Nothing but the stop sentinel stops a child. End-of-stream deliberately does
+not - read_until_stop explains what that cost when an earlier draft let it.
 
 Why it has to exist. The launcher stopped children with QProcess::terminate,
 whose docstring in runner.py says "terminate() sends SIGTERM, which kills a
@@ -41,10 +51,12 @@ it always did.
 import sys
 import threading
 
-# The whole line, newline excluded. Unlike statefeed's sentinel this is not a
-# prefix with a payload after it - there is only one thing to say - so it is
-# compared whole and a line that merely starts with it is not a stop request.
+# The whole lines, newline excluded. Unlike statefeed's sentinel these are
+# not prefixes with a payload after them - each says one thing and nothing
+# else - so they are compared whole, and a line that merely starts with one
+# is not a request.
 SENTINEL = "LOOM_STOP"
+TOGGLE_HIDDEN_SENTINEL = "LOOM_TOGGLE_HIDDEN"
 
 
 def encode():
@@ -52,9 +64,26 @@ def encode():
     return (SENTINEL + "\n").encode("ascii")
 
 
+def encode_toggle_hidden():
+    """The exact bytes that ask the overlay to hide, or to come back.
+
+    A TOGGLE rather than separate hide and show requests, so that the panel
+    itself stays the only thing that knows whether it is on screen. The
+    launcher's button and the overlay's hotkey do the same thing to the same
+    state and cannot drift apart; what the button DISPLAYS comes back up the
+    statefeed afterwards.
+    """
+    return (TOGGLE_HIDDEN_SENTINEL + "\n").encode("ascii")
+
+
 def is_stop_line(line):
     """Is this line from stdin a stop request?"""
     return line.strip() == SENTINEL
+
+
+def is_toggle_hidden_line(line):
+    """Is this line from stdin a hide-or-show request?"""
+    return line.strip() == TOGGLE_HIDDEN_SENTINEL
 
 
 def quit_hint():
@@ -85,7 +114,7 @@ def quit_hint():
     return "press Stop in the Loom launcher to quit"
 
 
-def read_until_stop(stream, on_stop):
+def read_until_stop(stream, on_stop, on_toggle_hidden=None):
     """Read lines until a stop request arrives, then call on_stop once.
 
     Returns True if it stopped because it was asked to, False if the stream
@@ -107,15 +136,22 @@ def read_until_stop(stream, on_stop):
     where SIGTERM still arrives, and the launcher always sends the sentinel
     explicitly before closing the pipe.
 
-    Anything that is not the sentinel is ignored rather than an error.
-    Nothing else writes to a child's stdin today, and inventing a failure for
-    a line nobody sent would be another way to kill the overlay by accident.
+    Anything that is not a sentinel is ignored rather than an error. Only
+    the launcher writes to a child's stdin, and inventing a failure for a
+    line nobody sent would be another way to kill the overlay by accident.
+
+    on_toggle_hidden, if given, is called for the hide request and reading
+    CARRIES ON - it is a request about the window, not about living or
+    dying. Like on_stop it runs on the reader thread, so a caller with a Qt
+    event loop marshals it across itself.
     """
     try:
         for line in stream:
             if is_stop_line(line):
                 on_stop()
                 return True
+            if on_toggle_hidden is not None and is_toggle_hidden_line(line):
+                on_toggle_hidden()
     except (ValueError, OSError):
         # A closed or already-torn-down stdin. Not an error worth reporting
         # from a background thread nobody is watching, and not a reason to
@@ -124,18 +160,19 @@ def read_until_stop(stream, on_stop):
     return False
 
 
-def watch(on_stop, stream=None):
-    """Watch stdin for a stop request, on a daemon thread.
+def watch(on_stop, stream=None, on_toggle_hidden=None):
+    """Watch stdin for requests from the launcher, on a daemon thread.
 
     Daemon, so a child that exits for any other reason is never held open by
     this thread sitting in a blocking read.
 
-    on_stop is called on the reader thread. Callers with a Qt event loop must
-    marshal it across themselves - see the module docstring.
+    Both callbacks are called on the reader thread. Callers with a Qt event
+    loop must marshal them across themselves - see the module docstring.
     """
     thread = threading.Thread(
         target=read_until_stop,
         args=(sys.stdin if stream is None else stream, on_stop),
+        kwargs={"on_toggle_hidden": on_toggle_hidden},
         name="loom-stopline",
         daemon=True)
     thread.start()

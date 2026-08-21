@@ -23,7 +23,21 @@ while the panel says it is not. Compact keys because this rides a pipe once a
 second for a whole match:
 
     {"usable": true, "idx": 4, "mode": "following", "vills": 13, "t": 251,
-     "pace": -8, "res": {"food": 7, ...} | null, "pop": [14, 20] | null}
+     "pace": -8, "res": {"food": 7, ...} | null, "pop": [14, 20] | null,
+     "alerts": [["TC IDLE", "full"], ...], "hold": 7 | null}
+
+"hold" is how many seconds until automatic following resumes, while a step
+hotkey is holding it off, and null the rest of the time. It rides along for
+the same reason the alerts do: so the second window counts down from the same
+clock rather than starting a deadline of its own, which would drift.
+
+"alerts" is the overlay's own alert list, exactly as it draws it - the text
+and the severity from loom/alerts.py, most urgent first. It rides along so a
+second window can show the same warnings rather than working them out again
+from the numbers: the alert policy is full of thresholds, hysteresis and the
+player's own settings, and two implementations of it would drift apart on the
+day one of those changed. One producer decides; anyone watching agrees by
+construction.
 
 The APM counter borrows this same channel with a payload of its own,
 {"apm": {"wall": ..., "keys": ..., "clicks": ...}}, which the launcher tells

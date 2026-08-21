@@ -86,7 +86,8 @@ Two hard limits, both measured:
   clock.
 
 Validated only with the game at the display's native 4K. Rendering below it
-upscales the HUD past the anchor search's ceiling; Loom says so when it happens.
+upscales the HUD, which the anchor search should now reach; if it does not,
+Loom says so and names the HUD scale slider.
 
 → [Install guide](install-macos.md)
 

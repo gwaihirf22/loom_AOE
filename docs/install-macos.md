@@ -39,11 +39,15 @@ Without it, capture returns black rather than failing, which looks exactly like
 - **Windowed mode.** Not fullscreen: the overlay cannot appear above a
   fullscreen Space. This was measured against every window level and collection
   behaviour macOS offers.
-- **The game's resolution must be the display's native resolution.** Rendering
-  below it (1080p on a 4K screen) upscales the HUD past the anchor search's
-  ceiling. Loom prints a note naming this when it happens.
+- **Prefer the display's native resolution.** Rendering below it (1080p on a
+  4K screen) upscales the HUD to about 2.9×. The anchor search reaches 4.0×
+  so this should now work, but it has not been retested on a Mac; if the
+  overlay never finds the HUD, drop the in-game HUD scale a notch.
 - **HUD scale at 100%**, and the stock or Anne_HK Better UI HUD, as on every
   platform.
+- **Notification duration at its shortest** (Options → Interface), also as on
+  every platform. Loom counts Town Centres out of the game's own message feed,
+  and every timing it uses for that was measured at the shortest setting.
 - **Keep the game frontmost.** macOS only composites the front window, so
   backgrounding the game stops capture. Loom blanks rather than serving a
   frozen clock.

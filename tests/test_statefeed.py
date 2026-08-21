@@ -61,3 +61,24 @@ def test_not_usable_emits_once_then_resumes(capsys):
     assert len(lines) == 2
     assert statefeed.decode(lines[0]) == {"usable": False}
     assert statefeed.decode(lines[1]) == PAYLOAD
+
+
+def test_a_hidden_line_is_told_apart_by_its_key():
+    """The launcher discriminates payload kinds by key, not by any type
+    field - that is how the APM payload already works. A hidden line has to
+    be recognisable the same way, and must NOT look like a per-poll
+    reading: the browser treats a payload with no "usable" as "no game" and
+    would free a preview that is still following one."""
+    line = statefeed.encode({"hidden": True})
+    assert statefeed.is_state_line(line)
+
+    payload = statefeed.decode(line)
+    assert payload == {"hidden": True}
+    assert "apm" not in payload
+    assert "usable" not in payload
+
+
+def test_hidden_survives_both_ways_round():
+    for hidden in (True, False):
+        assert statefeed.decode(
+            statefeed.encode({"hidden": hidden})) == {"hidden": hidden}
