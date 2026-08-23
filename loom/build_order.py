@@ -69,7 +69,12 @@ def format_time(seconds):
 
 
 # Words that appear in icon file names but mean nothing to a player.
-ICON_NOISE_WORDS = {"de", "aoe2", "aoe2de", "icon"}
+#
+# "alpha" and "upg" are rendering and revision markers the icon libraries
+# leave on some files, and they were being read out loud: builds importing
+# @age/FeudalAgeIconDE_alpha.png@ printed "Feudal Age Alpha" on the panel,
+# and @barracks/ManAtArmsUpgDE.webp@ printed "Man At Arms Upg".
+ICON_NOISE_WORDS = {"de", "aoe2", "aoe2de", "icon", "alpha", "upg"}
 
 # The few names that do not tidy up into anything a player would recognize.
 ICON_ALIASES = {
@@ -95,7 +100,12 @@ def icon_to_words(token):
     """
     name = token.split("/")[-1]
     name = re.sub(r"\.[A-Za-z0-9]+$", "", name)          # drop the file extension
-    name = name.replace("_", " ")
+    # Hyphens separate words exactly as underscores do - the libraries use
+    # both, sometimes in the same file name. Without this,
+    # @unique_unit/ConquistadorIcon-DE.png@ stayed one unsplittable word and
+    # the noise filter below could not reach the "Icon" or the "DE" inside
+    # it, so the panel read "Conquistadoricon De".
+    name = name.replace("_", " ").replace("-", " ")
     name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)  # split CamelCase
 
     words = [w for w in name.split() if w.lower() not in ICON_NOISE_WORDS]
@@ -136,10 +146,21 @@ def parse_segments(text):
 def split_notes(notes):
     """Turn a list of note strings into (details, footnotes).
 
-    Build orders put the main instruction first and separate extra actions
-    with "|", so "Build 2 Houses | First 6 to Sheep" becomes a headline plus
-    one footnote. That gives the overlay something short to show large and the
-    rest to show small, without needing an extra field in the file.
+    Build orders separate the actions of one step with "|", so "Build 2
+    Houses | First 6 to Sheep" arrives as two pieces.
+
+    THE SPLIT IS NOT A RANKING, and this function's name says it is. That
+    was the original reading - "the main instruction first, extras after" -
+    and it is wrong about real builds. Measured across the thirteen shipped
+    ones (150 steps, 344 pieces): 38 steps lead with a piece that is not an
+    instruction at all but a heading ("Before Feudal Age", "In Castle Age"),
+    and 20 of the 58 age-up mentions sit in a LATER piece. So the front ends
+    were drawing a section label at 15pt bold and the age-up click - the most
+    consequential moment in the build - at 10pt grey underneath it.
+
+    `Step.items` is the honest shape and is what the overlay and the preview
+    draw. This stays because report.py, buildcheck.py and the coach ask
+    genuinely different questions of a step's text, none of them about size.
     """
     pieces = _note_pieces(notes)
     if not pieces:
@@ -208,7 +229,8 @@ def milestone_targets(build):
     return targets
 
 
-def extra_villagers(build, villagers, game_time):
+def extra_villagers(build, villagers, game_time, age=None,
+                    clicked=None):
     """How many villagers the player has made BEYOND the build's ask.
 
     This only counts during a HOLD: a stretch where the build repeats the
@@ -222,16 +244,49 @@ def extra_villagers(build, villagers, game_time):
     checkpoint's number before its timestamp arrives, and the first version
     of this function flagged exactly that - "+1 VILL" on every slightly
     -ahead build. Ahead is the pace meter's story, not this one's.
+
+    The second rule: more villagers than ANY step of the current age asks
+    for. The hold test alone missed a real surplus in a live game - a
+    player behind the clock, whose cursor had not reached the hold window
+    yet, at 18 villagers in a build whose Dark Age never asks past 17. The
+    ahead-of-schedule defense above does not apply there: the steps that
+    ask for more are all gated behind an age the crest says has not
+    arrived, so no amount of being ahead makes the count legitimate. Only
+    with an age reading - without one this would be a guess.
     """
     if villagers is None or game_time is None:
         return 0
-    active = build.active_step(villagers, game_time)
-    completed = build.completed_step(villagers, game_time)
-    if active is None or completed is None:
-        return 0
-    if active.villager_count != completed.villager_count:
-        return 0
-    return max(0, villagers - active.villager_count)
+    surplus = 0
+    active = build.active_step(villagers, game_time, age, clicked)
+    completed = build.completed_step(villagers, game_time, age, clicked)
+    if (active is not None and completed is not None
+            and active.villager_count == completed.villager_count):
+        surplus = max(0, villagers - active.villager_count)
+
+    if age is not None:
+        asks = [step.villager_count for step in build.steps
+                if step.age is not None and step.age <= age]
+        if asks:
+            surplus = max(surplus, villagers - max(asks))
+    return surplus
+
+
+def held_by_age(build, villagers, game_time, age, clicked=None):
+    """Is the age ceiling the ONLY thing holding the cursor back?
+
+    True exactly when villagers and the clock have both moved past steps
+    the crest says the player cannot be on yet. That is the moment the
+    build is waiting on an age-up and nothing else - which is when a
+    "click up" reminder is worth a band and any other time it is noise.
+
+    False when there is no crest reading: with no age the cursor is not
+    being held, and a reminder built on a missing reading would be a guess
+    wearing a reading's clothes.
+    """
+    if age is None or villagers is None or game_time is None:
+        return False
+    return (build.current_index(villagers, game_time)
+            > build.current_index(villagers, game_time, age, clicked))
 
 
 class Step:
@@ -245,11 +300,45 @@ class Step:
         resources = raw.get("resources") or {}
         self.villagers = {name: int(resources.get(name, 0)) for name in RESOURCE_NAMES}
 
-        self.details, self.footnotes = split_notes(raw.get("notes"))
-        # The same lines with their @icon@ tokens preserved, for front ends
-        # that can draw pictures. details/footnotes stay the words-only view.
-        self.details_segments, self.footnotes_segments = \
-            split_note_segments(raw.get("notes"))
+        # Every "|"-separated piece of the notes, as EQUAL items - the shape
+        # the front ends draw. See split_notes for why the first piece is not
+        # a headline; in a third of the shipped steps it is a section label
+        # with the real instructions beneath it.
+        #
+        # Two views of the same list, kept in lockstep by sharing
+        # _note_pieces: `items` is words only (the coach, the report, any
+        # front end with no picture library), `items_segments` keeps the
+        # @icon@ tokens so the overlay and the preview can draw the game's
+        # own artwork inline.
+        pieces = _note_pieces(raw.get("notes"))
+        self.items = [strip_icons(piece) for piece in pieces]
+        self.items_segments = [parse_segments(piece) for piece in pieces]
+
+    # ---- the old view of the same list ----------------------------------
+    #
+    # Properties rather than stored fields so there is exactly one list and
+    # it cannot drift. Everything that still asks in these terms is asking a
+    # question that has nothing to do with display size - report.py wants all
+    # the words of a step, buildcheck.py wants to know whether a step says
+    # anything at all, the coach lays out a terminal.
+
+    @property
+    def details(self):
+        """The step's first item, or "" for a step with no notes."""
+        return self.items[0] if self.items else ""
+
+    @property
+    def footnotes(self):
+        """Every item after the first."""
+        return self.items[1:]
+
+    @property
+    def details_segments(self):
+        return self.items_segments[0] if self.items_segments else []
+
+    @property
+    def footnotes_segments(self):
+        return self.items_segments[1:]
 
     def assigned_villagers(self):
         """How many villagers this step accounts for across all resources."""
@@ -294,18 +383,43 @@ class BuildOrder:
 
     # ---- where am I ----------------------------------------------------
 
-    def current_index(self, villager_count, game_time):
+    def current_index(self, villager_count, game_time, age=None,
+                      clicked=None):
         """Which step is the player on? Returns -1 before the first step.
 
-        Both villager_count and time only ever increase down the list, so
-        "steps reached by villagers" and "steps reached by time" are each a
-        prefix of the list. The current step is wherever the SHORTER of those
-        two prefixes ends.
+        villager_count, time and age each only ever increase down the list,
+        so "steps reached by villagers", "steps reached by time" and "steps
+        reached by age" are each a prefix of the list. The current step is
+        wherever the SHORTEST of those prefixes ends.
 
         That is what makes repeated villager counts work. A Fast Castle sits at
         22 villagers for three separate steps, because a Town Center cannot
         train villagers while researching an age. Villager count alone cannot
         tell those apart; adding the time constraint can.
+
+        `age` is the age read off the crest, or None when there is no
+        reading - and None means NO CEILING, because "I did not read it" is
+        not "you are not there yet". Where a reading exists it is the
+        strongest constraint of the three: a step that says "In Castle Age"
+        cannot be the current step while the crest shows Feudal, however
+        many villagers exist and however late the clock runs. Measured on a
+        real game: one accidental villager (23 against a build that never
+        asks past 22) exhausted the villager prefix, the build's ideal step
+        times ran ahead of the real age-ups, and the cursor walked to the
+        end of the build while the player was still in Feudal. The crest
+        read every transition that game; it was just never asked.
+
+        `clicked` is the highest age whose age-up click is proven
+        (AgeTracker.clicked_through), or None for no gate. The click-up is
+        PART of the last step of its age - "In Feudal: build Market...
+        click Castle Age" is one card, and it is not done until the click
+        happens. Without this the card vanished the moment its ideal time
+        passed: the player reached Feudal, and the panel showed the
+        Castle Age card while the market, the blacksmith and the click
+        were all still on their hands. A step is only gated when the NEXT
+        step's age is higher, so builds and ages without a boundary are
+        untouched, and reaching an age proves its click even when the bar
+        read was missed - the gate cannot stick.
         """
         reached = -1
         for index, step in enumerate(self.steps):
@@ -313,15 +427,71 @@ class BuildOrder:
                 break
             if step.time is not None and step.time > game_time:
                 break
+            if age is not None and step.age > age:
+                break
+            if clicked is not None and index + 1 < len(self.steps):
+                following = self.steps[index + 1]
+                if following.age > step.age and clicked < following.age:
+                    break
             reached = index
         return reached
 
-    def completed_step(self, villager_count, game_time):
+    def display_index(self, villager_count, game_time, age=None,
+                      clicked=None):
+        """Which step should be ON SCREEN. Not the same question.
+
+        current_index is the honest progression through the build, and it
+        is what anything judging PROGRESS must use. This is what to show,
+        and the age is allowed to move it forward.
+
+        Why it needs to. current_index takes the shorter of two prefixes,
+        so a player who is ahead of the build has exhausted the villager
+        one and the clock becomes the only thing binding - measured, 22
+        villagers and 30 villagers at 10:00 give the identical step. That
+        is most extreme when Loom is started mid-match, where the whole
+        villager prefix goes at once. The age fixes it as a FLOOR, never a
+        third constraint: the answer is already too low, so another ceiling
+        would make the very case it exists for worse.
+
+        WHAT THE AGE PROVES IS NARROW, and worth stating exactly because a
+        wider claim is tempting and wrong. Being in Castle Age proves the
+        player clicked up through Feudal, so the build's earlier steps are
+        behind them ON THE BUILD'S TIMELINE. It does not prove they carried
+        those steps out: clicking up needs the resources and, for most
+        civilizations, two Feudal buildings, and everything else in a build
+        order is optional. A player can click up early having skipped
+        things or late having done extra.
+
+        That is exactly why this is a separate method rather than an
+        argument to current_index. Handing the floored answer to the
+        checklist would strike every earlier instruction through as
+        assumed-done the moment an age arrived - including ones Loom was
+        watching for and never saw. Two questions, two names, and the wrong
+        one cannot be passed by accident.
+
+        The CEILING, by contrast, lives in current_index itself and is
+        inherited here: not having reached an age is honest progression
+        evidence in a way that having reached one is not. The floor and the
+        ceiling cannot fight - the floor only raises past steps of ages the
+        crest has left BEHIND, which the ceiling never binds on.
+        """
+        reached = self.current_index(villager_count, game_time, age,
+                                     clicked)
+        if age is None:
+            return reached
+        for index, step in enumerate(self.steps):
+            if step.age < age:
+                reached = max(reached, index)
+        return reached
+
+    def completed_step(self, villager_count, game_time, age=None,
+                       clicked=None):
         """The last step already finished. Context, not an instruction."""
-        index = self.current_index(villager_count, game_time)
+        index = self.current_index(villager_count, game_time, age, clicked)
         return self.steps[index] if index >= 0 else None
 
-    def active_step(self, villager_count, game_time):
+    def active_step(self, villager_count, game_time, age=None,
+                    clicked=None):
         """The step to be working on right now. This is what to SHOW.
 
         Note this is the first step *not yet* completed, which reads oddly
@@ -334,12 +504,15 @@ class BuildOrder:
         one instruction behind their own hands. That was the first version of
         the overlay, and it felt laggy for exactly that reason.
         """
-        index = self.current_index(villager_count, game_time) + 1
+        index = self.current_index(villager_count, game_time, age,
+                                   clicked) + 1
         return self.steps[index] if index < len(self.steps) else None
 
-    def following_step(self, villager_count, game_time):
+    def following_step(self, villager_count, game_time, age=None,
+                       clicked=None):
         """The step after the active one, so the player can read ahead."""
-        index = self.current_index(villager_count, game_time) + 2
+        index = self.current_index(villager_count, game_time, age,
+                                   clicked) + 2
         return self.steps[index] if index < len(self.steps) else None
 
     # ---- the same three, from an index somebody else worked out ---------

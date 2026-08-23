@@ -39,6 +39,16 @@ class BuildReport:
         self._last_delta = None
         self._last_villagers = None
 
+    def reset(self):
+        """Start over for a new game.
+
+        Re-runs __init__ rather than clearing fields one by one, so a field
+        added to construction can never be missed here - the exact drift
+        the controllers' fresh_each_game registry exists to prevent, kept
+        out of this class by the same trick.
+        """
+        self.__init__()
+
     def update(self, game_time, tracker, delta, slots, game_events,
                extra=0, villagers=None):
         """Feed in one poll's worth of believed state."""

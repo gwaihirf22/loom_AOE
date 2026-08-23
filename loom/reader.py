@@ -16,6 +16,7 @@ copy of it.
 import os
 import time
 
+from . import age as age_reader
 from . import (anchor, capture, digits, filters, glyphs, hud, notifications,
                queue, resources, session)
 
@@ -72,6 +73,12 @@ ADVISORY_EVERY_NTH_POLL = {
     "queue": 2,
     "notifications": 3,
     "resources": 5,
+    # The age changes a handful of times in a whole game and the crest is a
+    # small template in a small band, so this is cheap and can be sparse.
+    # It sheds anyway because nothing about it is urgent: an age noticed a
+    # second late costs nothing, where a villager count a second late is
+    # the thing Loom exists to get right.
+    "age": 4,
 }
 
 
@@ -154,7 +161,7 @@ class Reading:
     def __init__(self, villagers, game_time, event, hud_visible,
                  raw_villagers=None, raw_clock=None, per_resource=None,
                  queue_slots=None, population=None, raw_population=None,
-                 game_events=None):
+                 game_events=None, age=None, villager_gap=None):
         # What Loom believes, after filtering.
         self.villagers = villagers
         self.game_time = game_time
@@ -189,6 +196,21 @@ class Reading:
         # on-screen appearance - the watcher debounces the lingering text.
         self.game_events = game_events or []
 
+        # What the HUD says about the age: an age.AgeReading, or None
+        # when it has not been looked at yet. Its own `.age` is None when
+        # the crest could not be believed, so there are two different kinds
+        # of "do not know" here and they are deliberately not merged - one
+        # is "not looked at", the other "looked and could not tell".
+        self.age = age
+
+        # How many game seconds the villager band has gone unread while the
+        # clock kept reading, once that is long enough to announce - or None
+        # while the reads are fresh. The believed count above is a held
+        # belief in that state, and the panel says so on its face rather
+        # than wearing a frozen number as if it were read. See
+        # filters.ReadGap.
+        self.villager_gap = villager_gap
+
         # The unfiltered readings, useful for debugging.
         self.raw_villagers = raw_villagers
         self.raw_clock = raw_clock
@@ -213,12 +235,24 @@ class HudReader:
         self._resource_regions = {}
         self._queue_reader = None
         self._notifications = None
+        # The four age crests, loaded once. Empty when none are harvested,
+        # which reads as "no age" rather than as an error - the same
+        # contract the notification font has.
+        self._crests = age_reader.load_crests()
+        # The last age reading, so a shed poll serves the previous answer
+        # rather than a gap. The age changes a handful of times an hour;
+        # a second-old one is still true.
+        self._age_cache = None
         self._text_watcher = None
 
         self.last_population_band = None
         self._population_misses = 0
 
         self._villager_filter = filters.StableCount(required_repeats=2)
+        # How long the villager band specifically has gone unread while the
+        # clock still reads. The filter above holds its belief through the
+        # gap on purpose; this is what lets the panel admit it is holding.
+        self._villager_read_gap = filters.ReadGap()
         self._clock_filter = filters.StableClock(max_step=30, required_repeats=2)
         # The (current, cap) pair filters as one value: both numbers come from
         # the same glyph run, so believing them separately could pair a fresh
@@ -479,6 +513,8 @@ class HudReader:
             "villagers": _clamp(found["villagers"], width, height),
             "clock": _clamp(found["clock_band"], width, height),
             "population": _clamp(found["population"], width, height),
+            "age": _clamp(found["age"], width, height),
+            "age_bar": _clamp(found["age_bar"], width, height),
             # Digits get thinner as the HUD shrinks, so the speck test has to
             # shrink with it - and must never overtake the narrowest digit.
             # The skin sets the formula: its font may be a different size
@@ -703,9 +739,23 @@ class HudReader:
                 # watcher does not cover.
                 claimed = set(self._notifications.templates
                               if phrase_ready else ())
-                for event in self._text_watcher.watch(panel, game_time):
+                for event in self._text_watcher.watch(
+                        panel, game_time, self.hud["scale"],
+                        self.hud["profile"].name):
                     if event not in claimed and event not in game_events:
                         game_events.append(event)
+
+        # The age, off the crest beside the resource bar. Only while the
+        # HUD is up: the band is a fixed offset from the anchor, so with no
+        # HUD it points at whatever the game is drawing instead.
+        age_now = self._age_cache
+        if (self._crests and (raw_clock is not None
+                              or raw_villagers is not None)
+                and self._advisory_due("age")):
+            age_now = age_reader.read(self._read_region(self.hud["age"]),
+                                      self._read_region(self.hud["age_bar"]),
+                                      self._crests, self.hud["scale"])
+            self._age_cache = age_now
 
         # Tell the session tracker the truth about this poll. Passing on a
         # stale value would stop it ever noticing that the game went away.
@@ -719,6 +769,16 @@ class HudReader:
                 self._notifications.reset()
             if self._text_watcher is not None:
                 self._text_watcher.reset()
+            self._villager_read_gap.reset()
+
+        # Only counted while the clock ACTUALLY read this poll - the same
+        # truth-telling the session gets. The filtered clock would hold
+        # through a menu and let menu polls count as misses against the
+        # villager band, which the menu says nothing about. ReadGap has its
+        # own backwards-clock reset, so a new game the session missed
+        # cannot be charged the old game's gap.
+        villager_gap = self._villager_read_gap.update(
+            raw_villagers, game_time if raw_clock is not None else None)
 
         hud_visible = raw_clock is not None or raw_villagers is not None
         if hud_visible:
@@ -736,7 +796,8 @@ class HudReader:
 
         return Reading(villagers, game_time, event, hud_visible,
                        raw_villagers, raw_clock, per_resource, queue_slots,
-                       population, raw_population, game_events)
+                       population, raw_population, game_events, age_now,
+                       villager_gap)
 
     def _read_region(self, region):
         x1, y1, x2, y2 = region

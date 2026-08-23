@@ -63,6 +63,11 @@ def list_stats():
         return []
     rows = []
     for path in sorted(paths.STATS_DIR.glob("*.json"), reverse=True):
+        # Demo replays write a stats file too - deliberately, so the whole
+        # pipeline can be exercised with no game - but they are rehearsals,
+        # not history, and a row per demo run would bury the real games.
+        if path.stem.endswith("_demo"):
+            continue
         data = load_stats(path)
         if data is None:
             rows.append((path, f"{path.name} — unreadable", None))
@@ -83,7 +88,10 @@ def tc_efficiency(game):
     it. An estimate, and labelled as one in the UI - the TC count is a
     high-water mark, so a lost TC flatters nobody.
     """
-    duration = game.get("duration") or 0
+    # The span actually WATCHED, not the clock the game reached. A file
+    # written before that distinction existed has no "observed" key, so it
+    # falls back - those files are whole games, where the two agree.
+    duration = game.get("observed") or game.get("duration") or 0
     tcs = game.get("tc_count") or 0
     idle = game.get("tc_idle_seconds") or 0
     if duration <= 0 or tcs <= 0:
@@ -260,12 +268,27 @@ class ChartView(QWidget):
         pen.setWidth(2)
         painter.setPen(pen)
         last = None
+        last_t = None
         for t, value in points:
             if value is None:
                 last = None
+                last_t = None
                 continue
+            # Time running BACKWARDS is a recording seam - a rewound
+            # replay, a restart the session detector missed - and a line
+            # drawn across it slashes the whole plot (seen live: a series
+            # that climbed to 20:27, reset to 0:07 and climbed again drew
+            # a full-width streak). The seam breaks the line; both halves
+            # still draw, honestly, where their clocks put them.
+            if last_t is not None and t < last_t:
+                last = None
+            last_t = t
             px = plot_x + (t / t_max) * plot_w if t_max else plot_x
             py = plot_y + plot_h - ((value - lo) / span) * plot_h
+            # A value past the axis ceiling draws AT the ceiling, not
+            # above the frame into the neighbouring chart - visibly
+            # pegged, which is what off-the-chart means.
+            py = max(plot_y, py)
             if last is not None:
                 painter.drawLine(int(last[0]), int(last[1]), int(px), int(py))
             last = (px, py)
@@ -284,7 +307,7 @@ class ChartView(QWidget):
     def _draw_villagers(self, painter, x, y, width, height, title):
         timeline = self.timeline
         plot = self._frame(painter, x, y, width, height, title)
-        t_max = timeline["t"][-1] or 1
+        t_max = max(timeline["t"]) or 1
         villagers = [v for v in timeline["villagers"] if v is not None]
         caps = [c for c in timeline.get("pop_cap", []) if c is not None]
         hi = max(villagers + caps + [10])
@@ -302,7 +325,7 @@ class ChartView(QWidget):
     def _draw_pace(self, painter, x, y, width, height, title):
         timeline = self.timeline
         plot = self._frame(painter, x, y, width, height, title)
-        t_max = timeline["t"][-1] or 1
+        t_max = max(timeline["t"]) or 1
         pace = [p for p in timeline.get("pace", []) if p is not None]
         if not pace:
             painter.setPen(FAINT_TEXT)
@@ -317,10 +340,20 @@ class ChartView(QWidget):
 
     def _draw_apm(self, painter, x, y, width, height, title):
         plot = self._frame(painter, x, y, width, height, title)
-        t_max = (self.timeline["t"][-1]
+        # The furthest either clock reached: the APM series can outrun
+        # the timeline (or the reverse), and a rewound recording ends
+        # below its own peak - max, never the last entry.
+        t_max = (max(self.timeline["t"])
                  if self.timeline and self.timeline.get("t") else 1) or 1
+        t_max = max(t_max, max(self.apm["t"]))
         values = [v for v in self.apm["apm"] if v is not None]
-        hi = max(values + [60])
+        # The axis tops out at a human ceiling. One absurd bucket (key
+        # auto-repeat in files recorded before the counter learned to
+        # ignore it - 1,476 APM is twenty-five actions a second) would
+        # otherwise own the whole scale and flatten the real game to the
+        # baseline. Buckets past the ceiling draw clipped at the frame
+        # top: visibly off the chart, which is what they are.
+        hi = min(max(values + [60]), 400)
         self._value_axis(painter, plot, 0, hi)
         self._time_axis(painter, *plot, t_max)
         self._draw_series(painter, zip(self.apm["t"], self.apm["apm"]),

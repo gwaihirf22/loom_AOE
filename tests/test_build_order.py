@@ -281,3 +281,120 @@ def test_corrupt_build_is_reported_not_fatal(library):
 
 def test_empty_library_is_not_an_error(library):
     assert available_builds() == ([], [])
+
+
+# --- the age as a floor on the step ---------------------------------------
+
+
+def fast_castle():
+    from loom.build_order import BuildOrder
+    return BuildOrder.load_by_name("fast_castle")
+
+
+def test_the_age_is_a_floor_on_past_ages_and_a_ceiling_on_future_ones():
+    """Both directions, and they cannot fight.
+
+    Being in Castle Age PROVES every Dark and Feudal step is behind you on
+    the build's timeline, so the floor pushes the shown step forward past
+    them. NOT having reached Castle proves its steps cannot be current
+    yet, so the ceiling holds the cursor out of them - measured live: one
+    accidental villager exhausted the villager constraint (every step
+    passes at 23 against a build that never asks past 22), the build's
+    ideal times ran ahead of the real age-ups, and the cursor walked to
+    the end of the build in Feudal. They cannot fight because the floor
+    only raises past steps of ages BELOW the crest's, which the ceiling
+    never binds on.
+    """
+    build = fast_castle()
+    for villagers, moment in ((40, 720), (60, 900), (14, 300)):
+        for age in (1, 2, 3, 4):
+            index = build.display_index(villagers, moment, age)
+            # The ceiling: never showing a step from an age the crest has
+            # not confirmed.
+            if index >= 0:
+                assert build.steps[index].age <= age, (villagers, moment, age)
+            # The floor: every step of an age already left behind counts
+            # as reached, whatever the clock says.
+            behind = [i for i, step in enumerate(build.steps)
+                      if step.age < age]
+            if behind:
+                assert index >= behind[-1], (villagers, moment, age)
+
+
+def test_being_in_castle_moves_the_step_past_the_feudal_ones():
+    """Measured on the shipped Fast Castle: at 12:00 with 40 villagers the
+    clock says step 8 and the player is on step 11."""
+    build = fast_castle()
+    assert build.current_index(40, 720) == 8
+    assert build.display_index(40, 720, age=3) == 11
+
+
+def test_an_unread_age_changes_nothing():
+    """Every existing caller passes no age and must get what it always
+    got - the reason this is a defaulted argument rather than a rewrite."""
+    build = fast_castle()
+    for villagers in (6, 13, 22, 27, 60):
+        for moment in (100, 400, 700, 1000, 2000):
+            assert (build.current_index(villagers, moment)
+                    == build.display_index(villagers, moment, None))
+
+
+def test_the_floor_does_not_run_past_the_build():
+    build = fast_castle()
+    index = build.display_index(200, 9999, age=4)
+    assert index == len(build.steps) - 1
+
+
+def test_an_extra_villager_cannot_walk_past_an_unreached_age(build):
+    """The measured regression, on the sample build. At 16 villagers every
+    step's count is satisfied (the build never asks past 15) and the clock
+    is long past everything, so without the crest the cursor runs to the
+    end. The crest saying Dark Age holds it at the last Dark Age step."""
+    assert build.current_index(16, 9999) == 4
+    assert build.current_index(16, 9999, age=1) == 2
+    # The active step is then the first Feudal one - the age-up IS the
+    # instruction on screen while the research runs.
+    assert build.active_step(16, 9999, age=1).details.startswith("In Feudal")
+
+
+def test_an_unread_age_is_no_ceiling(build):
+    """None means "not read", and "I did not read it" is not "you are not
+    there yet" - a blind crest must never hold the build hostage."""
+    assert build.current_index(16, 9999, age=None) == 4
+
+
+def test_held_by_age_only_when_the_age_is_all_that_holds(build):
+    from loom.build_order import held_by_age
+    # Villagers and clock past everything, crest still Dark: held.
+    assert held_by_age(build, 13, 9999, 1)
+    # Feudal reached: nothing to wait for.
+    assert not held_by_age(build, 13, 9999, 2)
+    # The clock is what binds, not the age: not held.
+    assert not held_by_age(build, 12, 200, 1)
+    # No crest reading, or no HUD reading at all: never held.
+    assert not held_by_age(build, 13, 9999, None)
+    assert not held_by_age(build, None, 9999, 1)
+    assert not held_by_age(build, 13, None, 1)
+
+
+
+def test_the_last_step_of_an_age_waits_for_the_click(build):
+    """The click-up is PART of the last step of its age. "In Dark Age:
+    click Feudal" must stay the active card until the click is seen,
+    however late the clock runs - the card was vanishing the moment its
+    ideal time passed, showing the next age's work while the click was
+    still on the player's hands."""
+    # Count and time long past, crest Dark, no click seen: the boundary
+    # step (index 2) is still not complete, so it stays the active card.
+    assert build.current_index(16, 9999, age=1, clicked=1) == 1
+    assert build.active_step(16, 9999, age=1, clicked=1).details.startswith(
+        "Click Feudal")
+    # The click is seen: the boundary step completes, and the crest (still
+    # Dark) now holds the cursor out of the Feudal step itself.
+    assert build.current_index(16, 9999, age=1, clicked=2) == 2
+    # Feudal arrives: normal progression resumes.
+    assert build.current_index(16, 9999, age=2, clicked=2) == 4
+
+
+def test_no_click_information_means_no_gate(build):
+    assert build.current_index(16, 9999, age=1, clicked=None) == 2

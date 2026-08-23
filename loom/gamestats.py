@@ -67,6 +67,13 @@ class GameRecorder:
         self.deaths = []               # (t, lost, raided)
         self.attacks = []
         self.events = []               # (t, event name), every feed event
+        # (t, "clicked"|"reached", age) from the HUD's own age crest. A
+        # genuinely new statistic: the production queue has always seen the
+        # CLICK, because the research sits in it, but a queue item that
+        # disappears has either finished or been cancelled and those look
+        # identical. The crest changing is the game stating what age you are
+        # in, so the finish is a fact rather than an inference.
+        self.ages = []
         self.queued = {}               # identity -> first seen queued, t
         self.alerts = []               # (t, text, severity) transitions only
         self.max_villagers = 0
@@ -80,7 +87,7 @@ class GameRecorder:
 
     def observe(self, game_time, villagers, delta, tracker=None,
                 population=None, slots=None, game_events=None,
-                alerts_list=None):
+                alerts_list=None, age_events=()):
         """One usable poll's worth of believed state.
 
         tracker is the ProductionTracker, or None when there is none (demo
@@ -118,6 +125,8 @@ class GameRecorder:
         # above stay derived; this is the raw record.
         for name in events:
             self.events.append((moment, name))
+        for what, which in age_events or ():
+            self.ages.append((moment, what, which))
 
         # Deaths, full game. The villager stream is the filtered count, so
         # a drop that arrives here is a real death, not a misread dip.
@@ -173,15 +182,35 @@ class GameRecorder:
     # ---- writing -------------------------------------------------------
 
     def duration(self):
+        """How far into the game the clock got. The game's LENGTH."""
         return self.t[-1] if self.t else 0
 
+    def observed(self):
+        """How much of it was actually watched, in game seconds.
+
+        Not the same thing as the duration, and conflating them wrote a
+        file for every restart. An overlay started at 44:00 and stopped
+        five seconds later has a duration of 2645 - the clock really did
+        say that - but it watched five seconds, and has nothing worth
+        keeping. The author's stats folder held about a hundred such
+        fragments, most of them a handful of timeline rows recorded at a
+        constant villager count, because has_data asked the wrong one.
+
+        It matters beyond the file count: statsview divides idle seconds by
+        the duration times the Town Centre count to get a percentage, so a
+        thirty-second fragment of a long game divided by forty-four minutes
+        and reported a figure that meant nothing.
+        """
+        return (self.t[-1] - self.t[0]) if len(self.t) >= 2 else 0
+
     def has_data(self):
-        """Worth a file? A menu misread or instant abandon is not."""
-        return self.duration() >= MIN_DURATION
+        """Worth a file? A menu misread or instant abandon is not - and
+        neither is a few seconds of a game that was nearly over."""
+        return self.observed() >= MIN_DURATION
 
     def due_flush(self):
         """Time for a crash-safety rewrite?"""
-        return self.duration() - self._written_up_to >= FLUSH_EVERY
+        return self.observed() - self._written_up_to >= FLUSH_EVERY
 
     def to_dict(self):
         return {
@@ -190,6 +219,9 @@ class GameRecorder:
             "build": self.build_section,
             "game": {
                 "duration": self.duration(),
+                # How much of that was actually watched. Anything derived
+                # per-second has to divide by THIS, not by the duration.
+                "observed": self.observed(),
                 "max_villagers": self.max_villagers,
                 "tc_count": self.tc_count,
                 "tc_idle_seconds": round(self.tc_idle_seconds, 1),
@@ -198,6 +230,7 @@ class GameRecorder:
                 "deaths": [list(d) for d in self.deaths],
                 "attacks": list(self.attacks),
                 "events": [list(e) for e in self.events],
+                "ages": [list(a) for a in self.ages],
                 "queued": dict(self.queued),
                 "alerts": [list(a) for a in self.alerts],
             },
@@ -217,4 +250,4 @@ class GameRecorder:
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(self.to_dict(), handle, indent=1)
             handle.write("\n")
-        self._written_up_to = self.duration()
+        self._written_up_to = self.observed()

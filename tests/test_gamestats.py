@@ -147,3 +147,43 @@ def _completed_report():
     report.update(100, FakeTracker(), -5, [], [], villagers=20)
     report.complete(110)
     return report
+
+
+def test_a_few_seconds_of_a_long_game_is_not_worth_a_file():
+    """The bug that filled the author's stats folder with about a hundred
+    fragments, and a silent one - every restart simply wrote another file.
+
+    An overlay started at 44:00 and stopped seconds later has a DURATION of
+    2645, because the clock really did say that. It has watched five
+    seconds. has_data asked the duration, so every fragment passed.
+    """
+    recorder = gamestats.GameRecorder("fast_castle", "Fast Castle", "now")
+    for moment in range(2640, 2646):
+        recorder.observe(moment, 120, 0)
+
+    assert recorder.duration() >= 2645, "the clock did reach that"
+    assert recorder.observed() < gamestats.MIN_DURATION
+    assert not recorder.has_data(), "wrote a file for five seconds of game"
+
+
+def test_a_real_game_is_still_worth_a_file():
+    recorder = gamestats.GameRecorder("fast_castle", "Fast Castle", "now")
+    for moment in range(0, 400):
+        recorder.observe(moment, 3 + moment // 25, 0)
+
+    assert recorder.has_data()
+    assert recorder.observed() >= gamestats.MIN_DURATION
+
+
+def test_the_watched_span_travels_in_the_file():
+    """Anything per-second has to divide by the span watched, not by the
+    clock - statsview's idle percentage did, and a fragment of a long game
+    divided by the whole game."""
+    recorder = gamestats.GameRecorder("fast_castle", "Fast Castle", "now")
+    for moment in range(1800, 2000):
+        recorder.observe(moment, 90, 0)
+
+    written = recorder.to_dict()["game"]
+    assert written["duration"] == 1999
+    assert written["observed"] == 199
+

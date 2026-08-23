@@ -38,7 +38,9 @@ from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
-from loom import alerts, apm, build_order, capture, config, entry, follow, gamestats
+from loom import age as age_reader
+from loom import (alerts, apm, build_order, capture, checklist, config, entry)
+from loom import debuglog, follow, gamestats
 from loom import hotkeys, overlay, pace, passthrough, paths, production
 from loom.hotkeys import keyspec
 from loom import reader, report, session, statefeed, stopline
@@ -193,10 +195,23 @@ def start_hotkeys(app, controller, follow_state):
             # redraw from. Silently doing nothing beats moving a cursor
             # that the first real reading would reset anyway.
             return
-        if action == "next_step":
-            follow_state.next_step(controller.auto_index(), moment)
-        elif action == "previous_step":
-            follow_state.previous_step(controller.auto_index(), moment)
+        if action in ("next_step", "previous_step"):
+            if controller.reviewing() and follow_state.auto:
+                # The build is over, so this keypress is reading rather than
+                # nudging, and it must not time out. The ten second hold
+                # exists to stop the panel drifting out of sync with a LIVE
+                # build; once the build is done there is nothing left to
+                # drift from, and a report card that reappeared mid-sentence
+                # would be the feature failing at the one thing it is for.
+                #
+                # Switching following off is how this is already said - the
+                # panel then shows MANUAL and names the key that brings the
+                # report back, so the way out is on its face.
+                follow_state.toggle()
+            if action == "next_step":
+                follow_state.next_step(controller.auto_index(), moment)
+            else:
+                follow_state.previous_step(controller.auto_index(), moment)
         elif action == "toggle_follow":
             following = follow_state.toggle()
             print("hotkeys: following the game again" if following
@@ -243,6 +258,40 @@ def resume_hint():
         return None
 
 
+def step_hint():
+    """The next-step binding, for the BUILD DONE note to name.
+
+    Same contract as resume_hint: read from config so the panel can never
+    advertise a key the player has rebound or switched off.
+    """
+    if not config.hotkeys_enabled() or not hotkeys.available():
+        return None
+    binding = config.hotkeys().get("next_step")
+    try:
+        return keyspec.normalise(binding)
+    except ValueError:
+        return None
+
+
+def step_hint_trouble():
+    """Why the BUILD DONE note has no next-step key to name, or None.
+
+    None means either that there IS a key - so the note names it and this
+    is not needed - or that nothing can be done about there not being one,
+    which is a machine with no hotkey backend at all. Everything else is a
+    remedy the note can offer, and the two remedies differ: throw the
+    master switch, or bind the key behind it. Hotkeys ship switched off
+    from 1.0.5, so the first of those is what a new player meets at the
+    end of their first build, with the report otherwise unreachable and
+    unmentioned. See overlay.describe_follow.
+    """
+    if step_hint() or not hotkeys.available():
+        return None
+    if not config.hotkeys_enabled():
+        return overlay.HOTKEYS_OFF
+    return overlay.HOTKEYS_UNBOUND
+
+
 class LauncherRequests(QObject):
     """The launcher's stdin requests, moved onto the GUI thread.
 
@@ -261,22 +310,31 @@ class LauncherRequests(QObject):
     """
 
     requested = pyqtSignal()
+    settings_changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.controller = None
         self.requested.connect(self._toggle_hidden)
+        self.settings_changed.connect(self._apply_appearance)
 
     def _toggle_hidden(self):
         if self.controller is not None:
             self.controller.toggle_hidden()
 
+    def _apply_appearance(self):
+        if self.controller is not None:
+            self.controller.apply_appearance()
+
 
 class Hideable:
-    """Taking the panel off the screen and putting it back.
+    """What both controllers share: the window, and the game's lifecycle.
 
-    Shared by both controllers because hiding is about the window and has
-    nothing to do with where the numbers come from. Expects self.panel.
+    Two jobs that have nothing to do with where the numbers come from:
+    taking the panel off the screen and putting it back, and forgetting a
+    finished game when a new one starts. Expects self.panel; the lifecycle
+    half also expects self.recorder, self.stats_file, self.build_stem,
+    self.build and self.fresh_each_game.
 
     Hiding is not stopping. Polling, alerts, the statistics recorder and the
     APM counter all carry on with the window gone; stopping would throw away
@@ -290,6 +348,30 @@ class Hideable:
 
     hidden = False
     _checked_passthrough = False
+
+    # What the panel was last placed against: (origin_x, origin_y,
+    # area_width, hud_scale). Remembered because a live size change has to
+    # put the panel back, and those numbers otherwise live and die as
+    # locals in whoever called place_panel.
+    placed_against = None
+
+    def apply_appearance(self):
+        """The settings file changed: wear it, and stay where you belong.
+
+        Re-placing is not optional when the size changed. The default
+        position is right-aligned against the game window - see
+        default_offset - while move() sets the panel's TOP-LEFT, so a panel
+        that grew without being placed again hangs off the right edge by
+        exactly however much it grew.
+        """
+        if not self.panel.apply_appearance():
+            return
+        if self.placed_against is None:
+            return
+        origin_x, origin_y, area_width, hud_scale = self.placed_against
+        place_panel(self.panel, origin_x, origin_y, area_width,
+                    hud_scale=hud_scale,
+                    screens=screen_rects(QApplication.instance()))
 
     def begin_hidden(self):
         """Start with the panel off the screen, because the player asked.
@@ -322,12 +404,66 @@ class Hideable:
         """Is there a game to step through? The step hotkeys need to know."""
         return True
 
+    def reviewing(self):
+        """Is the build finished, so a step key is reading rather than
+        nudging? Only the live panel has a report to rest on; demo mode
+        never shows one, so the default is no."""
+        return False
 
-class LiveController:
+    # ---- forgetting a finished game ------------------------------------
+
+    # The objects that must forget the last game, in the order their
+    # reset() runs. Each controller builds its own tuple in __init__, and
+    # start_fresh_game below is the ONLY place that walks one.
+    #
+    # A tuple rather than eight lines of resets in tick(), because those
+    # lines were maintained by hand in two controllers and had already
+    # drifted: the demo gained a checklist in a merge and its reset list
+    # never learned, so every replay loop after the first started with the
+    # items pre-ticked. A subsystem left out of this tuple is exactly the
+    # silent desynchronisation the rest of Loom is built to avoid - a
+    # cursor, a count or a tick carried into a game it does not belong to.
+    fresh_each_game = ()
+
+    def start_fresh_game(self):
+        """A new game is starting: write the old one out and forget it.
+
+        The order is load-bearing. finish() must run FIRST, because it
+        writes to self.stats_file and renew_recorder replaces that path -
+        swapped, the finished game's statistics would land in the new
+        game's file or nowhere.
+        """
+        self.finish()
+        for fresh in self.fresh_each_game:
+            fresh.reset()
+        self.renew_recorder()
+
+    def renew_recorder(self):
+        """A fresh recorder and a fresh file for the game now starting."""
+        self.recorder, self.stats_file = start_recorder(
+            self.build_stem, self.build.name)
+
+    def finish(self):
+        """Write the game's statistics file, if there is a game worth one.
+
+        Called at exit and on a new match starting. Exit reaches here twice
+        on a clean quit (aboutToQuit, then after app.exec returns - Ctrl+C
+        only takes the second path), so it makes itself idempotent; the
+        periodic flush in tick() makes even a hard kill lose at most thirty
+        game-seconds.
+        """
+        if self.recorder.has_data() and not getattr(self.recorder,
+                                                    "closed", False):
+            self.recorder.closed = True
+            self.recorder.write(self.stats_file)
+            print(f"stats: wrote {paths.for_display(self.stats_file)}")
+
+
+class LiveController(Hideable):
     """Polls the game and pushes each reading into the panel."""
 
     def __init__(self, panel, build, hud, build_stem="unknown",
-                 follow_state=None):
+                 follow_state=None, log=None):
         self.panel = panel
         self.build = build
         self.hud = hud
@@ -348,62 +484,149 @@ class LiveController:
         # noise in a pipe nobody reads.
         self.feed = statefeed.StateEmitter()
         self.report = report.BuildReport()
+        # Which items of the build have been done. Stage 1 only ever
+        # ASSUMES - an item is assumed once the reading has passed its step
+        # - because the events that would OBSERVE one are unreadable at
+        # 1920x1080 until the notification font is harvested there. The seam
+        # is here so that turning them on is one argument.
+        self.checklist = checklist.Checklist(build)
+        # Houses counted from the population cap as well as the feed - the
+        # feed structurally misses houses built close together. See
+        # checklist.HouseEvidence.
+        self.houses = checklist.HouseEvidence()
+        # What age the HUD says we are in, and when each age-up was clicked
+        # and reached. Debounced like every other belief here.
+        self.ages = age_reader.AgeTracker()
         self.recorder, self.stats_file = start_recorder(build_stem, build.name)
         # Where the panel is looking, and whether the game gets to move it.
         # Passed in rather than made here so main() can hand the same object
         # to the hotkey listener - there is exactly one cursor.
         self.follow = follow_state or follow.FollowState()
+        # Everything above that must forget a finished game, in reset
+        # order - see Hideable.start_fresh_game. The report joins the
+        # tuple like the trackers do; its reset() re-runs __init__, so it
+        # cannot drift from construction.
+        self.fresh_each_game = (self.pace, self.production, self.report,
+                                self.follow, self.checklist, self.ages,
+                                self.houses)
         # Named once at startup, like every other setting the overlay reads.
         self.resume_hint = resume_hint()
+        self.step_hint = step_hint()
+        # And what the note should say INSTEAD of a key, when there is no
+        # key to name - which is the shipped default now that hotkeys
+        # arrive switched off.
+        self.step_trouble = step_hint_trouble()
+        # When the CLICK UP band's prerequisite suppression began, in game
+        # time, or None while it is not suppressing. A scalar rather than
+        # a registry object; cleared beside start_fresh_game in tick(),
+        # and self-correcting anyway - it resets whenever the suppression
+        # conditions break.
+        self._prereq_quiet_since = None
+        # The last age reading, for the state line. Kept beside _last for
+        # the same reason: a hotkey redraws from what was last seen rather
+        # than reading the screen again.
+        self._last_age = None
         # The last usable reading, kept so a hotkey can redraw the panel at
         # once instead of waiting up to a poll interval for the next tick.
         # Polling again on a keypress would cost a full HUD read, which is
         # the expensive thing this whole loop is budgeted around.
         self._last = None
+        # Whether the session has declared sight of the game lost. The
+        # filters hold their beliefs through the gap, so without this flag
+        # the panel would keep wearing a live face built from held numbers
+        # - the frozen-count failure, silent and trusted. Rides beside
+        # _last rather than in it: refresh() redraws the last GOOD state,
+        # and whether it may is exactly what this flag knows.
+        self._sight_lost = False
+        # The villager band's read gap from the last poll, for the panel's
+        # own staleness note. Kept on self for the same reason _last is:
+        # refresh() must redraw the note as it stood, not lose it.
+        self._villager_gap = None
+        # The forensic log: one line per poll, raw readings beside believed
+        # ones, under the data directory. The console dies with the session
+        # (frozen builds never had one), so this is the record a live
+        # incident leaves behind. Passed in by main() and defaulting to a
+        # no-op, so the tests' controllers do not spend the log quota on
+        # junk sessions. See loom/debuglog.py.
+        from loom import __version__
+        self.debuglog = log if log is not None else debuglog.NullLog()
+        self.debuglog.line(f"loom {__version__} · build '{build.name}'"
+                           f" ({build_stem}) · platform {sys.platform}")
+        self._logged_hud = False
+        self._logged_alerts = None
 
     def auto_index(self):
         """The step the READING implies, ignoring anything the player pressed.
 
         What a hotkey steps away from, and what following returns to.
+
+        Once the build is done that is the LAST CARD, not the report. The
+        report used to be the resting place, and it stole the panel: the
+        final card of a build is "settle into this age, keep the unique
+        units coming" - exactly what a player wants in front of them while
+        the game goes on - and it survived on screen for one poll before
+        the statistics replaced it. The author's ruling: the panel rests
+        where the player still has work, the BUILD DONE note names the
+        next-step key, and the report is one press forward for whoever
+        wants it right now (see follow.tail).
+
+        Deliberately not stored into _last[0], which stays the honest
+        reading-derived index - other things downstream are entitled to ask
+        where the GAME is, and must not be told about a resting place that
+        exists only for the panel.
         """
+        if self.pace.complete:
+            return len(self.build.steps) - 2
         return -1 if self._last is None else self._last[0]
+
+    def reviewing(self):
+        """Is the build over, so a step key means reading rather than nudging?"""
+        return self.pace.complete
 
     def refresh(self):
         """Redraw from the last reading. For after a hotkey changes the step."""
-        if self._last is not None and not self.pace.complete:
+        if self._last is not None:
             self._render(*self._last)
-
-    def finish(self):
-        """Write the game's statistics file, if there is a game worth one.
-
-        Called at exit and on a new match starting. Exit reaches here twice
-        on a clean quit (aboutToQuit, then after app.exec returns - Ctrl+C
-        only takes the second path), so it makes itself idempotent; the
-        periodic flush in tick() makes even a hard kill lose at most thirty
-        game-seconds.
-        """
-        if self.recorder.has_data() and not getattr(self.recorder, "closed", False):
-            self.recorder.closed = True
-            self.recorder.write(self.stats_file)
-            print(f"stats: wrote {paths.for_display(self.stats_file)}")
 
     def tick(self):
         reading = self.hud.poll()
 
-        # A new match means starting the build again, so the pace tracker must
-        # forget how late the last game was - and the production tracker must
-        # forget the old game's Town Centres. The finished game's statistics
-        # go to disk before the new recorder takes over.
+        # Where the reader anchored, once known - the first question any
+        # log reader asks (which skin, what scale, how good a match).
+        # getattr because the poll contract is just poll(): the end-to-end
+        # tests' fake reader has no anchor to describe.
+        if not self._logged_hud and getattr(self.hud, "hud", None):
+            self._logged_hud = True
+            found = self.hud.hud
+            profile = found.get("profile")
+            self.debuglog.line(
+                f"hud {profile.name if profile else '?'}"
+                f" scale {found.get('scale', 0):.2f}"
+                f" score {found.get('score', 0):.3f}")
+        self.debuglog.poll(reading)
+
+        # The session saying it has LOST SIGHT of the game is the one event
+        # nothing used to consume - the filters keep holding their beliefs,
+        # is_usable() stays true on the held numbers, and the panel wore a
+        # live face over a game it could no longer see. It is announced as
+        # a SOFT band above the panel (see the alerts assembly below), and
+        # stays announced until the session itself says the game is back: a
+        # resumed game reports GAME_RESUMED, a new one GAME_STARTED. A band
+        # rather than a takeover, by the author's ruling: the held step and
+        # the hotkeys are still worth having in front of you - the panel
+        # keeps working, it just stops pretending its numbers are fresh.
+        if reading.event == session.TRACKING_LOST:
+            self._sight_lost = True
+        elif reading.event in (session.GAME_RESUMED, session.GAME_STARTED):
+            self._sight_lost = False
+
+        # A new match means starting the build again: everything in
+        # fresh_each_game forgets the last game, the finished game's
+        # statistics go to disk, and a new recorder takes over - one list,
+        # one order, shared with the demo. See Hideable.start_fresh_game.
         if reading.event == session.GAME_STARTED:
-            self.finish()
-            self.pace.reset()
-            self.production.reset()
-            self.report = report.BuildReport()
-            self.recorder, self.stats_file = start_recorder(
-                self.build_stem, self.build.name)
-            # A cursor left on step 20 of the last game would be exactly the
-            # silent desynchronisation everything else here exists to avoid.
-            self.follow.reset()
+            self.start_fresh_game()
+            self._prereq_quiet_since = None
 
         # The game's own notification feed states TC completions outright -
         # the one exact source of TC count; queue evidence only corroborates.
@@ -422,10 +645,38 @@ class LiveController:
             self.feed.emit({"usable": False})
             return
 
+        # Refreshed every poll: None on the fresh ones, so the note clears
+        # itself the moment the band reads again.
+        self._villager_gap = reading.villager_gap
+
         villagers = reading.villagers
         game_time = reading.game_time
-        delta = self.pace.update(villagers, game_time)
-        extra = build_order.extra_villagers(self.build, villagers, game_time)
+
+        # The age the tracker BELIEVES, never the raw reading. It is a floor
+        # AND a ceiling on the step (see build_order.current_index), so a
+        # single misread crest would move the panel and it would take
+        # another two agreeing looks to come back. Two agreeing looks
+        # before it counts, like every other belief in this loop. Read
+        # before this poll's crest is fed in, so it trails the screen by at
+        # most one poll - the debounce already costs two.
+        believed_age = self.ages.age
+        # The highest age whose click is proven, for the click gate:
+        # the last step of an age is not done until its age-up is
+        # clicked - "In Feudal: ... click Castle Age" is one card and
+        # it must stay up until the click, not until its ideal time.
+        clicked_through = self.ages.clicked_through
+
+        delta = self.pace.update(villagers, game_time, believed_age,
+                                 clicked_through)
+        # The cursor and everything derived from it run on the player's
+        # own clock - the fundamental decision that Loom follows the
+        # player and the ideal timings judge them afterwards. Pace, the
+        # recorder and the report stay on true game_time below; only
+        # step-cursor questions use this.
+        cursor_time = self.pace.player_time(game_time)
+        extra = build_order.extra_villagers(self.build, villagers,
+                                            cursor_time, believed_age,
+                                            clicked_through)
 
         self.report.update(game_time, self.production, delta,
                            reading.queue, reading.game_events,
@@ -434,32 +685,153 @@ class LiveController:
         alerts_list = alerts.production_alerts(
             self.production, villagers, self.policy, game_time,
             reading.population, self.toggles, self.house_headroom)
+        # The click-up band goes FIRST: when the build is waiting on an
+        # age-up, clicking it is the instruction, and the production bands
+        # are commentary on the wait.
+        #
+        # The band defers to the held card's own watched items (the
+        # author's rule: the click needs the card's buildings standing,
+        # so CLICK UP while they are going up nags toward a click the
+        # game would refuse) - but only for so long. The suppression
+        # rests on the reader having SEEN those buildings, and the reader
+        # misses lines, so a patience clock in game seconds turns an
+        # overstayed False back into "no verdict". The checklist verdict
+        # is one poll behind (observe runs below), which the two-look
+        # debounces everywhere already make irrelevant.
+        prerequisites = self.checklist.click_prerequisites_settled(
+            self.build.current_index(villagers, cursor_time, believed_age,
+                                     clicked_through) + 1)
+        # The clock runs only while the verdict is actually SILENCING a
+        # band that would otherwise fire - started any earlier it would
+        # be spent before the hold even began, and the suppression would
+        # be dead on arrival.
+        suppressing = (prerequisites is False
+                       and self.ages.advancing is False
+                       and build_order.held_by_age(
+                           self.build, villagers, cursor_time,
+                           believed_age, clicked_through))
+        patience_spent = False
+        if suppressing:
+            if self._prereq_quiet_since is None:
+                self._prereq_quiet_since = game_time
+            elif (game_time - self._prereq_quiet_since
+                    >= alerts.PREREQUISITE_PATIENCE_SECONDS):
+                # Spent patience stays what it is rather than becoming
+                # "no verdict": the policy gives a timer-driven reminder
+                # the SOFT voice and keeps the flashing URGE for a gate
+                # lifted by real observations.
+                patience_spent = True
+        else:
+            self._prereq_quiet_since = None
+        click_up = alerts.age_up_alert(self.build, villagers, cursor_time,
+                                       believed_age, self.ages.advancing,
+                                       clicked_through, prerequisites,
+                                       patience_spent)
+        if click_up:
+            alerts_list.insert(0, click_up)
+        # Sight lost outranks everything: every band below it is derived
+        # from readings, and this one says the readings have stopped. SOFT
+        # on purpose - it is information about the panel, not a failure of
+        # the player's, and it rides the same channel as the other bands so
+        # the preview shows it too when its alerts are on.
+        if self._sight_lost:
+            alerts_list.insert(0, ("LOST SIGHT OF THE GAME", alerts.SOFT))
+        # Alert transitions only, not every poll's repetition: "when did
+        # TC IDLE start and stop" is the forensic question.
+        if alerts_list != self._logged_alerts:
+            self._logged_alerts = alerts_list
+            self.debuglog.line("alerts " + (", ".join(
+                f"{text}:{severity}" for text, severity in alerts_list)
+                if alerts_list else "clear"))
         self.panel.show_alerts(alerts_list)
+
+        # The age, believed from the crest. Fed every poll, including the
+        # ones where the reading is None - the tracker treats "not read" as
+        # no news rather than as the age having gone away. The production
+        # queue rides along as the second witness to a click: the two
+        # monitors of "advancing" meet inside the tracker and nowhere
+        # else, so everything downstream reads one reconciled belief.
+        queued_age = next(
+            (age_reader.QUEUE_IDENTITIES[slot.identity]
+             for slot in (reading.queue or [])
+             if slot.identity in age_reader.QUEUE_IDENTITIES), None)
+        age_events = self.ages.update(reading.age, reading.game_time,
+                                      queued_age)
+        if reading.age is not None:
+            self._last_age = reading.age
+
+        # The feed's events tick the build's items off, and this is the one
+        # place they may be applied: _render is also called by refresh()
+        # after a hotkey, from the SAME reading, and an event applied twice
+        # would credit two Houses to one "--House Built--".
+        # The feed's events, plus houses the population cap evidenced that
+        # the feed never printed. Synthetic built:house entries go ONLY to
+        # the checklist - the statistics keep recording the raw feed, so
+        # the stats file stays an honest record of what was actually read.
+        cap = reading.population[1] if reading.population else None
+        feed_houses = sum(1 for e in reading.game_events
+                          if e == "built:house")
+        new_houses = self.houses.update(cap, believed_age, feed_houses)
+        # RECONCILED, not appended, twice over: houses against the
+        # population cap, and age completions against the crest. In both
+        # cases one real event produces two signals, the feed's copies are
+        # dropped, and the better witness's verdict stands in for them.
+        # The crest read every age transition in every capture with no
+        # frame unread; the feed's "...Research Complete" line wraps and
+        # often never reads - the author watched Feudal Age sit amber for
+        # a whole game the crest had followed perfectly.
+        checklist_events = checklist.merged_age_events(
+            checklist.merged_house_events(reading.game_events, new_houses),
+            [which for what, which in age_events
+             if what == age_reader.REACHED])
+
+        # current_index, not display_index: what was DONE is a different
+        # question from what to SHOW, and only the first one belongs here.
+        # See build_order.display_index. The age ceiling DOES belong: with
+        # it the checklist cannot assume its way past an age boundary the
+        # crest has not confirmed, which is exactly how one stray villager
+        # once assumed half a build.
+        self.checklist.observe(
+            self.build.current_index(villagers, cursor_time, believed_age,
+                                     clicked_through),
+            checklist_events)
 
         # The statistics recorder watches the whole game, build and after.
         self.recorder.observe(game_time, villagers, delta, self.production,
                               reading.population, reading.queue,
-                              reading.game_events, alerts_list)
+                              reading.game_events, alerts_list, age_events)
         if self.recorder.due_flush():
             self.recorder.write(self.stats_file)
 
         # The build finishing is the payoff moment: the panel flips from
-        # instructions to the report and stays there for the rest of the
+        # instructions to the report and rests there for the rest of the
         # game (the alert bands keep working - the game goes on).
+        #
+        # RESTS rather than locks. The report is a slot the step keys can
+        # walk off, so that a player can look back at what the build asked
+        # for after seeing how it went; _render decides which of the two to
+        # draw from where the cursor is. Before this the branch drew the
+        # report unconditionally every poll, which overwrote any step a
+        # hotkey managed to reach within a third of a second of reaching it.
         if self.pace.complete:
             self.report.complete(game_time)
             self.recorder.snapshot_build(self.report, self.build)
-            self.panel.show_report(
-                self.report.summary(self.build), self.build.name,
-                f"{report.format_time(game_time)}   {villagers} villagers")
-        else:
-            self._last = (self.build.current_index(villagers, game_time),
-                          villagers, game_time, delta,
-                          reading.per_resource,
-                          list(reading.population) if reading.population
-                          else None,
-                          extra)
-            self._render(*self._last)
+            # One past the last step, and only now that there is something
+            # to put there. follow.reset() takes it away again next match.
+            self.follow.tail = 1
+
+        # Every usable poll, complete or not: the report's status line stays
+        # live this way, and a hotkey always redraws from a fresh reading
+        # rather than from whatever was on screen when the build finished.
+        self._last = (self.build.display_index(villagers, cursor_time,
+                                               believed_age,
+                                               clicked_through),
+                      villagers, game_time, delta,
+                      reading.per_resource,
+                      list(reading.population) if reading.population
+                      else None,
+                      extra)
+        self._render(*self._last)
 
     def _render(self, auto_index, villagers, game_time, delta, per_resource,
                 population, extra):
@@ -480,10 +852,62 @@ class LiveController:
         # them either side of the hold expiring, and a panel saying "resuming
         # in 1s" about a hold that has already gone is a small lie.
         now = time.monotonic()
-        index = self.follow.effective_index(auto_index, now)
+        # self.auto_index() rather than the argument, which is the reading's
+        # own index: once the build is done the panel's resting place is the
+        # report, and only this knows that. The argument stays the reading's
+        # answer for everything below that is entitled to ask where the GAME
+        # is rather than where the panel is looking.
+        index = self.follow.effective_index(self.auto_index(), now)
         mode = self.follow.mode(now)
         holding_for = self.follow.seconds_left(now)
+        hint = self.resume_hint
+        no_key = None
+        if self.pace.complete and mode == follow.FOLLOWING:
+            # Resting on the last card after the build finished. Not a
+            # cursor state - follow.mode cannot know the build ended - so
+            # it is substituted here, where both facts are in hand. The
+            # note names the NEXT-STEP key: it leads to the report, and
+            # that is the one thing the resting panel is quietly hiding.
+            # With no key to name it offers the way to get one instead;
+            # only this branch needs that, because MANUAL cannot be
+            # reached without a working hotkey in the first place.
+            mode = follow.DONE
+            hint = self.step_hint
+            no_key = self.step_trouble
+
+        # One past the last card is a slot with no step in it, and once
+        # the build is complete the only thing forward of the cards is
+        # the report - so the dead slot shows it too, and the first
+        # next-step press after BUILD DONE lands where the note promised.
+        past_the_cards = (self.pace.complete
+                          and self.build.active_step_at(index) is None)
+
+        if self.follow.on_tail(index) or past_the_cards:
+            # Parked on the report. Its status line carries the live clock
+            # and villager count, so a finished build still shows the game
+            # going on around it.
+            self.panel.show_report(
+                self.report.summary(self.build), self.build.name,
+                f"{report.format_time(game_time)}   {villagers} villagers")
+            self._emit(index, auto_index, mode, villagers, game_time,
+                       delta, per_resource, population, holding_for)
+            return
+
         active = self.build.active_step_at(index)
+
+        # Only the ASSUMPTION half here - where the build has got to. The
+        # sightings were applied in tick(), which is the only place that
+        # sees each event once; see there.
+        #
+        # It follows the READING and never the cursor either way. Pressing
+        # "next step" three times must not credit three steps of work - the
+        # same reason pace, the report and the recorder all stay on
+        # auto_index too.
+        self.checklist.observe(auto_index)
+        item_states = ()
+        if active is not None:
+            item_states = self.checklist.states(index + 1, len(active.items))
+
         self.panel.show_step(
             self.build,
             villagers,
@@ -495,14 +919,45 @@ class LiveController:
             extra=extra,
             milestone_queued=self.report.milestone_queued(active),
             follow_mode=mode,
-            resume_hint=self.resume_hint,
+            resume_hint=hint,
             seconds_left=holding_for,
+            item_states=item_states,
+            villager_gap=self._villager_gap,
+            no_key=no_key,
         )
+        self._emit(index, auto_index, mode, villagers, game_time, delta,
+                   per_resource, population, holding_for)
+
+    def _emit(self, index, auto_index, mode, villagers, game_time, delta,
+              per_resource, population, holding_for):
+        """Announce this state to the preview.
+
+        Its own method because the report path announces too. Before this the
+        overlay went silent on the feed the moment a build completed, which
+        froze the preview on whatever step it last heard about and left its
+        clicks dead - so neither window could be moved for the rest of the
+        match.
+        """
         # Whole-number time and pace so the emitter's change-check works:
         # float jitter would otherwise make every poll look "new".
         self.feed.emit({
             "usable": True,
             "idx": index,
+            # Where the GAME is, as opposed to where the panel is looking.
+            # The preview ticks its checklist off this, not off "idx".
+            "auto": auto_index,
+            # What the HUD says about the age: [current, target, filled]
+            # or null. The preview shows the same age the panel does rather
+            # than working one out of its own.
+            "age": ([self.ages.age,
+                     self._last_age.target if self._last_age else None,
+                     None if self._last_age is None
+                     else self._last_age.progress]
+                    if self.ages.age is not None else None),
+            # Items the feed CONFIRMED. Assumptions are not sent - both
+            # windows derive those from "auto" by the same rule - but a
+            # sighting is a fact only this process can have.
+            "ticks": self.checklist.observed_ticks(),
             "mode": mode,
             "vills": villagers,
             "t": int(game_time),
@@ -532,6 +987,10 @@ class DemoController(Hideable):
         self.moment = 0
         self.last = max(s.time for s in build.steps if s.time is not None)
         self.pace = pace.PaceTracker(build)
+        # Demo mode ticks items off as it walks the build, so the checklist
+        # can be watched with no game running - the same reason it feeds the
+        # preview below. Assumptions only, like the live path.
+        self.checklist = checklist.Checklist(build)
         # Demo mode feeds the launcher's preview too, so the whole follow
         # behaviour can be watched with no game running.
         self.feed = statefeed.StateEmitter()
@@ -542,6 +1001,11 @@ class DemoController(Hideable):
         # Demo mode drives the same cursor, so hotkeys and the manual/holding
         # indicator can be watched end to end with no game running.
         self.follow = follow_state or follow.FollowState()
+        # The demo's own per-game state, same registry as the live path -
+        # this list is why the replay loop cannot forget to reset something
+        # the live path resets. No production/ages/houses: the demo has no
+        # game to read them from.
+        self.fresh_each_game = (self.pace, self.follow, self.checklist)
         self.resume_hint = resume_hint()
         self._last = None
 
@@ -552,23 +1016,27 @@ class DemoController(Hideable):
         if self._last is not None:
             self._render(*self._last)
 
-    def finish(self):
-        if self.recorder.has_data() and not getattr(self.recorder, "closed", False):
-            self.recorder.closed = True
-            self.recorder.write(self.stats_file)
-            print(f"stats: wrote {paths.for_display(self.stats_file)}")
+    def renew_recorder(self):
+        """A fresh recorder into the SAME file, unlike the live override.
+
+        The demo loops forever, and one file per loop filled the author's
+        stats folder with a phantom game a minute. One demo, one file: the
+        recorder starts over but the path stays, so however long the demo
+        runs it leaves exactly one <stamp>_demo.json behind - enough to
+        exercise the whole stats pipeline, which is the only reason demo
+        mode writes statistics at all.
+        """
+        self.recorder, _ = start_recorder(self.build_stem, self.build.name)
 
     def tick(self):
         # Each tick advances game time by however many seconds the chosen
         # speed implies, so a whole match plays out in about a minute.
         self.moment += self.speed * (POLL_INTERVAL_MS / 1000.0)
         if self.moment > self.last + 60:
-            self.finish()
+            # The demo's clock is its own, not an object with a reset() -
+            # so it is put back to zero here, beside the registry walk.
+            self.start_fresh_game()
             self.moment = 0
-            self.pace.reset()
-            self.follow.reset()
-            self.recorder, self.stats_file = start_recorder(
-                self.build_stem, self.build.name)
 
         villagers = villagers_following_build(self.build, self.moment)
         delta = self.pace.update(villagers, self.moment)
@@ -587,6 +1055,11 @@ class DemoController(Hideable):
         index = self.follow.effective_index(auto_index, now)
         mode = self.follow.mode(now)
         holding_for = self.follow.seconds_left(now)
+        self.checklist.observe(auto_index)
+        active = self.build.active_step_at(index)
+        item_states = ()
+        if active is not None:
+            item_states = self.checklist.states(index + 1, len(active.items))
         self.panel.show_step(
             self.build,
             villagers,
@@ -597,10 +1070,12 @@ class DemoController(Hideable):
             follow_mode=mode,
             resume_hint=self.resume_hint,
             seconds_left=holding_for,
+            item_states=item_states,
         )
         self.feed.emit({
             "usable": True,
             "idx": index,
+            "auto": auto_index,
             "mode": mode,
             "vills": villagers,
             "t": int(moment),
@@ -628,6 +1103,11 @@ class DemoController(Hideable):
             found.append((f"TC IDLE — {self.moment - 240:.0f}s", alerts.FULL))
         if 260 <= self.moment < 300:
             found.append(("HOUSE SOON — 2 pop space left", alerts.FULL))
+        # The blue urge band, in its own window so all three severities can
+        # be told apart at a glance: red flashing, blue flashing, then the
+        # still soft one.
+        if 340 <= self.moment < 400:
+            found.append(("CLICK UP — Feudal Age", alerts.URGE))
         if 420 <= self.moment < 460:
             found.append(("TC IDLE", alerts.SOFT))
         return found
@@ -693,8 +1173,10 @@ _last_placement = None
 def watch_placement(panel):
     """Say when the panel's own geometry changes, and only then.
 
-    For an overlay reported to vibrate. place_panel runs once at startup and
-    nothing here moves the panel afterwards, so this answers the question
+    For an overlay reported to vibrate. place_panel runs at startup, again
+    when a match is found, and now whenever a live settings change resizes
+    the panel - but nothing moves it between those, so this answers the
+    question
     that decides where to look next: if the geometry never changes while the
     panel is visibly shivering, nothing in Loom is moving it and the shake is
     either the panel's own drawing or the compositor - and if it does change,
@@ -862,12 +1344,22 @@ class LiveSession(Hideable):
         place_panel(self.panel, origin_x, origin_y, area_width,
                     hud_scale=self.hud.hud["scale"],
                     screens=screen_rects(self.app))
+        # The real numbers now, replacing the startup guess against the
+        # primary screen.
+        self.placed_against = (origin_x, origin_y, area_width,
+                               self.hud.hud["scale"])
 
+        # The real overlay gets a real forensic log; the tests' controllers
+        # default to the no-op. Its path is printed once so "where is the
+        # log" has an answer even when this console survives.
+        session_log = debuglog.SessionLog()
         self.controller = LiveController(
             self.panel, self.build, self.hud, build_stem=self.build_stem,
-            follow_state=self.follow)
+            follow_state=self.follow, log=session_log)
         print(f"Overlay running on '{self.build.name}'. "
               f"{stopline.quit_hint()}.")
+        if session_log.path is not None:
+            print(f"Session log: {paths.for_display(session_log.path)}")
 
     # ---- what the hotkeys and the quit hook need -----------------------
 
@@ -882,6 +1374,9 @@ class LiveSession(Hideable):
         # Overrides Hideable's cheerful default: before a match there is no
         # controller, so no step to move and nothing to redraw from.
         return self.controller is not None
+
+    def reviewing(self):
+        return self.controller is not None and self.controller.reviewing()
 
     def finish(self):
         if self.controller is not None:
@@ -954,7 +1449,8 @@ def main():
     requests = LauncherRequests()
     stopline.watch(lambda: QMetaObject.invokeMethod(
         app, "quit", Qt.ConnectionType.QueuedConnection),
-        on_toggle_hidden=requests.requested.emit)
+        on_toggle_hidden=requests.requested.emit,
+        on_settings=requests.settings_changed.emit)
 
     # Placement leaves before the controllers exist: it needs a reference
     # corner and a draggable panel, not a game. It used to fall through the
@@ -1008,6 +1504,9 @@ def main():
     # itself properly against the game window once a match is found.
     place_panel(panel, origin_x, origin_y, area_width, hud_scale=1.0,
                 screens=screen_rects(app))
+    # Kept so a live size change can put the panel back against the same
+    # corner it was measured from - see Hideable.apply_appearance.
+    controller.placed_against = (origin_x, origin_y, area_width, 1.0)
 
     # "No overlay" in the build preview is a REMEMBERED preference about how
     # the panel starts, not the same thing as whether it is hidden right now.

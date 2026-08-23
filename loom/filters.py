@@ -145,6 +145,63 @@ class StableClock:
         return self.value
 
 
+class ReadGap:
+    """How long a value has gone unread, on the game's own clock.
+
+    StableCount deliberately holds its last belief through unreadable polls -
+    right for a menu, where the whole HUD is gone. But when the clock still
+    reads and ONE band has stopped producing, the held belief is quietly
+    becoming an assumption, and the panel must be able to say so. This
+    measures that: seconds of game time since the value was last actually
+    read, or None while the reads are fresh.
+
+    Game time rather than polls, because the poll rate is not a clock -
+    counting looks is the mistake that broke the notification watcher under
+    load shedding. The consecutive-miss guard exists for one edge: after an
+    alt-tab in multiplayer the clock leaps forward before the next villager
+    read lands, and a single poll must not flash an accusation at a band
+    that was never given a chance.
+    """
+
+    def __init__(self, announce_after=10, misses_before=3):
+        self.announce_after = announce_after
+        self.misses_before = misses_before
+        self._read_at = None    # game time of the last successful read
+        self._misses = 0        # consecutive polls without one
+
+    def update(self, raw_value, game_time):
+        """Feed one poll's raw read and believed clock. Returns the gap in
+        game seconds once it is worth announcing, else None."""
+        if raw_value is not None:
+            self._read_at = game_time if game_time is not None else self._read_at
+            self._misses = 0
+            return None
+
+        if game_time is None:
+            # A blind poll: the clock is gone too, so this is a menu or a
+            # capture gap, not evidence against the band. Counting it as a
+            # miss would spend the resume guard before the resume happens.
+            return None
+
+        self._misses += 1
+        if self._read_at is None:
+            return None
+
+        gap = game_time - self._read_at
+        if gap < 0:
+            # The clock went backwards past the last read: a new game. The
+            # old moment means nothing there.
+            self.reset()
+            return None
+        if gap >= self.announce_after and self._misses >= self.misses_before:
+            return gap
+        return None
+
+    def reset(self):
+        self._read_at = None
+        self._misses = 0
+
+
 def format_time(seconds):
     """900 -> '15:00'. Returns '--:--' for no reading yet."""
     if seconds is None:

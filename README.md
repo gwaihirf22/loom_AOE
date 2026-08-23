@@ -153,11 +153,23 @@ Two settings matter, both under **Options → Interface**:
   **untested** — and the symptom if it goes wrong is a Town Centre counted
   twice, which shows up as an idle-TC warning that will not go away.
 
-Loom reads the HUD at **1920x1080 and 2560x1440**, on both skins — every
-band is checked against recorded games at both sizes. If you play at a
-resolution that is not your monitor's own, the overlay can appear to shimmer
-slightly; that is the display scaling the picture rather than Loom, and
-playing at the native resolution or in windowed mode removes it.
+Loom reads the HUD at **1920x1080 and 2560x1440**, on both skins — the
+clock, the villager count, the population display, the production queue and
+the age crest are all checked against recorded games at both sizes. If you
+play at a resolution that is not your monitor's own, the overlay can appear
+to shimmer slightly; that is the display scaling the picture rather than
+Loom, and playing at the native resolution or in windowed mode removes it.
+
+> **Playing at 1920x1080? One part does not work yet.** Loom also reads the
+> game's own message feed ("--Barracks Built--"), and at 1080p the game
+> draws that feed in a smaller typeface rather than a scaled-down version of
+> the big one — so Loom's letters do not fit it and most lines go unread.
+> Two things depend on that feed: the **green ticks** on the step checklist,
+> and **counting your Town Centres** (which the idle-TC warning is built
+> on). At 1080p expect items not to tick off, and a second Town Centre to
+> go uncounted. Everything else works normally. **2560x1440 is the
+> confirmed-working resolution** for those two features; fixing 1080p means
+> harvesting the smaller typeface, which is on the list.
 
 Loom reads **the stock HUD** and **the Anne_HK Better UI mod**, and works
 out which is on screen by itself when a match starts. Any other mod that
@@ -172,9 +184,21 @@ Two mods pair well with Loom — recommended, never required:
   auto-detected.
 - [The transparent-UI mod](https://www.ageofempires.com/mods/details/2532)
   clears the per-civilization border artwork from around the HUD — the main
-  source of reading trouble. One honest caveat: it does not cover every
+  source of reading trouble. Two honest caveats. It does not cover every
   civ, and the newest civs (whose artwork causes the most trouble) are the
-  least likely to be covered yet.
+  least likely to be covered yet. And what it gives with one hand it takes
+  a little back with the other: terrain showing through the bar costs a
+  small, measured slice of the HUD-detection score — fine on every map it
+  has been tested on, but if Loom ever fails to find your HUD, this mod is
+  the first thing to try turning off.
+
+One more mod is verified to coexist with Loom:
+
+- **Eco Upgrade Indicator** draws upgrade squares under the resource boxes
+  and the villager counter. Checked against recorded games on the Anne_HK
+  skin at 2560x1440: the squares land outside every band Loom reads, and
+  detection, digits and the production queue all read normally with it on.
+  Other skin and resolution combinations have not been measured yet.
 
 ---
 
@@ -184,10 +208,24 @@ Two mods pair well with Loom — recommended, never required:
 
 Four things, once:
 
+![The Loom launcher](images/launcher.png)
+
+*The launcher: your build library with search and a civilisation filter, the
+overlay controls, and the settings tabs. Everything opens from here.*
+
 1. **Pick a build** from the list at the top of the launcher — Loom ships
    a starting library, and **Import build** adds any you find or write. The
    preview window beside it shows the whole build; during a match it
-   follows along on its own.
+   follows along on its own. It keeps only the cards until you move the
+   pointer onto it, then fades its controls back in — a window you read far
+   more often than you operate. An alert band and the **manual** warning are
+   the two things that never fade. The **Preview** settings tab tunes the
+   look — background, card opacity, text size — and applies instantly.
+
+   ![The build preview window](images/build-preview.png)
+
+   *The preview: every step of the build as a card, the current one lit.
+   Browse it with the mouse before a match; during one it follows the game.*
 2. **Place the panel.** **Place overlay** opens it as a draggable window:
    drag it where you want it, close it, and the spot is saved — no game
    needed, though with one running it lines up exactly. **Reset position**
@@ -210,9 +248,18 @@ Four things, once:
 villagers-per-resource row where each resource is its own colour. Here the build
 wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
 
-- **The big line** is the step to do now, with its details beneath and its
-  deadline to the right ("by 7:30 · 22 vills"). The **THEN** row underneath
-  is the step after it, so you can read ahead.
+- **The step is a checklist.** A build step is usually several instructions,
+  so they are listed at one size with a bullet each, and the panel grows
+  taller for a step with a lot of them. The deadline sits in the middle of
+  the top row ("by 7:30 · 22 vills"); the **THEN** row is the step after
+  this one, so you can read ahead.
+- **The bullets say whether Loom knows or is only assuming.** Hollow is
+  still to do. A **filled green** bullet means Loom *saw it happen* — the
+  game announced it in its own message feed and Loom read that line. A
+  **faded, struck-through** one means only that the build moved past that
+  step, so it is assumed rather than confirmed. Items the game never
+  announces — re-tasking villagers, for instance — can only ever be
+  assumed.
 - **The VILLS row** is your villagers per resource against what the build
   wants. A number is flagged when you are more than one villager off the
   plan.
@@ -225,12 +272,27 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
   because you told it to — see [Hotkeys](#hotkeys). And when Loom cannot
   read the HUD at all it says *waiting for the game* rather than showing
   stale advice.
+- **It tells you when it has stopped reading.** If the clock keeps reading
+  but the villager count goes quiet, the panel says **VILLAGERS UNREAD**
+  with the seconds counting up, rather than wearing a stale number as if it
+  were fresh; and if Loom loses the game entirely, a soft
+  **LOST SIGHT OF THE GAME** band sits above the panel until it finds it
+  again. The panel keeps working the whole time — it just stops pretending.
+- **An amber bullet** is an item Loom was watching for and never saw
+  confirmed. It is deliberately *not* struck through: Loom does not know you
+  skipped it, only that nothing announced it.
 
 ---
 
 
 
 ## Hotkeys
+
+**Hotkeys ship switched off.** A key Loom registers is taken away from the
+game for as long as Loom runs, and that should be your choice rather than a
+surprise — so tick **Use hotkeys** in the launcher to switch the whole set
+on. The keys below are what is waiting behind that switch, and all of them
+are editable.
 
 - **Ctrl+Shift+W** — forward one step. **Ctrl+Shift+Q** — back one step.
   These are a *correction*, not a mode: after you press one, Loom stops
@@ -242,18 +304,24 @@ wants 7 on wood but only 4 are there, so it is flagged; the rest match.*
   following the game.
 - **Ctrl+Shift+0** — hide the panel, or bring it back. The launcher's **Hide
   overlay** button does the same thing and turns green while it is hidden.
+
+When the build order finishes, the panel rests on its report card — and you
+can step off it. **Ctrl+Shift+Q** goes back to the last step of the build and
+keeps going from there, so you can see how it went and then read back through
+what it asked for. That review does not time out, because there is no longer a
+live build to drift out of sync with: the panel says **MANUAL** until you walk
+forward off the last step, or press **Ctrl+Shift+R**, either of which brings
+the report back.
   Hiding is not stopping: Loom keeps reading the game, recording the match
   and counting APM the whole time, and only the window goes away. Note this
   one sits in the same family as the game's control groups (Ctrl and a
   number), so rebind it if you have remapped into that territory.
-- An optional **start/stop overlay** key does what the launcher's Start and
-  Stop buttons do, so the overlay can be started mid-game without
-  alt-tabbing. It ships unbound; give it keys in the launcher to switch it
-  on.
+- **Ctrl+Shift+F1** — start or stop the overlay, doing what the launcher's
+  Start and Stop buttons do, so the overlay can be started mid-game without
+  alt-tabbing.
 
 All of these are editable in the launcher under **Build-order hotkeys**,
-any can be left empty to switch that action off, and one **Use hotkeys**
-switch covers them all. Worth knowing: they are registered with the
+and any can be left empty to switch that action off. Worth knowing: they are registered with the
 operating system, so **while Loom is running, the game does not see them**
 — if one clashes with a hotkey you use in Age of Empires, change it here.
 Loom also says in the launcher's output when another program already owns a
@@ -520,6 +588,10 @@ loom/                   everything that gets imported
   session.py            game started / resumed / tracking lost
   reader.py             the whole read pipeline behind one class
   build_order.py        loading builds, current step, pace inputs
+  buildcheck.py         will an imported file work as a build? said at import
+  steplayout.py         how many item rows a step needs, and how big
+  checklist.py          which of a step's items are done, and how we know
+  age.py                the age crest read off the HUD, and when ages arrived
   pace.py               how far behind the build order you are
   resources.py          villagers-per-resource, read off the HUD
   queue.py              reading the global production queue off the HUD
@@ -529,6 +601,7 @@ loom/                   everything that gets imported
   glyphs.py             the notification font, read letter by letter
   report.py             the build-complete report (the payoff screen)
   gamestats.py          per-game statistics, one JSON file per match
+  debuglog.py           one line per poll, on disk: raw readings beside believed
   apm.py                aligning APM buckets to the game clock
   overlay.py            the on-screen panel
   passthrough.py        asks the OS whether the overlay really is click-through

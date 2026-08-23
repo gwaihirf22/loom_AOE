@@ -60,3 +60,43 @@ def test_the_waiting_banner_shares_the_slot_the_manual_note_uses():
     one. Sharing costs no panel height, which a 186px panel cannot spare."""
     following, _colour = overlay.describe_follow(None)
     assert following == "", "a following panel must leave the slot free"
+
+
+def test_build_done_names_the_step_key():
+    """The resting place after a build finishes is the LAST CARD, not the
+    report - the report is one next-step press forward, and the note must
+    say so, because a report one unnamed keypress away might as well not
+    exist. Same contract as the MANUAL note: never advertise a key the
+    player has rebound away."""
+    from loom import follow
+    text, _colour = overlay.describe_follow(follow.DONE, "ctrl+alt+n")
+    assert text == "BUILD DONE · ctrl+alt+n for the report"
+    text, _colour = overlay.describe_follow(follow.DONE, None)
+    assert text == "BUILD DONE"
+
+
+def test_build_done_offers_the_way_to_get_a_key_when_there_is_none():
+    """Hotkeys ship switched off from 1.0.5, so "no key to name" is what a
+    new player meets at the end of their FIRST build - and a bare BUILD
+    DONE leaves the report both unreachable and unmentioned.
+
+    The two remedies are named separately because they are different
+    actions, and a note naming the wrong one is worse than naming none."""
+    from loom import follow
+    text, _colour = overlay.describe_follow(
+        follow.DONE, None, None, overlay.HOTKEYS_OFF)
+    assert text == "BUILD DONE · enable hotkeys for the report"
+
+    text, _colour = overlay.describe_follow(
+        follow.DONE, None, None, overlay.HOTKEYS_UNBOUND)
+    assert text == "BUILD DONE · bind a step key for the report"
+
+
+def test_build_done_offers_nothing_when_nothing_would_help():
+    """A machine with no hotkey backend has no switch to throw and no key
+    to bind. Pointing the player at either would be a confident wrong
+    answer, which is the one thing this panel exists not to give - so the
+    note stays bare."""
+    from loom import follow
+    text, _colour = overlay.describe_follow(follow.DONE, None, None, None)
+    assert text == "BUILD DONE"

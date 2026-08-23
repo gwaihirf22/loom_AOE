@@ -109,6 +109,7 @@ WINDOW_GAP = 12
 SETTINGS_TABS = [
     ("Alerts", ["settings"], False),
     ("Appearance", ["appearance", "transparency"], True),
+    ("Preview", ["preview_appearance"], False),
     ("Hotkeys", ["hotkeys_box"], False),
 ]
 
@@ -126,6 +127,17 @@ MINIMUM_SIZE = (560, 380)
 # geometry to config.json. Saving per pixel of a drag would hammer the file;
 # this is the same debounce loom/browser.py uses for the preview window.
 SAVE_GEOMETRY_AFTER_MS = 1000
+
+# How often, at most, a settings change is announced to a RUNNING overlay.
+#
+# A throttle rather than the debounce above, and the difference matters: a
+# debounce restarts its timer on every change, so a slider being dragged
+# would show nothing at all until the player stopped moving - which is the
+# complaint this whole feature exists to answer. This sends one line, then
+# at most one more per interval while changes keep arriving, then a last one
+# when they stop, so the panel follows the drag and the pipe never carries a
+# line per pixel. Ten a second is smooth to the eye and cheap to the child.
+ANNOUNCE_SETTINGS_EVERY_MS = 100
 
 
 def overlay_status_text(running, hidden=False):
@@ -609,12 +621,40 @@ def _stacked(widgets):
 
 
 def _next_launch_hint():
-    """The one non-obvious fact about every setting box: a running overlay
-    keeps the settings it started with."""
+    """The one non-obvious fact about the alert settings: a running overlay
+    keeps the ones it started with."""
     hint = QLabel("Changes apply the next time the overlay starts.")
     hint.setWordWrap(True)
     hint.setStyleSheet("color: gray;")
     return hint
+
+
+def _live_hint():
+    """For the boxes a running overlay follows immediately.
+
+    Its own label rather than an argument to the one above, because the two
+    say opposite things and a box that got the wrong one would be worse than
+    a box with no hint at all - the whole reason this exists is that players
+    read "next time the overlay starts" and concluded Loom was broken.
+    """
+    hint = QLabel("These apply immediately, including while the overlay"
+                  " is running.")
+    hint.setWordWrap(True)
+    hint.setStyleSheet("color: gray;")
+    return hint
+
+
+def _announcing_setter(box, save, scale=1):
+    """A settings setter that writes the file, then says so.
+
+    Shared by the two Appearance boxes. Config FIRST, then the signal, so a
+    listener that re-reads config - which is exactly what the overlay does -
+    can never read the old value. Same order as the preview's own switches.
+    """
+    def apply(value):
+        save(value / scale if scale != 1 else value)
+        box.changed.emit()
+    return apply
 
 
 class AlertSettingsBox(QGroupBox):
@@ -704,6 +744,10 @@ class AlertSettingsBox(QGroupBox):
 class OverlaySizeBox(QGroupBox):
     """The overlay's two size knobs, as percentages.
 
+    Applies to a running overlay, live - see LauncherWindow._apply_overlay_
+    appearance. Growing the panel moves it too, because its default spot is
+    right-aligned against the game window.
+
     Stored as float multipliers in config (1.25, not 125) because the
     multiplier is the semantic value - percent is just the friendlier face
     for a spinbox. Overall size grows the whole panel, writing included;
@@ -716,6 +760,12 @@ class OverlaySizeBox(QGroupBox):
     more size controls, and a separate titled group is what actually
     removes that ambiguity.
     """
+
+    # Something changed; the launcher relays it to a running overlay.
+    changed = pyqtSignal()
+
+    def _setter(self, save, scale=1):
+        return _announcing_setter(self, save, scale)
 
     def __init__(self, parent=None):
         super().__init__("Overlay size", parent)
@@ -730,7 +780,7 @@ class OverlaySizeBox(QGroupBox):
             "Grow the whole overlay panel - geometry, writing and icons"
             " together.")
         self.overall.valueChanged.connect(
-            lambda value: config.set_overlay_scale(value / 100))
+            self._setter(config.set_overlay_scale, scale=100))
 
         self.text = QSpinBox()
         self.text.setRange(round(config.TEXT_SCALE_BOUNDS[0] * 100),
@@ -742,7 +792,7 @@ class OverlaySizeBox(QGroupBox):
             "Grow only the overlay's writing. The panel gets taller to fit"
             " it, but never wider.")
         self.text.valueChanged.connect(
-            lambda value: config.set_text_scale(value / 100))
+            self._setter(config.set_text_scale, scale=100))
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Overall size"))
@@ -753,11 +803,61 @@ class OverlaySizeBox(QGroupBox):
 
         layout = QVBoxLayout(self)
         layout.addLayout(row)
-        layout.addWidget(_next_launch_hint())
+        layout.addWidget(_live_hint())
+
+
+def _slider_row(layout, caption, scale_hint, value, setter, tip):
+    """One captioned slider with a live percent label beside it.
+
+    A QSlider cannot display its own value the way a spinbox shows a
+    suffix, so the label does it - updated on every change, including
+    mid-drag, which is half the point of a slider.
+
+    Module-level because two boxes build their rows from it: the overlay's
+    transparency box and the preview's appearance box. Two hand-rolled
+    copies is how the two windows' settings drift into looking unrelated.
+    """
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setRange(0, 100)
+    slider.setPageStep(10)
+    slider.setValue(round(value * 100))
+    slider.setToolTip(tip)
+
+    percent = QLabel(f"{slider.value()} %")
+    percent.setMinimumWidth(40)
+
+    def changed(new_value):
+        percent.setText(f"{new_value} %")
+        setter(new_value / 100)
+    slider.valueChanged.connect(changed)
+
+    caption_label = QLabel(caption)
+    # Wrapped rather than pinned to a width. A wrapped label's minimum is
+    # its longest WORD, not its longest line, and that is what lets the
+    # settings column shrink instead of forcing a sideways scroll.
+    caption_label.setWordWrap(True)
+    caption_label.setToolTip(tip)
+    hint = QLabel(scale_hint)
+    hint.setWordWrap(True)
+    hint.setStyleSheet("color: gray;")
+
+    row = QHBoxLayout()
+    row.addWidget(caption_label)
+    row.addWidget(slider, stretch=1)
+    row.addWidget(percent)
+    row.addWidget(hint)
+    layout.addLayout(row)
+    return slider
 
 
 class OverlayTransparencyBox(QGroupBox):
     """The overlay's two transparency sliders, in their own titled group.
+
+    Applies to a running overlay, live: drag one with the panel on screen
+    and watch it follow. Transparency is the cheapest of these to change -
+    both values are read fresh on every repaint - which is why players
+    dragging this slider and seeing nothing happen was the complaint that
+    started the whole live-settings idea.
 
     Sliders rather than spinboxes, and a separate box rather than a row in
     the size box - both straight from beta feedback: the spinboxes read as
@@ -773,18 +873,24 @@ class OverlayTransparencyBox(QGroupBox):
     up. Alert bands follow neither; they are alarms.
     """
 
+    # Something changed; the launcher relays it to a running overlay.
+    changed = pyqtSignal()
+
+    def _setter(self, save, scale=1):
+        return _announcing_setter(self, save, scale)
+
     def __init__(self, parent=None):
         super().__init__("Overlay transparency", parent)
 
         layout = QVBoxLayout(self)
-        self.background = self._slider_row(
+        self.background = _slider_row(
             layout, "Background", "0% invisible / 100% solid",
             config.background_opacity(),
-            config.set_background_opacity,
+            self._setter(config.set_background_opacity),
             "How solid the overlay's dark card is. At 0% there is no card at"
             " all; at 100% the game cannot be seen through it. 80% is the"
             " designed look.")
-        self.text = self._slider_row(
+        self.text = _slider_row(
             # One ampersand, not two. A doubled one is how you escape a
             # mnemonic in a QPushButton or a menu; a QLabel with no buddy does
             # no mnemonic handling at all, so it renders exactly what it is
@@ -793,51 +899,91 @@ class OverlayTransparencyBox(QGroupBox):
             # place that did not.
             layout, "Text & icons", "50% normal / 100% bright & bold",
             config.text_visibility(),
-            config.set_text_visibility,
+            self._setter(config.set_text_visibility),
             "How visible the overlay's writing is. 50% is the designed look;"
             " lower fades it out, higher makes it solid and brighter for"
             " reading over bright terrain. Alert bands always stay at full"
             " strength - they are alarms.")
-        layout.addWidget(_next_launch_hint())
+        layout.addWidget(_live_hint())
 
-    def _slider_row(self, layout, caption, scale_hint, value, setter, tip):
-        """One captioned slider with a live percent label beside it.
 
-        A QSlider cannot display its own value the way a spinbox shows a
-        suffix, so the label does it - updated on every change, including
-        mid-drag, which is half the point of a slider.
-        """
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(0, 100)
-        slider.setPageStep(10)
-        slider.setValue(round(value * 100))
-        slider.setToolTip(tip)
+class PreviewAppearanceBox(QGroupBox):
+    """The build preview's appearance: its ground, its cards, its text.
 
-        percent = QLabel(f"{slider.value()} %")
-        percent.setMinimumWidth(40)
+    Its own tab rather than more rows under Appearance, because the two
+    windows sit over different things - the overlay over the game, the
+    preview over the desktop - and a knob that is right against terrain says
+    nothing about what is right against a wallpaper.
 
-        def changed(new_value):
-            percent.setText(f"{new_value} %")
-            setter(new_value / 100)
-        slider.valueChanged.connect(changed)
+    Applies IMMEDIATELY, like the Appearance tab - but by a different
+    route, and the difference is the whole reason this was easy and that
+    was not. The preview is a widget in the launcher's own process, so
+    `changed` reaches it directly. The overlay is a separate process and
+    has to be told down its stdin pipe. Only the Alerts tab still waits
+    for a restart.
+    """
 
-        caption_label = QLabel(caption)
-        # Wrapped rather than pinned to a width. A wrapped label's minimum is
-        # its longest WORD, not its longest line, and that is what lets the
-        # settings column shrink instead of forcing a sideways scroll.
-        caption_label.setWordWrap(True)
-        caption_label.setToolTip(tip)
-        hint = QLabel(scale_hint)
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray;")
+    # Something changed; the launcher relays this to the open preview.
+    # The same in-process live-apply the hotkeys use - see bindings_changed.
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__("Preview window", parent)
+
+        layout = QVBoxLayout(self)
+        self.rest = _slider_row(
+            layout, "Background at rest", "0% cards on the desktop",
+            config.preview_rest_opacity(),
+            self._setter(config.set_preview_rest_opacity),
+            "How much ground stays under the cards while the pointer is"
+            " away. At 0% the cards float straight on the desktop; at 100%"
+            " the ground never fades at all.")
+        self.hover = _slider_row(
+            layout, "Background when hovered", "100% solid",
+            config.preview_hover_opacity(),
+            self._setter(config.set_preview_hover_opacity),
+            "How solid the ground becomes when the pointer is on the"
+            " window. The controls always come back regardless - this is"
+            " only about the ground they sit on.")
+        self.cards = _slider_row(
+            layout, "Card opacity", "92% is the designed look",
+            config.preview_card_opacity(),
+            self._setter(config.set_preview_card_opacity),
+            "How solid the step cards are. Text stays at full strength;"
+            " this fades only the dark card behind it.")
+
+        self.text = QSpinBox()
+        self.text.setRange(round(config.PREVIEW_TEXT_SCALE_BOUNDS[0] * 100),
+                           round(config.PREVIEW_TEXT_SCALE_BOUNDS[1] * 100))
+        self.text.setSingleStep(5)
+        self.text.setSuffix(" %")
+        self.text.setValue(round(config.preview_text_scale() * 100))
+        self.text.setToolTip(
+            "Grow only the cards' writing. A card gets taller to fit it,"
+            " but never wider.")
+        self.text.valueChanged.connect(
+            self._setter(config.set_preview_text_scale, scale=100))
 
         row = QHBoxLayout()
-        row.addWidget(caption_label)
-        row.addWidget(slider, stretch=1)
-        row.addWidget(percent)
-        row.addWidget(hint)
+        row.addWidget(QLabel("Card text size"))
+        row.addWidget(self.text)
+        row.addStretch()
         layout.addLayout(row)
-        return slider
+
+        hint = QLabel("These apply immediately, including while the"
+                      " preview is open.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
+    def _setter(self, save, scale=1):
+        """Write the config first, then announce - the same order the
+        preview's own checkboxes use, so a listener that re-reads config
+        always reads the new value."""
+        def apply(value):
+            save(value / scale if scale != 1 else value)
+            self.changed.emit()
+        return apply
 
 
 class HotkeysBox(QGroupBox):
@@ -1101,10 +1247,21 @@ class LauncherWindow(QWidget):
         self.overlay_process = None
         self.dev_process = None
 
+        # The settings throttle: a single-shot that gates how often a
+        # running overlay is told to re-read. _settings_pending remembers a
+        # change that arrived while the gate was shut, so the last value of
+        # a drag always lands even though most of the drag was dropped.
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(ANNOUNCE_SETTINGS_EVERY_MS)
+        self._settings_timer.timeout.connect(self._settings_gate_opened)
+        self._settings_pending = False
+
         self.picker = BuildPicker()
         self.settings = AlertSettingsBox()
         self.appearance = OverlaySizeBox()
         self.transparency = OverlayTransparencyBox()
+        self.preview_appearance = PreviewAppearanceBox()
         self.hotkeys_box = HotkeysBox()
         self.output = OutputPane()
         self.apm_process = None
@@ -1341,6 +1498,14 @@ class LauncherWindow(QWidget):
         self._register_launcher_hotkeys()
         self.hotkeys_box.bindings_changed.connect(
             self._register_launcher_hotkeys)
+        # The Preview tab reaches the open preview instantly - both live in
+        # this process, which is what the tab's own hint promises.
+        self.preview_appearance.changed.connect(
+            self.browser.apply_appearance)
+        # The Appearance tab reaches the overlay down its stdin pipe, which
+        # is slower to say but no slower to feel.
+        self.appearance.changed.connect(self._announce_settings)
+        self.transparency.changed.connect(self._announce_settings)
 
     # ---- window geometry -------------------------------------------------
 
@@ -1503,8 +1668,14 @@ class LauncherWindow(QWidget):
             self.overlay_process.request_toggle_hidden()
 
     def reset_overlay_position(self):
-        """Forget the saved overlay spot. Applies on the next overlay start,
-        like every overlay setting."""
+        """Forget the saved overlay spot.
+
+        Applies on the next overlay start - unlike the Appearance tab, which
+        a running overlay follows live. Position is the odd one out because
+        the panel may have been dragged since, and yanking it out from under
+        a player mid-match to a spot they did not ask for is worse than
+        waiting.
+        """
         config.clear_overlay_offset()
         self.output.append_line(
             "[launcher] overlay position reset to the default (top right,"
@@ -1694,6 +1865,44 @@ class LauncherWindow(QWidget):
         x = min(self.x() + offset, area.right() - (window.width() or 620))
         y = min(self.y() + offset, area.bottom() - (window.height() or 520))
         return max(area.left(), x), max(area.top(), y)
+
+    def _announce_settings(self):
+        """An Appearance setting changed. Tell a running overlay to re-read.
+
+        The setting is already saved by the time this runs, so an overlay
+        that is not running needs nothing from us - it will read the file
+        when it starts, exactly as before. This only closes the gap for a
+        session already on screen.
+
+        Throttled rather than debounced: a slider fires on every tick of a
+        drag, and a debounce would show the player nothing until they let
+        go, which is the behaviour this feature exists to remove.
+        """
+        if self._settings_timer.isActive():
+            # Inside the gate. Remember that something changed so the final
+            # value is not the one that gets dropped.
+            self._settings_pending = True
+            return
+        self._send_settings()
+        self._settings_timer.start()
+
+    def _settings_gate_opened(self):
+        if self._settings_pending:
+            self._settings_pending = False
+            self._send_settings()
+            self._settings_timer.start()
+
+    def _send_settings(self):
+        """One request down the pipe, if there is anyone on the end of it.
+
+        The full liveness test, not just a null check: _overlay_finished
+        leaves the object in place when a child exits, so `is not None`
+        alone would write to a QProcess whose program is long gone.
+        """
+        if (self.overlay_process is None
+                or not self.overlay_process.is_running()):
+            return
+        self.overlay_process.request_settings_changed()
 
     def _apply_overlay_disabled(self, disabled):
         """The preview's "No overlay" box changed. Make it so, now.

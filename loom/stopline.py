@@ -5,15 +5,23 @@ The mirror image of statefeed: that module carries the overlay's state up to
 the launcher on stdout, and this one carries requests back down on stdin.
 Same pipe, already owned by the launcher, already open.
 
-Two things can be asked, each its own whole-line sentinel:
+Three things can be asked, each its own whole-line sentinel:
 
     LOOM_STOP            stop, saving what you have
     LOOM_TOGGLE_HIDDEN   take the panel off the screen, or put it back
+    LOOM_SETTINGS        the settings file changed; go and re-read it
 
-The module is still called stopline because stopping is what it exists for
-and what every hard-won paragraph below is about; hiding is a passenger on a
-channel that already worked. If a third request ever turns up, the honest
-move is to rename it rather than keep pretending.
+The third one is why this paragraph used to promise a rename. It is a
+request channel now, not a stop line, and the name is left over from when
+stopping was all it did - the rename is worth its own commit rather than
+being smuggled in with a feature, because every importer moves with it.
+Until then, read the name as historical.
+
+LOOM_SETTINGS carries no payload, deliberately. config.load() re-reads the
+file on every getter, so the child needs telling that something changed and
+nothing more; sending the values would be a second copy of the settings
+schema to keep in step with the first. It also means a setting invented
+later becomes live without touching this module at all.
 
 Nothing but the stop sentinel stops a child. End-of-stream deliberately does
 not - read_until_stop explains what that cost when an earlier draft let it.
@@ -57,6 +65,7 @@ import threading
 # is not a request.
 SENTINEL = "LOOM_STOP"
 TOGGLE_HIDDEN_SENTINEL = "LOOM_TOGGLE_HIDDEN"
+SETTINGS_SENTINEL = "LOOM_SETTINGS"
 
 
 def encode():
@@ -84,6 +93,25 @@ def is_stop_line(line):
 def is_toggle_hidden_line(line):
     """Is this line from stdin a hide-or-show request?"""
     return line.strip() == TOGGLE_HIDDEN_SENTINEL
+
+
+def encode_settings_changed():
+    """The exact bytes that tell a child its settings file has changed.
+
+    No payload, and no argument saying WHAT changed: the child re-reads
+    everything it cares about, which is cheap because config.load() reads
+    the file on every getter anyway. A request that named the setting would
+    be a second copy of the settings schema, and the two would drift.
+
+    Sent on every tick of a slider drag, so the launcher throttles rather
+    than the wire carrying one line per pixel.
+    """
+    return (SETTINGS_SENTINEL + "\n").encode("ascii")
+
+
+def is_settings_line(line):
+    """Is this line from stdin a settings-changed request?"""
+    return line.strip() == SETTINGS_SENTINEL
 
 
 def quit_hint():
@@ -114,7 +142,8 @@ def quit_hint():
     return "press Stop in the Loom launcher to quit"
 
 
-def read_until_stop(stream, on_stop, on_toggle_hidden=None):
+def read_until_stop(stream, on_stop, on_toggle_hidden=None,
+                    on_settings=None):
     """Read lines until a stop request arrives, then call on_stop once.
 
     Returns True if it stopped because it was asked to, False if the stream
@@ -144,6 +173,11 @@ def read_until_stop(stream, on_stop, on_toggle_hidden=None):
     CARRIES ON - it is a request about the window, not about living or
     dying. Like on_stop it runs on the reader thread, so a caller with a Qt
     event loop marshals it across itself.
+
+    on_settings is the same shape again, for the settings file having
+    changed. Both are optional and both are skipped when not given, which
+    is what lets loom_read and loom_coach share this reader while caring
+    about nothing but stopping.
     """
     try:
         for line in stream:
@@ -152,6 +186,8 @@ def read_until_stop(stream, on_stop, on_toggle_hidden=None):
                 return True
             if on_toggle_hidden is not None and is_toggle_hidden_line(line):
                 on_toggle_hidden()
+            if on_settings is not None and is_settings_line(line):
+                on_settings()
     except (ValueError, OSError):
         # A closed or already-torn-down stdin. Not an error worth reporting
         # from a background thread nobody is watching, and not a reason to
@@ -160,19 +196,20 @@ def read_until_stop(stream, on_stop, on_toggle_hidden=None):
     return False
 
 
-def watch(on_stop, stream=None, on_toggle_hidden=None):
+def watch(on_stop, stream=None, on_toggle_hidden=None, on_settings=None):
     """Watch stdin for requests from the launcher, on a daemon thread.
 
     Daemon, so a child that exits for any other reason is never held open by
     this thread sitting in a blocking read.
 
-    Both callbacks are called on the reader thread. Callers with a Qt event
+    Every callback is called on the reader thread. Callers with a Qt event
     loop must marshal them across themselves - see the module docstring.
     """
     thread = threading.Thread(
         target=read_until_stop,
         args=(sys.stdin if stream is None else stream, on_stop),
-        kwargs={"on_toggle_hidden": on_toggle_hidden},
+        kwargs={"on_toggle_hidden": on_toggle_hidden,
+                "on_settings": on_settings},
         name="loom-stopline",
         daemon=True)
     thread.start()

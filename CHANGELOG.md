@@ -6,6 +6,416 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.5 — 2026-08-23
+
+**An audit round, after the big merge.** The July round has a precedent
+entry; this one follows it. The findings that were bugs are fixed, the
+findings that were bigger than a cleanup are on the roadmap, and the
+codebase came out healthier than expected - no dead modules, no orphaned
+settings, no unreferenced test fixtures.
+
+- **The list of things that forget a finished game is data now.** Both
+  controllers kept that list by hand, and the two had already drifted: the
+  demo gained a checklist in the merge and its reset list never learned, so
+  every replay loop after the first started with the items pre-ticked. Each
+  controller now declares `fresh_each_game` once and one shared method walks
+  it - finish first, because it writes to the file the recorder renewal
+  replaces - and a test fails if a stateful subsystem is left out.
+- **Demo replays stop polluting the match history.** A forgotten demo wrote
+  a stats file per replay loop - one phantom game a minute - and the
+  statistics window listed them all. The demo now reuses one file however
+  long it runs, and the stats window skips `_demo` files outright.
+- **The overlay entry point has tests at last.** Three end-to-end files,
+  promoted from the scratchpad smokes that caught three real bugs in two
+  days: the completion-card review driven by the real hotkey path, live
+  appearance changes with the geometry-atomicity assertion, and the settings
+  throttle against a counted fake child.
+- The event-bus / ECS question got its answer and it is no: eight
+  singletons, one process pair, and two purpose-built channels already
+  carrying everything. The one bus-shaped pain was the reset fan-out, fixed
+  above with a data structure rather than a framework.
+- CLAUDE.md's layout table caught up with reality - nine modules had joined
+  the tree without joining the table, `reader.py` among them.
+
+**Appearance settings apply to a running overlay, immediately.** Drag a
+transparency slider or change the overlay's size with the panel on screen and
+it follows you - no restart, no stopping a match to try something. The tab used
+to say "Changes apply the next time the overlay starts", which was true and
+still read as broken: people dragged the slider, watched nothing happen, and
+asked why.
+
+- **The overlay is a separate process**, which is the whole reason this was not
+  already so. The build preview went live in a single Qt signal because it is a
+  widget in the launcher's own memory; the panel is a child process, and the
+  only channel to it carried exactly two fixed words on stdin. It carries a
+  third now.
+- **The request has no payload, deliberately.** `config.load()` re-reads the
+  file on every getter, so the child needs telling that something changed and
+  nothing more. Sending the values would be a second copy of the settings
+  schema to keep in step with the first - and this way a setting invented later
+  becomes live without touching the wire at all.
+- **Throttled, not debounced.** A slider fires on every tick of a drag, and a
+  debounce would show nothing until the player let go, which is the exact
+  complaint being fixed. One request goes out at once, then at most ten a
+  second while the drag continues, then a final one when it stops - so the last
+  value always lands even though most of the drag is dropped.
+- **Changing the size moves the panel, and it has to.** The default position is
+  right-aligned against the game window while `move()` sets the panel's
+  top-left, so a panel that grew without being placed again hung off the right
+  edge by exactly however much it grew. Measured before the fix: at 140% the
+  panel's right edge sat 224px past where it belonged.
+- **The layout and the window's own size change together or not at all.** The
+  drawing code mixes `self.width()`, which `resize()` sets, with
+  `L.panel_height`, which is recomputed on every paint - so a layout swapped
+  without a resize draws the new height inside the old width, clipped, with
+  every right-aligned number anchored to a width that no longer exists.
+  Resource icons are re-baked with it; fonts need nothing, being built inline
+  from the layout at paint time.
+- Alert bands stay exempt from both transparency knobs, as before. They are
+  alarms.
+- The **Alerts** tab still applies on the next start, and now says so on its
+  own rather than on behalf of every setting. `stopline.py` said that a third
+  request should come with a rename; that is true and is worth its own commit
+  rather than being smuggled in with a feature, so its docstring says what the
+  module actually is now and the rename is still owed.
+
+**The completion card is no longer a dead end.** When the build order
+finished, the panel flipped to its report and locked there for the rest of the
+match - the step keys stopped working, and the preview froze at the same
+moment with its clicks dead, so there was nowhere left to look. Ctrl+Shift+Q
+now steps back onto the **last step** of the build and keeps going from there.
+
+- **Two independent things were holding it shut**, and both had to go. The
+  hotkey path itself bailed out on a completed build, so the key moved the
+  cursor and nothing repainted; and even a repaint would not have survived,
+  because the poll loop redrew the report unconditionally three times a second.
+- **The report is a slot of its own now**, one past the last step, so walking
+  off it and back onto it falls out of the cursor arithmetic that was already
+  there rather than out of a special case. Forward off the last step lands on
+  it; so does Ctrl+Shift+R.
+- **The review does not time out.** The ten-second hold exists to stop the
+  panel drifting out of sync with a *live* build; once the build is done there
+  is nothing to drift from, so a step key switches following off for good and
+  the panel says MANUAL - which already names the key that brings the report
+  back.
+- **A new match takes the slot away again**, so a finished build's report can
+  never be reached in the middle of the next game.
+- **The preview follows along**, instead of freezing. The overlay used to fall
+  silent on the state feed the moment a build completed, which left the preview
+  stuck on whatever step it last heard about and unable to take a click. Both
+  windows now show the same step throughout the review, and the preview's alert
+  bands keep working for the rest of the game.
+
+**The build preview keeps only its cards until you reach for it.** Move the
+pointer onto the window and the ground, the frame and the controls fade in;
+take it away and all of it goes, leaving the cards floating directly on the
+desktop - no background, no border, nothing else. The window draws its own
+frame now, rounded at the corners, and every part of it rides the same fade.
+
+The window earned this when the alert bands arrived in 1.0.4 and it stopped
+being a reference you read before a match and became somewhere to play *from*.
+It spends the match on a second monitor being glanced at while both hands are
+in the game — and controls that are useful for the few seconds a year they are
+clicked do not earn a permanent strip across the top of it.
+
+- **The chrome floats above the cards rather than sitting in the layout**, and
+  that is the whole design rather than an implementation detail. Chrome that
+  collapsed would hand its height back to the scroll viewport, the card count
+  would be re-derived from the taller viewport, and the stack would redeal —
+  every card sliding down as the pointer approached the one it was aiming at.
+  Floating it changes no layout at all, so the cards do not move by a pixel
+  whether the controls are there or not. What it covers while it is up is the
+  step already behind you, which is the least important thing on screen.
+- **Two things never fade.** An alert band is an alarm rather than chrome, and
+  the **manual** chip is the panel saying it has stopped following the game —
+  which CLAUDE.md forbids it doing quietly. Faded chrome would leave *manual*
+  and *following* looking identical from across the desk, which is the same
+  silent, trusted failure as a wrong villager count. Either one pins the
+  controls up with no pointer anywhere near the window. "following game" is
+  not a warning and pins nothing.
+- **The window is frameless, and Loom draws what the caption used to.** Qt
+  cannot fade a native title bar, and toggling the frame on and off recreates
+  the native window — which flickers, shifts the geometry and can steal focus.
+  Focus theft is not cosmetic here: it would minimise a fullscreen game every
+  time the pointer crossed the preview. Dragging and resizing are handed
+  straight back to the window manager, so Aero Snap, edge tiling and the
+  native resize cursors all survive losing the frame.
+- **The ground around the cards is as thin as it goes.** The position bar left
+  the layout and now floats over the right edge of the card area with the rest
+  of the chrome, giving its strip back to the cards: a 620px window went from
+  60px of surround to 40px, and the stack is centred instead of sitting
+  visibly left of it. The gutter stops at the resize margin, because below
+  that the window stops being resizable by its own edge before it looks any
+  better.
+- **The fade is measured in elapsed time, not in ticks**, so a window that
+  misses a few frames still finishes in the time it promised. The same reason
+  the notification watcher counts game seconds rather than looks.
+- **The ground is chrome too - chrome shaped like a background.** At rest the
+  window paints nothing of its own: the scroll machinery is stripped of every
+  background Qt gives it by default, including the one `setWidget` switches
+  on silently when the card column is adopted. That last one was found by
+  rendering the window at rest and mapping which pixels were opaque - a solid
+  block exactly the scroll area's rectangle, surviving every switch that had
+  already been turned off.
+- **A Preview settings tab makes all of it the player's choice.** Two
+  background sliders - how much ground stays under the cards at rest, and how
+  solid it becomes on hover - plus card opacity and card text size. The
+  defaults reproduce the designed look byte-for-byte, and the card knobs keep
+  the three role tints in proportion however solid the stack is made.
+- **The Preview tab is the one settings page that applies immediately**,
+  including mid-drag with the window open, because the preview lives in the
+  launcher's own process. Every other page waits for the overlay to restart
+  and says so; this one says the opposite, and both are true.
+- **Bigger card text makes a card taller, never wider** - the overlay's own
+  text-knob rule. Every height that is computed from a card's follows the
+  text factor too: the card count, the shrink-to-fit floor and the window's
+  minimum. A height bound that ignored it would be the pixel-constant rule
+  failing again, with the bottom row of every card clipped at 150%.
+- Hover is found by polling the pointer's position against the window frame
+  rather than by enter/leave events. The cards cover the whole viewport, and
+  Qt sends a widget a Leave the moment the pointer crosses into any of its
+  children — every one of which looks exactly like leaving the window.
+
+---
+
+
+Kept here as it lands rather than written from the git log at release time,
+which is how the 1.0.4 section came to be 490 lines.
+
+### Added
+
+- **A build step is a checklist.** Its instructions are all drawn at one
+  size with a bullet each, instead of the first being a headline and the
+  rest small footnotes capped at two. Counted across the thirteen shipped
+  builds, that split was never a ranking: 38 of 150 steps lead with a
+  heading rather than an action, 20 of the 58 age-up mentions sit in a
+  later piece, and the busiest step showed three of its seven instructions
+  while saying nothing about the four it dropped. The panel and the preview
+  cards grow taller for a long step (`loom/steplayout.py`).
+- **Items tick off, and say how confidently.** A filled green bullet means
+  Loom read the game announcing it; a faded struck-through one means only
+  that the build moved past that step (`loom/checklist.py`). Items the game
+  never announces - re-tasking villagers - can only ever be assumed, and
+  the How-to-use window says so.
+
+### Added (honesty about not reading, 2026-08-22)
+
+The trigger was a live game with the villager count frozen at 6 for its
+whole length while the clock ran on. The recording replayed perfectly
+afterwards - every frame read - so whatever killed the live reads left no
+evidence, and the panel had never admitted anything was wrong. Both halves
+of that are fixed; the trigger itself remains unreproduced (the mod bisect
+that evening cleared the Eco Upgrade Indicator mod and left the transparent
+UI mod suspected but unconvicted - it costs ~0.02 of anchor score, measured,
+against a gate headroom of ~0.07).
+
+- **The panel now says when it has stopped reading, on its own face.** The
+  villager filter holds its last belief through unreadable polls on
+  purpose - right for a menu - but when the clock keeps reading and the
+  villager band alone goes quiet, the held number is an assumption wearing
+  a reading's clothes. After ten game-seconds of that the header says
+  `VILLAGERS UNREAD · 24s` and counts (`filters.ReadGap`,
+  `overlay.describe_staleness`). Counted in game time, not polls - the
+  poll rate is not a clock - with a consecutive-miss guard so the clock
+  leap after an alt-tab cannot flash an accusation.
+- **Losing sight of the game is announced, not worn.** `session.py` has
+  declared TRACKING_LOST for months and nothing consumed it: the filters
+  hold their beliefs, `is_usable()` stays true on held numbers, and the
+  panel kept wearing a live face over a game it could no longer see. A
+  soft yellow LOST SIGHT OF THE GAME band now sits above the panel until
+  the session itself reports the game back - a band rather than a
+  takeover, by the author's ruling on the first version (which swapped
+  the whole panel for a waiting face): the held step and the hotkeys are
+  still worth having in front of you, so the panel keeps working and just
+  stops pretending its numbers are fresh. It rides the same channel as
+  the other alert bands, so the preview shows it too when its alerts are
+  on.
+- **A forensic log per session** (`loom/debuglog.py`, `logs/` in the data
+  directory, newest twenty kept). One line per poll with raw readings
+  beside believed ones - the distinction the frozen-count investigation
+  could not make from outside - plus anchor acquisition, session events,
+  feed events and alert transitions. Always on, because nobody enables
+  debug logging before the bug; guarded so a full disk turns the diary
+  off rather than the overlay. The shipped exe has no console, so this
+  is the only record a live incident leaves.
+
+### Changed (shipped defaults, 2026-08-23)
+
+One rule, applied across the settings file: **ship what the author actually
+plays with.** An untouched install now looks and behaves like the author's
+own, instead of like the designed starting point nobody left alone. Every
+one of these is still a setting; existing installs keep whatever they have
+saved.
+
+- **Appearance**: overlay card 0.83 (was the designed 205/255), text
+  visibility 0.82 (was the 0.5 midpoint); preview ground 0.51 at rest and
+  0.8 hovered (was 0/1), cards solid (was 235/255), card text 1.05.
+- **The preview shows alert bands by default** - living with it said the
+  bands are the point of glancing at the preview mid-game, and the
+  lost-sight banner rides the same channel. The checkbox still buys the
+  quiet browser back.
+- **Hotkeys ship as a working set behind a switch that ships OFF.** Every
+  binding defaults to the author's own - including start/stop overlay on
+  Ctrl+Shift+F1, which used to ship unbound - but `Use hotkeys` itself now
+  defaults off. The safety moved up a level: a registered combination is
+  taken from the game, so no key is taken until the player throws the
+  switch, and when they do, what is waiting is a working set rather than
+  blanks to fill in. The How-to-use page says so.
+- **The BUILD DONE note offers the way to GET a key when there is none.**
+  A consequence of the switch above, caught before it shipped: the note
+  leads to the build report by naming the next-step key, and with no key
+  to name it fell back to a bare `BUILD DONE` - leaving the report both
+  unreachable and unmentioned at the end of a new player's very first
+  build. It now reads `BUILD DONE · enable hotkeys for the report`. Two
+  remedies rather than one, because they are different actions and a note
+  naming the wrong one is worse than naming none: a cleared step key gets
+  `bind a step key for the report` instead. A machine with no hotkey
+  backend at all gets neither - there is nothing to throw and nothing to
+  bind, and pointing a player at a switch that cannot help them is the
+  kind of confident wrong answer this panel exists to avoid.
+
+### Added (evidence and reliability, 2026-08-21/22)
+
+- **Loom reads which age you are in, from the age crest beside the
+  resource bar.** The crest is artwork shared by both HUD skins and only
+  changes when an age-up COMPLETES, so it is the authority for both "in
+  which age" and "the age-up finished" - measured over six games at both
+  resolutions with not one frame unread. The red bar beside it marks an
+  age-up in progress. Age completions on the build's checklist come from
+  the crest alone; the game's own "...Research Complete" line wraps and
+  often never reads, and is now pointedly ignored for ages (the author's
+  ruling: "those shields don't lie and are readable all game long").
+- **Joining a game in progress works.** The age is a floor on which step
+  is SHOWN (a player in Castle Age is never shown a Feudal card), while
+  what was actually DONE stays the checklist's separate question - being
+  in an age does not prove the earlier instructions were carried out.
+- **Houses are counted from the population cap as well as the feed.** Two
+  houses finishing close together print one line by the game's own rules;
+  before Castle Age every +5 cap is a house, exactly. Witnesses reconcile
+  by max, never added.
+- **Items cost what the build asks**: "Build 2 House" needs two houses,
+  ordinals name which rather than how many, and a supply house cannot
+  tick a distant card - houses credit only near the current step, while
+  unique things (techs, ages, the handful-per-game buildings) credit from
+  anywhere, so work done early still counts.
+- **A reliability harness for the notification reader**
+  (tools/notif_corpus.py, tools/notif_report.py, tools/notif_baseline.txt):
+  a labelled corpus of 2,762 distinct lines from six captured games, every
+  miss classified by remedy, and a committed baseline so any reader change
+  reviews as a git diff. It killed two plausible improvements in minutes
+  each and isolated the current blocker (unverified labels) - work that
+  used to cost a live game per lesson.
+- **The vocabulary gate is derived, not discovered**: 448 words from the
+  shipped queue templates and icon library, so DLC units read the day
+  their icons land, and CI names any missing word.
+
+### Fixed
+
+Three items went unticked in one live Mongol game on the knight-rush
+build - a barracks, a second Town Centre, and the farms - and they had
+three unrelated causes.
+
+- **The world showing past the end of the message box no longer refuses a
+  line.** The band the reader cuts is as wide as the feed's CROP, and the
+  game's message box ends about 250px short of it - so a unit's white
+  health bar sat level with `--Barracks Built--`, was segmented as if it
+  were text, could not classify, and refused the whole line. Nothing
+  failed loudly; the line simply never existed, three looks running, and
+  the barracks never ticked. A message is contiguous text, so the reader
+  now stops at a gap far too wide to be a word space: word gaps run 5-8px
+  at every rendering measured, and this void was 182. Across the 900-line
+  labelled corpus the change is a strict gain - one previously unread
+  line recovered, nothing else altered.
+- **Farms are never watched, because the game never announces them.** The
+  checklist assumed the opposite when it was written ("farms complete
+  close together, so they will often sit amber"). The corpus says
+  otherwise: 900 labelled lines from eight games, holding every one of
+  the twenty-two building kinds the game does announce - houses 20 times,
+  mills 15, markets 8 - and zero farms. `--Farm Exhausted--` exists and
+  is a different event about a different moment. Watching for a line that
+  is never printed leaves the item unfinishable and takes anything
+  sharing that item down with it, which is exactly the wall bug this
+  build had already produced once; eight items across the shipped builds
+  were waiting on it. Farms join the walls in `IGNORED_SUBJECTS`, and
+  fish traps with them.
+- **A tool named in a step is no longer treated as a thing to build.**
+  "Use Market to build 2nd Town Center" asks for a Town Centre; the
+  Market is what the stone is sold at, and was built eight minutes
+  earlier - so its one event had already been spent crediting the step
+  that did ask for it, and this item wanted a second market line that was
+  never coming. The real second Town Centre, read cleanly off the feed,
+  could not tick the item it belonged to. `INSTRUMENT_BEFORE` reads
+  "use"/"with" before a token the way `LOCATION_BEFORE` already reads a
+  preposition; audited against the whole library, four mentions match and
+  every one is an instrument.
+- **A checklist item can no longer be split from its event by word
+  boundaries.** The item's subject comes from an icon filename and the
+  event's from the game's own line, and `Scoutcavalry_aoe2DE.webp` vs
+  `--Scout Cavalry Created--` made the Mongol scouts build's key item one
+  no event could ever credit - found by auditing every shipped build's
+  watchable subjects before a game found it live. The comparison now
+  ignores boundaries (same words, same order); the malformed word had
+  even reached `KNOWN_WORDS` via the asset-derived vocabulary, which is
+  why a words-are-known audit could not see it.
+- **"+1 VILL" now shows when the age is the ceiling, not just the clock.**
+  From a live scouts game: the player was behind the clock with 18
+  villagers in a build whose Dark Age never asks past 17, and the surplus
+  chip stayed silent. The hold test needs the cursor inside the hold
+  window, and a behind player's cursor was not there yet - but the steps
+  asking for more villagers were all gated behind an age the crest said
+  had not arrived, so no amount of "running ahead" made the count
+  legitimate. `extra_villagers` now also measures against the current
+  age's own largest ask, only when there is an age reading (without one it
+  would be a guess).
+- **`KNOWN_WORDS` was missing 29 words**, including "armor" (which refused
+  all nine armour upgrades), "camp" and "patrol". A missing word refuses
+  perfectly-read lines and reports nothing.
+- **The notification band pad was a pixel constant** tuned at 1920x1080 and
+  clipping the ascenders off every line at 2560x1440.
+- **Words no longer come apart at 1920x1080.** The space threshold was a
+  flat fraction of the line height, measured at 26-34px lines, which on a
+  15px line put the gate straight through the letter gaps: "Bu iet" for
+  Built, "Ski rp ishrr" for Skirmisher. It comes from each line's own gap
+  distribution now, because no fraction can do the job - measured on one
+  game captured at both resolutions, the biggest letter gap and the
+  smallest word gap sit six thousandths apart as fractions of height, on
+  opposite sides of the answer. In pixels they never overlap.
+- **A letter split across two runs can be read back**, the mirror of the
+  existing merged-letter split. At 1080p a glyph is ~6px wide and one
+  stroke column under the ink threshold cuts a "u" into "p" and "t"; both
+  halves then classify confidently as the wrong letters.
+- **Reading the feed no longer costs 921ms** on a busy panel. The glyph
+  matcher compares against a packed matrix rather than looping in Python:
+  57ms with twice the templates.
+
+Measured on the capture corpus, distinct events found per run: a busy
+Castle-age game 4 → 46, a quiet Dark-age game 6 → 8, a 1920x1080 full
+tech tree 0 → 12, and the same tech-tree game captured at 2560x1440 reads
+85.8% of its lines and finds 111.
+
+### Known and not fixed
+
+- **At 1920x1080 the notification feed is largely unread**, so the
+  checklist's green "observed" ticks and the Town Centre count - the two
+  features built on it - do not work there. Found by playing at 1080p, and
+  the templates say why: the character set holds 1253 variants harvested at
+  2560x1440 and none at the smaller point size the game uses at 1080p,
+  because the game re-lays that feed out rather than scaling one master.
+  Everything else - villager count, clock, population, queue, age, pace,
+  alerts - reads at both sizes. **1440p is the confirmed-working
+  resolution** for the feed; closing the gap is a harvest, not a code
+  change, and it is the top item on the roadmap.
+- **`--Double-Bit Axe Research Complete--` does not read**, reproducibly:
+  it fails in the live Mongol game and in two separate corpus runs, and
+  it is why that technology never ticks off a build. This one is not the
+  band cutter or the world beside it - the line is cut cleanly and the
+  glyphs themselves are the problem. The `x` of "Axe" scores 0.744 as a
+  `v`, and "Complete" ends in two merged pairs (`et`, `e-`) that the
+  split repair will not take, all under the 0.8 gate. That is the
+  notification font's own coverage at this rendering, so the fix is a
+  harvest, not a threshold - and the refusal is doing its job in the
+  meantime: the line is dropped rather than filed under a wrong word.
+
 ## 1.0.4 — 2026-08-21
 
 **The release where the build preview became somewhere you can play from, and

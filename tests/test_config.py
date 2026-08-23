@@ -178,12 +178,13 @@ def test_launcher_position_defaults_to_none():
     assert config.launcher_position() is None
 
 
-def test_preview_alerts_defaults_off_and_roundtrips():
-    """Off by default: the preview has been a quiet browser its whole life,
-    and a flashing band nobody asked for is a poor surprise."""
-    assert config.preview_alerts() is False
-    config.set_preview_alerts(True)
+def test_preview_alerts_defaults_on_and_roundtrips():
+    """On by default since 1.0.5: the bands are the point of glancing at
+    the preview mid-game, and the lost-sight banner rides the same
+    channel. The checkbox still buys the quiet browser back."""
     assert config.preview_alerts() is True
+    config.set_preview_alerts(False)
+    assert config.preview_alerts() is False
 
 
 def test_overlay_disabled_defaults_off_and_roundtrips():
@@ -195,13 +196,14 @@ def test_overlay_disabled_defaults_off_and_roundtrips():
     assert config.overlay_disabled() is True
 
 
-@pytest.mark.parametrize("getter", [config.preview_alerts,
-                                    config.overlay_disabled])
-def test_garbage_leaves_both_switches_off(getter):
-    """Default-off polarity, like developer_mode: anything but a deliberate
-    True means off. A mangled settings file must not hide somebody's overlay."""
+@pytest.mark.parametrize("getter,resting", [(config.preview_alerts, True),
+                                            (config.overlay_disabled, False)])
+def test_garbage_leaves_both_switches_at_their_defaults(getter, resting):
+    """A mangled settings file gets each switch's own resting state: alerts
+    stay on (their default since 1.0.5), and the overlay must never be
+    hidden by anything short of a deliberate True."""
     config.save({"preview_alerts": "yes please", "overlay_disabled": 1})
-    assert getter() is False
+    assert getter() is resting
 
 
 def test_browser_position_defaults_to_none():
@@ -261,6 +263,10 @@ def test_settings_coexist_in_one_file():
     config.set_manual_hold_seconds(20)
     config.set_background_opacity(0.4)
     config.set_text_visibility(0.6)
+    config.set_preview_rest_opacity(0.3)
+    config.set_preview_hover_opacity(0.7)
+    config.set_preview_card_opacity(0.5)
+    config.set_preview_text_scale(1.2)
     assert config.idle_tc_limits() == (80, 110)
     assert config.alert_toggles()["housed"] is False
     assert config.developer_mode() is True
@@ -275,6 +281,10 @@ def test_settings_coexist_in_one_file():
     assert config.manual_hold_seconds() == 20
     assert config.background_opacity() == 0.4
     assert config.text_visibility() == 0.6
+    assert config.preview_rest_opacity() == 0.3
+    assert config.preview_hover_opacity() == 0.7
+    assert config.preview_card_opacity() == 0.5
+    assert config.preview_text_scale() == 1.2
 
 
 # ---- hotkeys ---------------------------------------------------------------
@@ -339,18 +349,21 @@ def test_a_non_string_binding_falls_back_to_its_default():
     assert config.hotkeys()["next_step"] == config.DEFAULT_HOTKEYS["next_step"]
 
 
-def test_hotkeys_are_enabled_by_default():
-    assert config.hotkeys_enabled() is True
-
-
-def test_the_master_switch_round_trips():
-    config.set_hotkeys_enabled(False)
+def test_hotkeys_ship_disabled():
+    """A registered combination is TAKEN FROM THE GAME, and that must be a
+    choice, not a surprise on first launch. The bindings behind the switch
+    ship as a working set, so turning it on is one click."""
     assert config.hotkeys_enabled() is False
 
 
-def test_garbage_leaves_hotkeys_enabled():
-    config.save({"hotkeys_enabled": "no thanks"})
+def test_the_master_switch_round_trips():
+    config.set_hotkeys_enabled(True)
     assert config.hotkeys_enabled() is True
+
+
+def test_garbage_leaves_hotkeys_disabled():
+    config.save({"hotkeys_enabled": "no thanks"})
+    assert config.hotkeys_enabled() is False
 
 
 def test_the_hold_defaults_to_ten_seconds():
@@ -383,17 +396,18 @@ def test_garbage_hold_falls_back(junk):
 
 # ---- transparency -----------------------------------------------------------
 
-def test_background_opacity_defaults_to_the_designed_alpha():
-    """205/255 - the slider at 80%, and exactly the card as designed, so an
-    untouched install paints byte-identical frames. The slider itself runs
-    the full range: 100% is a solid card the game cannot be seen through."""
+def test_background_opacity_defaults_to_the_authors_setting():
+    """0.83 - the author's own card, promoted to the default for 1.0.5.
+    Every appearance default follows the same rule now: ship what the
+    author actually plays with. The slider still runs the full range."""
     assert config.background_opacity() == config.DEFAULT_BACKGROUND_OPACITY
-    assert config.background_opacity() == 205 / 255
+    assert config.background_opacity() == 0.83
 
 
-def test_text_visibility_defaults_to_the_designed_midpoint():
-    """0.5 is the designed look; below fades, above boosts contrast."""
-    assert config.text_visibility() == 0.5
+def test_text_visibility_defaults_to_the_authors_setting():
+    """0.82: boosted contrast, the author's own. 0.5 is still the designed
+    look the scale is anchored on."""
+    assert config.text_visibility() == 0.82
 
 
 def test_transparency_settings_round_trip():
@@ -422,7 +436,64 @@ def test_garbage_transparency_falls_back(junk):
     # 1.0 that would hide a mangled file.
     config.save({"background_opacity": junk, "text_visibility": junk})
     assert config.background_opacity() == config.DEFAULT_BACKGROUND_OPACITY
-    assert config.text_visibility() == 0.5
+    assert config.text_visibility() == 0.82
+
+
+# ---- the preview's appearance ----------------------------------------------
+
+def test_preview_appearance_defaults_are_the_authors_look():
+    """The author's own preview, promoted to the default for 1.0.5: a
+    half-visible ground at rest, a softened one under the pointer, solid
+    cards, text a notch up."""
+    assert config.preview_rest_opacity() == 0.51
+    assert config.preview_hover_opacity() == 0.8
+    assert config.preview_card_opacity() == 1.0
+    assert config.preview_card_opacity() == \
+        config.DEFAULT_PREVIEW_CARD_OPACITY
+    assert config.preview_text_scale() == 1.05
+
+
+def test_preview_appearance_round_trips():
+    config.set_preview_rest_opacity(0.4)
+    config.set_preview_hover_opacity(0.6)
+    config.set_preview_card_opacity(0.5)
+    config.set_preview_text_scale(1.25)
+    assert config.preview_rest_opacity() == 0.4
+    assert config.preview_hover_opacity() == 0.6
+    assert config.preview_card_opacity() == 0.5
+    assert config.preview_text_scale() == 1.25
+
+
+def test_preview_appearance_clamps_out_of_range():
+    """Clamped on read like every scale - a hand-edited file gets the
+    nearest legal value, not a refusal."""
+    config.set_preview_rest_opacity(7.0)
+    config.set_preview_hover_opacity(-2.0)
+    config.set_preview_card_opacity(3.0)
+    config.set_preview_text_scale(9.0)
+    assert config.preview_rest_opacity() == 1.0
+    assert config.preview_hover_opacity() == 0.0
+    assert config.preview_card_opacity() == 1.0
+    assert config.preview_text_scale() == \
+        config.PREVIEW_TEXT_SCALE_BOUNDS[1]
+    config.set_preview_text_scale(0.1)
+    assert config.preview_text_scale() == \
+        config.PREVIEW_TEXT_SCALE_BOUNDS[0]
+
+
+@pytest.mark.parametrize("junk", ["solid", None, [0.5], True])
+def test_garbage_preview_appearance_falls_back(junk):
+    # True IS an int, and float(True) is a plausible 1.0 that would hide a
+    # mangled file - the same trap every scale getter guards against.
+    config.save({"preview_rest_opacity": junk,
+                 "preview_hover_opacity": junk,
+                 "preview_card_opacity": junk,
+                 "preview_text_scale": junk})
+    assert config.preview_rest_opacity() == 0.51
+    assert config.preview_hover_opacity() == 0.8
+    assert config.preview_card_opacity() == \
+        config.DEFAULT_PREVIEW_CARD_OPACITY
+    assert config.preview_text_scale() == 1.05
 
 
 # ---- the hotkey action partition -------------------------------------------
@@ -440,12 +511,13 @@ def test_every_action_belongs_to_exactly_one_process():
     assert not overlay_side & launcher_side
 
 
-def test_the_start_stop_key_ships_unbound():
-    """An empty binding is the grammar's own "switched off". A key that
-    starts and stops a whole program is one a player should choose to have,
-    not discover by accident."""
-    assert config.DEFAULT_HOTKEYS["start_stop_overlay"] == ""
-    assert config.hotkeys()["start_stop_overlay"] == ""
+def test_the_start_stop_key_ships_bound_behind_the_master_switch():
+    """Ctrl+Shift+F1, the author's own. The safety that used to ship this
+    key unbound moved up a level: hotkeys as a whole ship disabled, so no
+    key is taken from the game until the player throws the switch - and
+    then the bindings waiting behind it are a working set."""
+    assert config.DEFAULT_HOTKEYS["start_stop_overlay"] == "Ctrl+Shift+F1"
+    assert config.hotkeys()["start_stop_overlay"] == "Ctrl+Shift+F1"
 
 
 def test_the_start_stop_key_round_trips_like_any_other():

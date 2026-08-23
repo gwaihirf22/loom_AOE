@@ -130,6 +130,77 @@ It deliberately shows the first *unfinished* step, not the last completed one.
 An early version showed the completed step and felt a beat behind the player's
 hands the whole game.
 
+A step's instructions are a **list**, not a headline with footnotes
+(`Step.items`). The split used to be read as a ranking, and that is wrong
+about real builds: counted across the thirteen shipped ones, 38 of 150 steps
+lead with a heading rather than an action ("Before Feudal Age"), and 20 of
+the 58 age-up mentions sit in a later piece. Both front ends also capped the
+list at three, so the busiest step showed three of its seven instructions and
+said nothing about the four it dropped.
+
+### How big is a step? (`steplayout.py`)
+
+Pure arithmetic, no Qt, because the overlay panel and the preview's cards
+draw the same list and a box four pixels short clips an instruction while
+looking perfectly fine. The concessions run in order: **grow** the box to
+seven rows, **split** into columns if the widest item genuinely fits,
+**shrink** the text, then **truncate and say so** with "+N more". Seven rows
+covers every step of every shipped build with no shrinking at all.
+
+### What has actually been done? (`checklist.py`)
+
+Two states that must never look alike. An item is **observed** when the game
+announced it in its own notification feed, and **assumed** when the build
+merely moved past its step. What can be observed comes from the build file
+itself: 331 of the 344 note pieces in the shipped builds carry an `@icon@`
+token naming the exact entity, and `glyphs.parse_event` turns a read
+notification line into the same vocabulary of slugs, so "Build a
+`@mill/Mill_aoe2de.webp@`" lines up with `built:mill` with nothing in between
+to guess wrong. Items whose only tokens are villagers, resources or animals
+have no observable completion and are assume-only.
+
+Ticks do not have to arrive in order — players adapt, misclick and do things
+early — so an event credits the first item anywhere in the build that still
+wants it, and an item wants **all** the entities it names before it counts as
+done. "Build 2 House, then Mill at Berries" needs both.
+
+That last rule is why **what an item is allowed to want** turned out to
+matter more than the matching. An item waiting on something the feed can
+never report is unfinishable, and it drags everything sharing that item down
+with it. Three ways that happened, all found in real games and all now
+closed: a build saying "Palisade Wall gaps to the Town Center" made a wall a
+requirement and the houses beside it could never tick; **farms** were watched
+for years' worth of builds although the game announces 22 kinds of building
+and a farm is not one of them (it says "--Farm Exhausted--" when one runs
+out, which is a different event); and "Use **Market** to build 2nd **Town
+Center**" treated the Market as a second thing to build, when it is the tool
+the step is worked with. So a noun after "to" or "from" is read as a *place*,
+a noun after "use" or "with" as an *instrument*, and neither is a deliverable.
+
+### Which age you are in (`age.py`)
+
+The build order needs to know the age, and for a long time Loom inferred it
+from the build itself — which is circular, and quietly misleads exactly the
+player who has fallen behind. Click Feudal a minute late and the old code
+would happily report ON PACE, because the clock had passed the build's "In
+Feudal Age" step and it assumed the player had got there.
+
+So Loom reads the **age crest** beside the resource bar instead. The crest is
+artwork shared by both HUD skins, it is language-independent, and it changes
+only when an age-up actually *completes* — which makes it the authority for
+both halves of the question. The words beside it would have been the obvious
+thing to read and are the wrong one: the text flips the instant you *click*,
+so reading it announces "Feudal Age" while the player is still two minutes
+away.
+
+The crest is a **ceiling as well as a floor**: the checklist cannot assume
+its way past an age boundary the crest has not confirmed, which is how one
+stray villager once assumed half a build. The progress bar beside it says an
+age-up is under way, and the production queue is a second witness to the
+same click — the two meet inside `AgeTracker` and nowhere else, so
+everything downstream reads one reconciled belief rather than working it out
+again.
+
 ### Are you on pace? (`pace.py`)
 
 The pace number is the thing a player watches out of the corner of their eye, so
@@ -186,6 +257,28 @@ and technology event lands in the statistics without a template per phrase,
 an OCR engine, or an AI backend. A line the font cannot fully read is
 dropped and its crop saved, and one `tools/build_notification_font.py`
 command turns it into coverage.
+
+### Saying when it has stopped reading (`filters.py`, `session.py`, `debuglog.py`)
+
+The read filters hold their last belief through unreadable polls, which is
+right for a menu and dangerous everywhere else — a held number looks exactly
+like a fresh one. A live game proved it: the villager count froze at 6 for
+the whole match while the clock ran on, and nothing anywhere admitted it.
+
+Two gaps caused that, and both are closed. `filters.ReadGap` measures how
+long a band has gone unread **in game seconds** — never in polls, because
+the poll rate is not a clock — so the panel can say `VILLAGERS UNREAD · 24s`
+instead of wearing the stale number. And `session.TRACKING_LOST` had been
+declared for months with nothing consuming it; losing sight of the game now
+puts a soft band above the panel until the game comes back. The panel keeps
+working either way. It just stops pretending.
+
+Behind both sits a **forensic log** (`debuglog.py`): one line per poll, raw
+readings printed beside believed ones, in the player's data directory with
+the newest twenty sessions kept. That distinction — did the band read wrong,
+or not read at all? — is the one the frozen-count investigation could not
+make from outside, and the shipped `.exe` has no console for anything
+printed to disappear into.
 
 ### The payoff screen (`report.py`)
 
@@ -265,7 +358,7 @@ python -m pytest tests/ -q
 (or the **Run tests** button in the launcher's developer mode, which streams
 the same run into the window.)
 
-Over two hundred tests, and they cover the *logic*, not the computer vision, because that is
+Over a thousand tests, and they cover the *logic*, not the computer vision, because that is
 where every bug so far has been: the reader has been correct since it was
 written, while the reasoning on top of it went wrong repeatedly. Most tests pin
 down a failure that actually happened, and say so in a comment — the villager

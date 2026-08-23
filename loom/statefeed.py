@@ -22,9 +22,34 @@ loom/follow.py - so a second window cannot claim to be following the game
 while the panel says it is not. Compact keys because this rides a pipe once a
 second for a whole match:
 
-    {"usable": true, "idx": 4, "mode": "following", "vills": 13, "t": 251,
-     "pace": -8, "res": {"food": 7, ...} | null, "pop": [14, 20] | null,
-     "alerts": [["TC IDLE", "full"], ...], "hold": 7 | null}
+    {"usable": true, "idx": 4, "auto": 4, "mode": "following", "vills": 13,
+     "t": 251, "pace": -8, "res": {"food": 7, ...} | null,
+     "pop": [14, 20] | null, "alerts": [["TC IDLE", "full"], ...],
+     "hold": 7 | null, "age": [2, 3, 0.4] | null,
+     "ticks": [[4, 0], [6, 1], ...]}
+
+"age" is [current, target, filled] from the HUD's own age crest, or null
+when it could not be read - the age you are IN, the one being advanced to,
+and how far the progress bar has gone. It rides along for the same reason
+the alerts do: one producer decides, and a second window agrees by
+construction rather than by working it out again.
+
+"ticks" is every item the notification feed CONFIRMED, as [step, item]
+pairs. Assumptions deliberately do not ride along: an item is assumed once
+the build has passed its step, which is a pure function of "auto", and both
+windows can work it out from the same rule. A sighting is different - it is
+a fact only the process reading the feed can have - so it is the one part
+of the checklist worth sending, and a whole build holds a couple of dozen.
+
+"auto" is the step the READING implies, which "idx" is not while a hotkey
+has nudged the cursor. Both are needed and they answer different questions:
+"idx" is where to LOOK, "auto" is where the game actually is. The step
+checklist ticks items off as the build passes them, and passing them is a
+fact about the game - crediting a player with three steps of work because
+they pressed "next step" three times would be exactly the kind of quiet
+fiction the panel exists to avoid. Same distinction the overlay already
+makes internally, where pace, the report and the statistics recorder all
+stay on the reading while only the panel follows the cursor.
 
 "hold" is how many seconds until automatic following resumes, while a step
 hotkey is holding it off, and null the rest of the time. It rides along for

@@ -281,3 +281,92 @@ def test_toggles_build_from_config_dict(tmp_path, monkeypatch):
     toggles = AlertToggles(**config.alert_toggles())
     assert (toggles.idle_tc, toggles.housed, toggles.house_warning) == (
         False, True, True)
+
+
+# --- the click-up band ------------------------------------------------------
+
+# The smallest build with an age boundary in it: at 11 villagers and a late
+# clock every count and time is satisfied, so only the crest can hold the
+# cursor - which is exactly when the click is the instruction.
+AGED_BUILD = {
+    "name": "Aged Build",
+    "build_order": [
+        {"villager_count": 6, "age": 1, "time": "1:15",
+         "resources": {"food": 6, "wood": 0, "gold": 0, "stone": 0},
+         "notes": ["Six to Sheep"]},
+        {"villager_count": 10, "age": 1, "time": "2:55",
+         "resources": {"food": 6, "wood": 4, "gold": 0, "stone": 0},
+         "notes": ["Click Feudal Age"]},
+        {"villager_count": 10, "age": 2, "time": "4:00",
+         "resources": {"food": 6, "wood": 4, "gold": 0, "stone": 0},
+         "notes": ["In Feudal Age: build a Market"]},
+    ],
+}
+
+
+def aged_build():
+    from loom.build_order import BuildOrder
+    return BuildOrder(AGED_BUILD)
+
+
+def test_click_up_shouts_only_on_a_read_still_bar():
+    """The full decision table. The shout needs POSITIVE evidence the
+    research is not running: True means the click already happened, and
+    None means the bar was not read - "I did not read it" is not "it is
+    not there", and a CLICK UP flashing at somebody already advancing
+    teaches them to ignore it."""
+    build = aged_build()
+    # Held, and the bar is read as absent: the click is due. Shout.
+    assert alerts.age_up_alert(build, 11, 400, 1, False) == (
+        "CLICK UP — Feudal Age", alerts.URGE)
+    # Held, but the research is already running: quiet.
+    assert alerts.age_up_alert(build, 11, 400, 1, True) is None
+    # Held, bar unread: no positive evidence, no shout.
+    assert alerts.age_up_alert(build, 11, 400, 1, None) is None
+
+
+def test_click_up_is_silent_when_the_build_is_not_waiting():
+    build = aged_build()
+    # The age has arrived: nothing to click.
+    assert alerts.age_up_alert(build, 11, 400, 2, False) is None
+    # The clock is what binds, not the age.
+    assert alerts.age_up_alert(build, 10, 200, 1, False) is None
+    # No crest reading, or no HUD reading at all: never a band.
+    assert alerts.age_up_alert(build, 11, 400, None, False) is None
+    assert alerts.age_up_alert(build, None, 400, 1, False) is None
+
+
+def test_click_up_defers_to_unfinished_prerequisites():
+    """The author's rule: the click needs the card's buildings standing,
+    so while the checklist says watched work remains, the card's items
+    are the instruction and the band stays quiet. Only an explicit False
+    defers - no verdict must never silence the reminder."""
+    build = aged_build()
+    assert alerts.age_up_alert(build, 11, 400, 1, False,
+                               prerequisites_done=False) is None
+    assert alerts.age_up_alert(build, 11, 400, 1, False,
+                               prerequisites_done=True) == (
+        "CLICK UP — Feudal Age", alerts.URGE)
+    assert alerts.age_up_alert(build, 11, 400, 1, False,
+                               prerequisites_done=None) == (
+        "CLICK UP — Feudal Age", alerts.URGE)
+
+
+def test_spent_patience_speaks_softly_not_urgently():
+    """A reminder that exists because a timer expired must not wear the
+    voice of one resting on readings - the observed/assumed rule applied
+    to alerts. The blue flashing URGE stays reserved for a gate lifted
+    by real observations; the timer's way out is the calm SOFT band."""
+    build = aged_build()
+    quiet = alerts.age_up_alert(build, 11, 400, 1, False,
+                                prerequisites_done=False,
+                                patience_spent=False)
+    assert quiet is None
+    nudge = alerts.age_up_alert(build, 11, 400, 1, False,
+                                prerequisites_done=False,
+                                patience_spent=True)
+    assert nudge == ("CLICK UP — Feudal Age", alerts.SOFT)
+    confirmed = alerts.age_up_alert(build, 11, 400, 1, False,
+                                    prerequisites_done=True,
+                                    patience_spent=True)
+    assert confirmed == ("CLICK UP — Feudal Age", alerts.URGE)

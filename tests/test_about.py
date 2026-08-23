@@ -21,7 +21,7 @@ import re
 
 import pytest
 
-from loom import about, config, hud, overlay, paths
+from loom import about, checklist, config, hud, overlay, paths
 
 
 def test_every_page_has_a_title_and_a_body():
@@ -119,13 +119,15 @@ def test_the_hotkeys_page_says_the_hold_expires_by_itself():
 
 
 def test_the_hotkeys_page_mentions_the_start_stop_key():
-    """The start/stop key ships unbound, so its empty default is vacuously
-    "present" to the derived binding test above - this pins the feature by
-    name instead. A player learns it exists here or nowhere."""
+    """Pins the feature by name, and since 1.0.5 the page must also carry
+    the fact that replaced "ships unbound": hotkeys as a whole ship
+    switched off, and the master switch is what turns the working set on.
+    A player learns both here or nowhere."""
     everything = " ".join(html for _title, html in about.PAGES).lower()
 
     assert "start/stop overlay" in everything
-    assert "unbound" in everything
+    assert "switched off" in everything
+    assert "use hotkeys" in everything
 
 
 def test_the_recommended_mods_are_linked():
@@ -155,6 +157,50 @@ def test_the_panel_page_explains_the_states_that_matter():
 
     assert "MANUAL" in everything
     assert "waiting for the game" in everything
+
+
+def test_the_panel_page_tells_the_two_kinds_of_tick_apart():
+    """The one thing a player must not misread about the checklist.
+
+    A green bullet means Loom READ the game announcing it; a faded one means
+    Loom is assuming because the build moved on. Those carry very different
+    weight, and a page that described only "ticked off" would invite the
+    player to trust a guess as if it were a reading - which is the failure
+    the whole project is built to avoid.
+
+    Derived from checklist's own states, on the same principle as the
+    HUD-skin page: if a state exists, the page has to account for it. Not by
+    looking for the state's NAME, though - "observed" is the code's word and
+    would be jargon on a page a player reads. The mapping below is the point
+    of the test: adding a state to checklist.py without deciding how to
+    explain it in English fails here.
+    """
+    explained = {
+        checklist.NOT_DONE: "still to do",
+        checklist.ASSUMED: "assumed",
+        checklist.OBSERVED: "loom saw it happen",
+        checklist.UNCONFIRMED: "not confirmed",
+    }
+    everything = " ".join(
+        " ".join(html.split()) for _title, html in about.PAGES).lower()
+
+    for state in (checklist.NOT_DONE, checklist.ASSUMED,
+                  checklist.UNCONFIRMED, checklist.OBSERVED):
+        phrase = explained.get(state)
+        assert phrase, f"no player-facing wording decided for {state!r}"
+        assert phrase in everything,             f"the page never explains {state!r} items ({phrase!r})"
+
+
+def test_the_panel_page_admits_what_can_never_be_confirmed():
+    """Assume-only items are a property of the game, not a bug in Loom.
+
+    Villager re-tasking is never announced, so those items can only ever be
+    assumed. Undocumented, a bullet that never goes green reads as broken.
+    """
+    everything = " ".join(
+        " ".join(html.split()) for _title, html in about.PAGES).lower()
+
+    assert "can never go green" in everything
 
 
 def test_the_appearance_page_offers_the_suggested_mix_as_taste():

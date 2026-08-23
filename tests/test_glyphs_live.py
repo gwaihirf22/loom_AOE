@@ -36,11 +36,22 @@ def test_terrain_panel_has_no_lines():
 
 
 def test_harvest_line_reads_at_native_size(font):
+    """The line as the game actually prints it - no space after the frame.
+
+    This used to expect "-- Villager Created--", with a space that is not on
+    screen. The old space threshold was a flat 0.15 of the line height, which
+    on this 20px line put the gate at exactly 3.0px and swept in the 3px gap
+    between the dashes and the V. Harmless here, because parse_event strips
+    the frame anyway - but the same gate cut straight through the letter gaps
+    of a 1920x1080 line and turned Built into "Bu iet". The threshold comes
+    from the line's own gap distribution now, and this is what it reads.
+    """
     line = cv2.imread(str(FIXTURES / "villager_created_line.png"))
     assert line is not None
     text, score = glyphs.read_line(line, font)
-    assert text == "-- Villager Created--"
+    assert text == "--Villager Created--"
     assert score >= glyphs.MIN_GLYPH_SCORE
+    assert glyphs.parse_event(text) == "created:villager"
 
 
 def test_harvest_line_survives_a_small_resample(font):

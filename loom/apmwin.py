@@ -144,15 +144,26 @@ def counts_one_action(record):
     Pure, and the only place that decides what an "action" is, so the rule can
     be read in one place and tested without Windows.
 
-    A key going down is one action; a key coming back up is the same action
-    ending. A mouse record is one action per button-down flag it carries -
-    plural because a record can report two buttons in one event - and zero for
-    pure movement, which is why usButtonFlags is consulted at all.
+    A key counts when it comes back UP, not when it goes down - and that
+    choice is what keeps auto-repeat out of the count. Raw Input delivers a
+    held key as an unbroken stream of down records with no repeat marker,
+    so counting downs turned holding a camera key into ~30 "actions" a
+    second: measured in real games, 1,476 APM - twenty-five actions a
+    wall-clock second, which no hand produces. A held key comes up exactly
+    once, however long the hold, so counting the break filters repeats
+    WITHOUT reading which key it was - VKey stays unread, and the privacy
+    contract stays intact (tests/test_apmwin.py checks that with the AST).
+
+    A mouse record is one action per button-down flag it carries - plural
+    because a record can report two buttons in one event - and zero for
+    pure movement, which is why usButtonFlags is consulted at all. Mouse
+    stays on the DOWN: buttons do not auto-repeat, and the down is the
+    action's real moment.
     """
     if record.header.dwType == RIM_TYPEKEYBOARD:
         if record.data.keyboard.Flags & RI_KEY_BREAK:
-            return 0, 0
-        return 1, 0
+            return 1, 0
+        return 0, 0
     if record.header.dwType == RIM_TYPEMOUSE:
         pressed = record.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_DOWN_MASK
         return 0, bin(pressed).count("1")

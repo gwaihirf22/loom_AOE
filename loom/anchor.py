@@ -351,6 +351,13 @@ def locate_regions(frame_bgr, template_gray, near_scale=None, profile=None):
         "clock_band": scale_region(profile.clock_band, icon_x, icon_y, scale),
         "population": scale_region(profile.population_band,
                                    icon_x, icon_y, scale),
+        # The age crest, and the strip where its progress bar fills. Both
+        # roomy - loom/age.py searches inside them rather than reading at a
+        # fixed offset, which is what lets one pair of offsets serve both
+        # skins even though their frames differ.
+        "age": scale_region(profile.age_band, icon_x, icon_y, scale),
+        "age_bar": scale_region(profile.age_bar_band,
+                                icon_x, icon_y, scale),
     }
 
 

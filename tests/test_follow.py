@@ -226,3 +226,137 @@ def test_the_hold_length_is_honoured():
 
     assert following.effective_index(9, now=125) == 8
     assert following.effective_index(9, now=131) == 9
+
+
+# ---- the tail: reviewing a finished build ----------------------------------
+#
+# When the build order completes the overlay parks on its report card, and
+# before this that card was a dead end - the step keys moved the cursor but
+# nothing could be shown, so a player could not look back at what the build
+# had actually asked for.
+#
+# The card is a slot of its own now, one past the last step, and every
+# behaviour asked for falls out of the cursor arithmetic that was already
+# here rather than out of a special case.
+
+
+def test_without_a_tail_the_last_step_is_still_the_ceiling():
+    """The whole of the pre-existing behaviour, pinned: a build that has not
+    finished has nothing past its last step to step onto."""
+    following = state(step_count=20)
+    for moment in range(5):
+        following.next_step(auto_index=19, now=100 + moment)
+
+    assert following.effective_index(19, now=100) == 19
+
+
+def test_a_tail_adds_exactly_one_reachable_slot():
+    following = state(step_count=20)
+    following.tail = 1
+    for moment in range(5):
+        following.next_step(auto_index=19, now=100 + moment)
+
+    assert following.effective_index(19, now=100) == 20
+
+
+def test_stepping_back_from_the_report_lands_on_the_last_step():
+    """The thing the player asked for, in one assertion. The report sits at
+    20, so the first press back must show step 19 - the LAST step of the
+    build - and not skip it by counting from where the reading was."""
+    following = state(step_count=20)
+    following.tail = 1
+    following.previous_step(auto_index=20, now=100)
+
+    assert following.effective_index(20, now=100) == 19
+
+
+def test_and_keeps_going_back_from_there():
+    following = state(step_count=20)
+    following.tail = 1
+    following.previous_step(auto_index=20, now=100)
+    following.previous_step(auto_index=20, now=101)
+    following.previous_step(auto_index=20, now=102)
+
+    assert following.effective_index(20, now=103) == 17
+
+
+def test_stepping_forward_off_the_last_step_returns_to_the_report():
+    """One of the two ways back, and the one that needs no new key."""
+    following = state(step_count=20)
+    following.tail = 1
+    following.previous_step(auto_index=20, now=100)
+    following.next_step(auto_index=20, now=101)
+
+    assert following.effective_index(20, now=102) == 20
+
+
+def test_forward_from_the_report_stays_on_the_report():
+    following = state(step_count=20)
+    following.tail = 1
+    following.next_step(auto_index=20, now=100)
+    following.next_step(auto_index=20, now=101)
+
+    assert following.effective_index(20, now=102) == 20
+
+
+def test_resuming_following_returns_to_the_report():
+    """The other way back: the report is what following automatically MEANS
+    once the build is done, so the toggle that drops the cursor lands there."""
+    following = state(step_count=20)
+    following.tail = 1
+    following.toggle()                      # off, the way a review starts
+    following.previous_step(auto_index=20, now=100)
+    following.toggle()                      # back on
+
+    assert following.effective_index(20, now=101) == 20
+
+
+def test_a_new_match_takes_the_tail_away():
+    """Load-bearing rather than tidiness. A slot left over from the last
+    game's finished build is a position the player could step onto in the
+    middle of this one, to be shown a report for a build still running."""
+    following = state(step_count=20)
+    following.tail = 1
+    following.reset()
+    for moment in range(5):
+        following.next_step(auto_index=19, now=100 + moment)
+
+    assert following.tail == 0
+    assert following.effective_index(19, now=100) == 19
+
+
+def test_on_tail_knows_where_the_steps_end():
+    following = state(step_count=20)
+
+    assert not following.on_tail(19)
+    assert following.on_tail(20)
+    assert following.on_tail(21)
+
+
+def test_on_tail_is_false_when_the_build_length_is_unknown():
+    """Mid-construction the count can be None, and a panel that decided to
+    draw a report from that would be showing one for no build at all."""
+    following = follow.FollowState(hold_seconds=10, step_count=None)
+
+    assert not following.on_tail(0)
+    assert not following.on_tail(999)
+
+
+# ---- a review cursor is sticky ---------------------------------------------
+
+def test_a_move_with_following_switched_off_never_expires():
+    """What makes reviewing a finished build possible at all.
+
+    The hold exists so the panel cannot drift out of sync with a LIVE build.
+    Once the build is done there is nothing to drift from, so the overlay
+    switches following off before moving and the cursor stays put - however
+    long the player spends reading.
+    """
+    following = state(step_count=20)
+    following.tail = 1
+    following.toggle()
+    following.previous_step(auto_index=20, now=100)
+
+    assert following.hold_until is None
+    assert following.effective_index(20, now=100_000) == 19
+    assert following.mode(now=100_000) == follow.MANUAL

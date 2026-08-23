@@ -191,17 +191,22 @@ def test_every_follow_mode_has_a_phrasing():
 
 # ---- the transparency knobs -------------------------------------------------
 
-def test_the_default_opacity_is_byte_identical_to_the_design():
-    """The golden case: the DEFAULT (205/255, the slider at 80%) must come
-    back with exactly the designed alphas, or every untouched install
-    repaints. The slider itself is full-range - see the next test."""
+def test_the_designed_opacity_is_byte_identical_to_the_design():
+    """The golden case: 205/255, the slider at 80%, must come back with
+    exactly the designed alphas - the anchor the whole scale is measured
+    from. The DEFAULT moved off it in 1.0.5 (0.83, the author's own card,
+    a touch more solid) and follows the same formula as every other
+    slider position."""
     from loom import config
     from loom.overlay import BACKGROUND, BORDER, panel_background
 
-    fill, border = panel_background(config.DEFAULT_BACKGROUND_OPACITY)
-
+    fill, border = panel_background(205 / 255)
     assert fill.alpha() == BACKGROUND.alpha() == 205
     assert border.alpha() == BORDER.alpha() == 40
+
+    fill, border = panel_background(config.DEFAULT_BACKGROUND_OPACITY)
+    assert fill.alpha() == round(255 * 0.83)
+    assert border.alpha() == round(50 * 0.83)
     assert (fill.red(), fill.green(), fill.blue()) == (
         BACKGROUND.red(), BACKGROUND.green(), BACKGROUND.blue())
 
@@ -328,3 +333,21 @@ def test_contrast_preserves_alpha():
     faint = QColor(255, 255, 255, 28)      # the header divider
 
     assert boosted(faint, 1.0).alpha() == 28
+
+
+# describe_staleness is pure for the same reason describe_follow is: every
+# phrasing checkable without a window.
+
+def test_fresh_reads_draw_no_staleness_note():
+    from loom.overlay import describe_staleness
+    assert describe_staleness(None)[0] == ""
+    assert describe_staleness(0)[0] == ""
+
+
+def test_a_stale_count_says_so_and_for_how_long():
+    """The frozen-count rule: a held number must not wear a reading's
+    clothes. The note names the seconds because "how long has it been
+    stuck" is the first question a frozen panel raises."""
+    from loom.overlay import describe_staleness
+    text, _ = describe_staleness(24)
+    assert text == "VILLAGERS UNREAD · 24s"

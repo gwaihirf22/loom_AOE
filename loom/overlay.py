@@ -17,14 +17,16 @@ See the design notes for the full story.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import math
 import time
 from pathlib import PurePosixPath
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter,
+                         QPainterPath, QPixmap)
 from PyQt6.QtWidgets import QWidget
 
-from . import alerts, build_order, config, paths
+from . import alerts, build_order, checklist, config, paths, steplayout
 
 # Colors. Kept dark and low-contrast on purpose: this sits on top of a game
 # and must be readable without dragging the eye away from it.
@@ -178,17 +180,25 @@ FLASH_SECONDS = 0.35
 ALERT_SOFT_FILL = QColor(120, 95, 20, 190)
 ALERT_SOFT_TEXT = QColor(240, 220, 160)
 
+# An urge band flashes like a full alert but in blue: it is an instruction
+# ("CLICK UP"), not a failure, and a player mid-fight must be able to tell
+# "do the next thing" from "something is bleeding" without reading a word.
+ALERT_URGE_BRIGHT = QColor(40, 90, 200, 235)
+ALERT_URGE_DIM = QColor(30, 60, 140, 200)
+ALERT_URGE_TEXT = QColor(235, 242, 255)
+
 
 def panel_background(opacity):
     """The panel's backdrop and border at one background opacity.
 
     Returns (fill, border) QColors. opacity is TRUE opacity: 1.0 is a solid
-    card the game cannot be seen through, 0.0 is no card at all. The default
-    (config.DEFAULT_BACKGROUND_OPACITY, 205/255) lands on exactly the
-    designed alpha 205, so an untouched install paints byte-identical frames
-    - the golden case the tests pin.
+    card the game cannot be seen through, 0.0 is no card at all. The
+    designed card is 205/255 - exactly alpha 205 back out, the golden case
+    the tests pin. The DEFAULT moved a touch above it in 1.0.5
+    (config.DEFAULT_BACKGROUND_OPACITY, 0.83, the author's own card) and is
+    just another slider position to this formula.
 
-    The border's 50 is chosen for the same golden case: round(50 * 205/255)
+    The border's 50 is chosen for that golden case: round(50 * 205/255)
     is exactly the designed 40, while the full-range card still gets a
     slightly stronger edge at 100% and none at 0%.
 
@@ -367,6 +377,11 @@ class Overlay(QWidget):
         # it would break the widget in confusing ways.
         self._layout = layout or OverlayLayout(config.overlay_scale(),
                                                config.text_scale())
+        # Whether the size knobs are mine to re-read. A layout handed in is
+        # the caller's fixed choice - tests pass one precisely so they never
+        # depend on the player's settings file, and a live reload that
+        # overwrote it would quietly reintroduce that dependency.
+        self._layout_from_config = layout is None
 
         if placing:
             self.setWindowTitle("Loom — drag me where you want the overlay, then close")
@@ -399,25 +414,33 @@ class Overlay(QWidget):
         # wasteful, and the icons never change while Loom is running.
         self._icons = load_resource_icons(self._layout.icon(ICON_HEIGHT))
 
+        # How far the panel has grown beyond its designed height to fit a
+        # long step's items, in real pixels. Zero for the 126 of 150 shipped
+        # steps that have three items or fewer, so the common case is the
+        # panel that shipped in 1.0.4, pixel for pixel.
+        self._extra = 0
+        self._plan = steplayout.plan_items(0)
+
         # Tall enough for the content plus the alert bands below it.
         L = self._layout
-        self.resize(L.panel_width, L.panel_height
+        self.resize(L.panel_width, self.panel_height()
                     + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
 
         # Everything the panel draws. Updated by the entry point each poll.
         self.build_name = ""
         self.status_line = "waiting for the game..."
-        self.headline = ""
-        self.footnotes = []
-        self.headline_when = ""
+        # The step's items, as segment lists, and one checklist state each.
+        # Equal citizens: the first is not a headline. See
+        # build_order.split_notes for what the shipped builds actually put
+        # first, and why drawing it three times the size buried the age-up
+        # click in a third of the steps.
+        self.item_rows = []
+        self.item_states = []
+        self.step_when = ""
         self.targets = None
         self.actual = {}
         self.next_text = ""
         self.next_when = ""
-        # Segment versions of the same lines (text runs + @icon@ tokens),
-        # used when a real build step is on show; None means plain text.
-        self.headline_segments = None
-        self.footnote_segments = []
         self.next_segments = None
         self.pace_text = ""
         self.pace_color = DIM_TEXT
@@ -430,6 +453,48 @@ class Overlay(QWidget):
         self.have_reading = False
         self.alerts = []            # [(text, severity)], most urgent first
         self.report_rows = None     # build-complete report, replaces the step
+
+    # ---- size ------------------------------------------------------------
+
+    def panel_height(self):
+        """The card's height right now, grown to fit the step on show.
+
+        Everything below the items measures from here - the VILLS row, the
+        THEN row, the alert bands - so they all follow the growth without
+        knowing about it. Growth is DOWNWARD from a fixed top-left, because
+        that corner is what the player's saved position means.
+        """
+        return self._layout.panel_height + self._extra
+
+    def fit_to_items(self):
+        """Work out the item layout for what is on show, and resize to it.
+
+        Called whenever the items change rather than at paint time: a
+        widget cannot resize itself in the middle of its own paintEvent,
+        and the two-column decision needs measured text, so both have to
+        happen before the paint that uses them.
+        """
+        L = self._layout
+        rows = self.item_rows
+        if not rows:
+            self._plan = steplayout.plan_items(0)
+        else:
+            points = L.pt(steplayout.ITEM_POINTS)
+            metrics = QFontMetrics(QFont("sans", points))
+            _radius, indent = item_indent(metrics, L.spacing)
+            icon_height = L.icon(steplayout.ITEM_POINTS)
+            widest = max(measure_segments(metrics, row, icon_height,
+                                          L.spacing) for row in rows)
+            columns = steplayout.columns_for(
+                L.panel_width - L.x(32), widest + indent, len(rows),
+                L.x(steplayout.COLUMN_GAP))
+            self._plan = steplayout.plan_items(len(rows), columns)
+
+        extra = L.y(self._plan.extra)
+        if extra != self._extra:
+            self._extra = extra
+            self.resize(L.panel_width, self.panel_height()
+                        + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
 
     # ---- what to show --------------------------------------------------
 
@@ -467,6 +532,51 @@ class Overlay(QWidget):
         self.header_note, self.header_note_color = describe_waiting(stage)
         self.update()
 
+    def apply_appearance(self):
+        """Re-read the appearance settings and wear them now.
+
+        Returns True when the panel changed SIZE, because the caller then
+        has to put it back where it belongs - see place_panel. Colour-only
+        changes need nothing from the caller.
+
+        The launcher sends a line down stdin on every tick of a slider and
+        this is what it lands on. Nothing is passed in: config.load() reads
+        the file on each getter, so re-reading is exactly what __init__ did,
+        and a setting added later becomes live without touching this.
+        """
+        # Always. Both are read fresh on every paint - the card colours in
+        # _draw_background, the content pair in paintEvent and _pen - so
+        # rebinding them is the whole of a transparency change.
+        self._background, self._border = panel_background(
+            config.background_opacity())
+        self._content_opacity, self._content_contrast = content_style(
+            config.text_visibility())
+
+        resized = False
+        if self._layout_from_config:
+            wanted = (config.overlay_scale(), config.text_scale())
+            current = (self._layout.overlay_scale, self._layout.text_scale)
+            if wanted != current:
+                # These three go together or not at all. The drawing code
+                # mixes self.width(), which resize() sets, with
+                # L.panel_height, which is recomputed every paint - so a
+                # layout swapped without a resize draws the new height
+                # inside the old width, clipped, with every right-aligned
+                # number anchored to a width that no longer exists.
+                self._layout = OverlayLayout(*wanted)
+                # Baked to a pixel height at load, and the only thing here
+                # that a repaint will not re-derive for itself. Fonts are
+                # built inline from L.pt() so they need nothing.
+                self._icons = load_resource_icons(
+                    self._layout.icon(ICON_HEIGHT))
+                L = self._layout
+                self.resize(L.panel_width, L.panel_height
+                            + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
+                resized = True
+
+        self.update()
+        return resized
+
     def show_alerts(self, alerts_list):
         """Set the production alert bands, most urgent first. [] clears.
 
@@ -495,7 +605,8 @@ class Overlay(QWidget):
 
     def show_step(self, build, villagers, game_time, active, following, delta,
                   per_resource=None, extra=0, milestone_queued=False,
-                  follow_mode=None, resume_hint=None, seconds_left=None):
+                  follow_mode=None, resume_hint=None, seconds_left=None,
+                  item_states=None, villager_gap=None, no_key=None):
         """Update the panel from one poll's worth of state.
 
         `active` is the step to be working on NOW - the first one not yet
@@ -510,11 +621,16 @@ class Overlay(QWidget):
         seen in the production queue - both deliberately subtle; the full
         story belongs to the build-complete report.
 
+        `item_states` is one checklist state per item of the active step,
+        from loom/checklist.py. None means nothing is ticked, which is what
+        demo mode and the pre-game panel want.
+
         `follow_mode` is loom.follow's answer to "is the game still driving
         this?", and `resume_hint` the binding that switches following back
         on. Together they are the one thing on this panel that is NOT about
         the game: they say whether what is on show can be trusted to track
-        it.
+        it. `no_key` says why there is no binding to name, when there is
+        none - see describe_follow.
         """
         self.have_reading = True
         self.report_rows = None      # a step on show means no report page
@@ -525,26 +641,26 @@ class Overlay(QWidget):
         self.status_line = f"{minutes}:{seconds:02d}   {villagers} villagers"
 
         if active is None:
-            self.headline = "build complete"
-            self.footnotes = []
-            self.headline_segments = None
-            self.footnote_segments = []
-            self.headline_when = ""
+            self.item_rows = [[("text", "build complete")]]
+            self.item_states = [checklist.NOT_DONE]
+            self.step_when = ""
             self.targets = None
         else:
-            self.headline = active.details
-            self.footnotes = active.footnotes[:2]  # two lines is plenty
-            self.headline_segments = active.details_segments or None
-            self.footnote_segments = active.footnotes_segments[:2]
+            # EVERY item, not a headline plus two. The old cap silently
+            # dropped four of the seven instructions in the busiest shipped
+            # step, and said nothing about it.
+            self.item_rows = list(active.items_segments)
+            self.item_states = list(item_states or [])
             when_minutes, when_seconds = divmod(int(active.time or 0), 60)
-            self.headline_when = f"by {when_minutes}:{when_seconds:02d} · {active.villager_count} vills"
+            self.step_when = f"by {when_minutes}:{when_seconds:02d} · {active.villager_count} vills"
             if milestone_queued:
                 # The step's tech/age-up is already in the queue: one quiet
                 # word of reassurance, no new lines.
-                self.headline_when += " · ✓ queued"
+                self.step_when += " · ✓ queued"
             # Where the villagers should be working. This comes straight from
             # the build order file - nothing is inferred.
             self.targets = active.villagers
+        self.fit_to_items()
 
         if following is None:
             self.next_text = "" if active is None else "last step"
@@ -558,7 +674,14 @@ class Overlay(QWidget):
 
         self.pace_text, self.pace_color = describe_pace(delta, extra)
         self.header_note, self.header_note_color = describe_follow(
-            follow_mode, resume_hint, seconds_left)
+            follow_mode, resume_hint, seconds_left, no_key)
+        # A follow note keeps the slot: MANUAL already says the panel is
+        # not to be trusted to track the game, which covers the stale
+        # count's warning and more. Otherwise a count that has stopped
+        # being read says so where a fresh one would say nothing.
+        if not self.header_note:
+            self.header_note, self.header_note_color = describe_staleness(
+                villager_gap)
         self.update()
 
     # ---- drawing -------------------------------------------------------
@@ -580,7 +703,7 @@ class Overlay(QWidget):
         if not self.have_reading:
             painter.setPen(self._pen(DIM_TEXT))
             painter.setFont(QFont("sans", self._layout.pt(11)))
-            painter.drawText(0, 0, self.width(), self._layout.panel_height,
+            painter.drawText(0, 0, self.width(), self.panel_height(),
                              Qt.AlignmentFlag.AlignCenter, self.status_line)
             return
 
@@ -589,7 +712,7 @@ class Overlay(QWidget):
             self._draw_report(painter)
         else:
             self._draw_header(painter)
-            self._draw_headline(painter)
+            self._draw_items(painter)
             self._draw_targets(painter)
             self._draw_next(painter)
         if self.alerts:
@@ -623,7 +746,8 @@ class Overlay(QWidget):
         L = self._layout
         path = QPainterPath()
         path.addRoundedRect(L.x(1), L.x(1), self.width() - L.x(2),
-                            L.panel_height - L.x(2), L.x(10), L.x(10))
+                            self.panel_height() - L.x(2),
+                            L.x(10), L.x(10))
         painter.fillPath(path, self._background)
         painter.setPen(self._border)
         painter.drawPath(path)
@@ -646,12 +770,15 @@ class Overlay(QWidget):
             if severity == alerts.FULL:
                 fill = ALERT_FULL_BRIGHT if phase == 0 else ALERT_FULL_DIM
                 text_color = ALERT_FULL_TEXT
+            elif severity == alerts.URGE:
+                fill = ALERT_URGE_BRIGHT if phase == 0 else ALERT_URGE_DIM
+                text_color = ALERT_URGE_TEXT
             else:
                 fill = ALERT_SOFT_FILL
                 text_color = ALERT_SOFT_TEXT
 
             L = self._layout
-            top = (L.panel_height + L.band_gap
+            top = (self.panel_height() + L.band_gap
                    + index * (L.band_height + L.band_gap))
             path = QPainterPath()
             path.addRoundedRect(L.x(1), top, self.width() - L.x(2),
@@ -681,6 +808,14 @@ class Overlay(QWidget):
         # the width and pace is a few characters right-aligned. Centring it
         # there means the usual panel is untouched and this costs no height,
         # which a 186px panel cannot spare.
+        #
+        # The step's own target ("by 7:55 - 22 vills") shares that slot and
+        # loses to the note, which is the right priority: both are metadata
+        # about what is on show, and MANUAL or WAITING says something about
+        # whether the panel can be trusted at all. It moved here when the
+        # items were equalised - it used to hang off the right of the
+        # headline row, and with no headline row there is nowhere for it to
+        # hang, nor any row it belongs to more than the others.
         if self.header_note:
             painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
             painter.setPen(self._pen(self.header_note_color))
@@ -688,56 +823,34 @@ class Overlay(QWidget):
             note_width = note_metrics.horizontalAdvance(self.header_note)
             painter.drawText((self.width() - note_width) // 2, L.y(24),
                              self.header_note)
+        elif self.step_when:
+            painter.setFont(QFont("sans", L.pt(9)))
+            painter.setPen(self._pen(FAINT_TEXT))
+            when_width = (painter.fontMetrics()
+                          .horizontalAdvance(self.step_when))
+            painter.drawText((self.width() - when_width) // 2, L.y(24),
+                             self.step_when)
 
         painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), L.y(34), self.width() - L.x(14), L.y(34))
 
-    def _draw_headline(self, painter):
+    def _draw_items(self, painter):
+        """The step's instructions, as a checklist of equal items."""
         L = self._layout
-        # Measure the timing text first, so the headline gets all the space
-        # actually left over. Reserving a fixed width truncated instructions
-        # that would have fitted.
-        painter.setFont(QFont("sans", L.pt(9)))
-        when_width = 0
-        if self.headline_when:
-            when_width = (painter.fontMetrics()
-                          .horizontalAdvance(self.headline_when) + L.x(14))
-
-        painter.setFont(QFont("sans", L.pt(15), QFont.Weight.Bold))
-        painter.setPen(self._pen(TEXT))
-        available = self.width() - L.x(32) - when_width
-        if self.headline_segments:
-            draw_segments(painter, self.headline_segments, L.x(16), L.y(62),
-                          available, icon_height=L.icon(24),
-                          spacing=L.spacing)
-        else:
-            painter.drawText(L.x(16), L.y(62),
-                             elide(painter, self.headline, available))
-
-        if self.headline_when:
-            painter.setFont(QFont("sans", L.pt(9)))
-            painter.setPen(self._pen(FAINT_TEXT))
-            width = painter.fontMetrics().horizontalAdvance(self.headline_when)
-            painter.drawText(self.width() - L.x(16) - width, L.y(62),
-                             self.headline_when)
-
-        painter.setFont(QFont("sans", L.pt(10)))
-        painter.setPen(self._pen(DIM_TEXT))
-        y = L.y(84)
-        rows = (self.footnote_segments
-                if self.footnote_segments else
-                [None] * len(self.footnotes))
-        for index, segments in enumerate(rows):
-            painter.drawText(L.x(16), y, "·")
-            if segments:
-                draw_segments(painter, segments, L.x(28), y,
-                              self.width() - L.x(44), icon_height=L.icon(16),
-                              spacing=L.spacing)
-            else:
-                painter.drawText(L.x(28), y,
-                                 elide(painter, self.footnotes[index],
-                                       self.width() - L.x(44)))
-            y += L.y(18)
+        plan = self._plan
+        if not self.item_rows or plan.shown == 0:
+            return
+        rows = self.item_rows[:plan.shown]
+        states = self.item_states[:plan.shown]
+        draw_items(
+            painter, rows, states,
+            x=L.x(16), baseline=L.y(56), width=self.width() - L.x(32),
+            columns=plan.columns, points=L.pt(plan.points),
+            row_height=L.y(plan.row_height),
+            icon_height=L.icon(plan.points),
+            column_gap=L.x(steplayout.COLUMN_GAP),
+            spacing=L.spacing, pen=self._pen,
+            more_text=steplayout.more_label(plan.hidden))
 
     def _draw_targets(self, painter):
         """Villagers on each resource: what the build wants, and what you have.
@@ -751,7 +864,7 @@ class Overlay(QWidget):
             return
 
         L = self._layout
-        y = L.panel_height - L.y(56)
+        y = self.panel_height() - L.y(56)
         painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
         painter.setPen(self._pen(FAINT_TEXT))
         painter.drawText(L.x(16), y, "VILLS")
@@ -768,7 +881,7 @@ class Overlay(QWidget):
 
     def _draw_next(self, painter):
         L = self._layout
-        baseline = L.panel_height - L.y(18)
+        baseline = self.panel_height() - L.y(18)
 
         painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), baseline - L.y(26),
@@ -823,6 +936,11 @@ def draw_segments(painter, segments, x, baseline, available, icon_height,
     spacing multiplies the little gaps between pieces, so a scaled overlay
     keeps its proportions. The default 1.0 leaves every gap exactly at its
     designed pixel count - the preview cards rely on that.
+
+    Returns the x the line ended at, so a caller can rule a line through
+    what was actually drawn. A strikethrough has to know where the ink
+    stops, and it cannot come from the font: QFont's strikeOut misses the
+    inline icons entirely, which is exactly half of some instructions.
     """
     metrics = painter.fontMetrics()
     ellipsis = metrics.horizontalAdvance("…")
@@ -834,7 +952,7 @@ def draw_segments(painter, segments, x, baseline, available, icon_height,
             if pixmap is not None:
                 if x + pixmap.width() > right - ellipsis:
                     painter.drawText(int(x), baseline, "…")
-                    return
+                    return x + ellipsis
                 painter.drawPixmap(int(x),
                                    baseline - icon_height + round(3 * spacing),
                                    pixmap)
@@ -848,9 +966,161 @@ def draw_segments(painter, segments, x, baseline, available, icon_height,
                              metrics.elidedText(
                                  value, Qt.TextElideMode.ElideRight,
                                  max(0, int(right - x))))
-            return
+            return right
         painter.drawText(int(x), baseline, value)
         x += width + round(5 * spacing)
+    return x
+
+
+def measure_segments(metrics, segments, icon_height, spacing=1.0):
+    """How wide this line wants to be, drawn in full with nothing elided.
+
+    The advance arithmetic of draw_segments with the drawing taken out, so
+    the two cannot disagree about how much room a line needs. Used to decide
+    whether two columns fit, which has to be answered BEFORE a paint - the
+    panel's height depends on it, and a widget cannot resize itself
+    mid-paintEvent.
+    """
+    width = 0
+    for kind, value in segments:
+        if kind == "icon":
+            pixmap = load_step_icon(value, icon_height)
+            if pixmap is not None:
+                width += pixmap.width() + round(4 * spacing)
+                continue
+            value = build_order.icon_to_words(value)
+        width += metrics.horizontalAdvance(value) + round(5 * spacing)
+    return width
+
+
+def item_indent(metrics, spacing=1.0):
+    """(bullet radius, text indent) for item rows in this font.
+
+    Derived from the font's own ascent rather than fixed, so the bullet and
+    the gap after it grow with the text at every overlay and text scale -
+    a bullet measured in pixels would be the pixel-constant mistake again.
+    Shared by the drawing and the two-column decision so they agree about
+    how much width the bullet costs.
+    """
+    radius = max(2, round(metrics.ascent() * 0.28))
+    return radius, radius * 2 + round(8 * spacing)
+
+
+# The checklist colours. An OBSERVED tick is green because the game said so
+# and green is what this panel already uses for "you are doing the right
+# thing"; an ASSUMED one is the faintest grey on the card, because it is a
+# guess and must never carry the weight of a reading. The two being
+# distinguishable at a glance is the whole honesty of the feature - see
+# loom/checklist.py.
+ITEM_TODO_BULLET = DIM_TEXT
+ITEM_TODO_TEXT = TEXT
+ITEM_ASSUMED_BULLET = FAINT_TEXT
+ITEM_ASSUMED_TEXT = FAINT_TEXT
+ITEM_OBSERVED_BULLET = ON_PACE_COLOR
+ITEM_OBSERVED_TEXT = DIM_TEXT
+
+# An item the feed was watching for and never confirmed. Amber, the same
+# colour MANUAL uses, because it means the same kind of thing: notice this,
+# it is not an alarm. Deliberately NOT struck through - Loom does not know
+# it was skipped, only that nothing confirmed it, and a line through it
+# would claim the opposite of what is true.
+ITEM_UNCONFIRMED_BULLET = NOT_FOLLOWING_COLOR
+ITEM_UNCONFIRMED_TEXT = DIM_TEXT
+
+
+def item_colors(state):
+    """(bullet colour, text colour, struck, filled) for one item state.
+
+    `filled` is what separates the two kinds of tick at a glance: only an
+    OBSERVED item gets a solid bullet. An assumed one keeps the hollow ring
+    of an unticked item and merely fades, which is the right shape for
+    "probably, but nothing said so".
+    """
+    if state == checklist.OBSERVED:
+        return ITEM_OBSERVED_BULLET, ITEM_OBSERVED_TEXT, True, True
+    if state == checklist.UNCONFIRMED:
+        return ITEM_UNCONFIRMED_BULLET, ITEM_UNCONFIRMED_TEXT, False, False
+    if state == checklist.ASSUMED:
+        return ITEM_ASSUMED_BULLET, ITEM_ASSUMED_TEXT, True, False
+    return ITEM_TODO_BULLET, ITEM_TODO_TEXT, False, False
+
+
+def draw_items(painter, rows, states, x, baseline, width, columns, points,
+               row_height, icon_height, column_gap, spacing=1.0, pen=None,
+               more_text=""):
+    """Draw one step's items as a checklist. Returns the last baseline used.
+
+    A module function beside draw_segments for the same reason that one is:
+    the overlay panel and the preview's cards draw the same list, and two
+    implementations of it would drift. Everything measured in pixels arrives
+    already mapped through the caller's own scale - the overlay's two axes
+    are not one number, so this cannot do the mapping itself.
+
+    `rows` is a list of segment lists and `states` the matching checklist
+    states; both are used only up to whatever the caller's ItemPlan says is
+    shown. Columns are filled top to bottom and then across, so reading down
+    the left column and carrying on at the top of the right one follows the
+    build's own order.
+
+    The bullets are PAINTED, not typed. A '●' from the font would depend on
+    whatever glyph the platform's sans happens to have, and would not scale
+    with the text; an ellipse of the font's own ascent always does.
+    """
+    if pen is None:
+        pen = lambda color: color
+    if not rows:
+        return baseline
+    # A card the player has scrolled past is drawn faded on purpose, and the
+    # ONE thing worth seeing on it is the item nothing confirmed. So an
+    # unconfirmed row is drawn at full strength whatever the caller set.
+    faded = painter.opacity()
+
+    painter.setFont(QFont("sans", points))
+    metrics = painter.fontMetrics()
+    radius, indent = item_indent(metrics, spacing)
+
+    column_width = width
+    if columns > 1:
+        column_width = (width - column_gap) // columns
+    per_column = math.ceil(len(rows) / columns)
+
+    last = baseline
+    for index, segments in enumerate(rows):
+        column, row = divmod(index, per_column)
+        left = x + column * (column_width + column_gap)
+        y = baseline + row * row_height
+        last = max(last, y)
+
+        state = states[index] if index < len(states) else checklist.NOT_DONE
+        bullet, text_color, struck, filled = item_colors(state)
+        painter.setOpacity(1.0 if state == checklist.UNCONFIRMED else faded)
+
+        # The bullet sits on the text's own centre line rather than its
+        # baseline, so it stays visually level with the words at any size.
+        centre = y - round(metrics.ascent() * 0.35)
+        painter.setPen(pen(bullet))
+        painter.setBrush(pen(bullet) if filled else Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(left + radius, centre - radius,
+                            radius * 2, radius * 2)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        painter.setPen(pen(text_color))
+        text_left = left + indent
+        end = draw_segments(painter, segments, text_left, y,
+                            column_width - indent, icon_height=icon_height,
+                            spacing=spacing)
+        if struck:
+            # Ruled across what was actually drawn, icons included, at the
+            # font's own strikeout height.
+            rule = y - round(metrics.ascent() * 0.32)
+            painter.drawLine(int(text_left), rule, int(end), rule)
+
+    painter.setOpacity(faded)
+    if more_text:
+        last += row_height
+        painter.setPen(pen(FAINT_TEXT))
+        painter.drawText(int(x + indent), last, more_text)
+    return last
 
 
 def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
@@ -941,14 +1211,34 @@ def describe_waiting(stage):
     return "", NOT_FOLLOWING_COLOR
 
 
-def describe_follow(mode, resume_hint=None, seconds_left=None):
+# Why the BUILD DONE note has no key to name, when it has none. Hotkeys
+# ship switched off from 1.0.5, so "no key" is now the FIRST thing a new
+# player meets at the end of their first build - and a note that just said
+# BUILD DONE would leave the report unreachable and unmentioned, which is a
+# feature that might as well not exist.
+#
+# Two reasons rather than one, because the remedies are different and a note
+# naming the wrong one is worse than a note naming none: the switch is off,
+# or the switch is on and no step key is bound. A machine with no hotkey
+# backend at all is neither - there is nothing to throw and nothing to bind,
+# so it gets the bare note. Pointing a player at a switch that cannot help
+# them would be exactly the kind of confident wrong answer this panel exists
+# to avoid.
+HOTKEYS_OFF = "hotkeys_off"
+HOTKEYS_UNBOUND = "hotkeys_unbound"
+
+
+def describe_follow(mode, resume_hint=None, seconds_left=None, no_key=None):
     """The header note for a panel that is not following the game.
 
     Returns (text, colour); the text is "" while the game is driving, which
     is the normal case and draws nothing.
 
-    A pure function of two arguments, so every phrasing is checkable without
+    A pure function of its arguments, so every phrasing is checkable without
     a window - the same reason describe_pace below is one.
+
+    `no_key` is HOTKEYS_OFF or HOTKEYS_UNBOUND when there is no key to name
+    and something can be done about it, and None otherwise.
 
     The wording matters more than it looks. Loom's entire claim is that it
     reads the game and keeps up by itself, so a panel showing a step it is no
@@ -960,6 +1250,24 @@ def describe_follow(mode, resume_hint=None, seconds_left=None):
 
     if mode is None or mode == follow.FOLLOWING:
         return "", NOT_FOLLOWING_COLOR
+    if mode == follow.DONE:
+        # The build is finished and the panel is resting on its last card
+        # - the author's ruling: the report must not steal the panel, some
+        # builds' last card is exactly what a player wants in front of
+        # them while they settle into the late game. The note names the
+        # way forward, because a report one unnamed keypress away might as
+        # well not exist - and with no key to name it names the way to GET
+        # one, for the same reason.
+        if resume_hint:
+            return f"BUILD DONE · {resume_hint} for the report", \
+                NOT_FOLLOWING_COLOR
+        if no_key == HOTKEYS_OFF:
+            return "BUILD DONE · enable hotkeys for the report", \
+                NOT_FOLLOWING_COLOR
+        if no_key == HOTKEYS_UNBOUND:
+            return "BUILD DONE · bind a step key for the report", \
+                NOT_FOLLOWING_COLOR
+        return "BUILD DONE", NOT_FOLLOWING_COLOR
     if mode == follow.MANUAL:
         if resume_hint:
             return f"MANUAL · {resume_hint} to resume", NOT_FOLLOWING_COLOR
@@ -977,6 +1285,26 @@ def describe_follow(mode, resume_hint=None, seconds_left=None):
     if seconds_left:
         return f"manual · resuming in {seconds_left}s", HOLDING_COLOR
     return "manual · resuming shortly", HOLDING_COLOR
+
+
+def describe_staleness(villager_gap):
+    """The header note for a villager count that has stopped being read.
+
+    Returns (text, colour); "" while the reads are fresh, which is every
+    normal poll. A pure function for the same reason describe_follow is.
+
+    This is the never-guess rule applied to the panel's own face. The
+    villager filter holds its last belief through unreadable polls on
+    purpose - right for a menu - but when the clock keeps reading and the
+    villager band alone has gone quiet, the held number is an assumption
+    wearing a reading's clothes. The author watched exactly that: a count
+    frozen at 6 for a whole game with nothing anywhere admitting it. The
+    note names the number of seconds because "how long has it been stuck"
+    is the first question the frozen panel raises.
+    """
+    if not villager_gap:
+        return "", NOT_FOLLOWING_COLOR
+    return f"VILLAGERS UNREAD · {int(villager_gap)}s", NOT_FOLLOWING_COLOR
 
 
 def describe_pace(delta, extra=0):

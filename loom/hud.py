@@ -55,6 +55,13 @@ class HudProfile:
     villager_region: Tuple[int, int, int, int]
     clock_band: Tuple[int, int, int, int]
     population_band: Tuple[int, int, int, int]
+    # The age crest, and the strip beside it where the age-up progress bar
+    # fills. Both roomy on purpose: the crest is SEARCHED for inside its
+    # band rather than read at a fixed offset, which is what lets one pair
+    # of numbers serve both skins even though their frames differ. See
+    # loom/age.py.
+    age_band: Tuple[int, int, int, int]
+    age_bar_band: Tuple[int, int, int, int]
     slot_one: Tuple[float, float, float, float]  # queue cell 1, from wood
     resource_dir: Path        # where this skin's four resource icons live
     number_strip: dict        # the villagers-on-this-resource number
@@ -133,6 +140,8 @@ ANNEHK = HudProfile(
     pop_icon=paths.POP_ICON_TEMPLATE,
     wood_icon=paths.TEMPLATES_DIR / "wood_icon.png",
     villager_region=(14, 31, 60, 56),
+    age_band=(236, -6, 292, 40),
+    age_bar_band=(298, -4, 470, 38),
     clock_band=(545, -8, 810, 30),
     population_band=(58, 14, 162, 44),
     slot_one=(-4.5, 60.5, 43.5, 108.5),
@@ -201,6 +210,8 @@ STOCK = HudProfile(
     # row of headroom under the digits; 39 lets the banner back in and 42
     # starts clipping the digit tops at 1080p.
     villager_region=(24, 40, 58, 56),
+    age_band=(236, -6, 292, 40),
+    age_bar_band=(298, -4, 470, 38),
     # The clock text sits at x 1123-1202, y 12-27, so the LEFT edge is the
     # one that has to be right - the mod's offset put it 111px too far along,
     # reading the speed text instead of the clock.

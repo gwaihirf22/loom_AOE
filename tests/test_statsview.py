@@ -82,3 +82,16 @@ def test_nice_ticks_are_round_and_cover_the_range():
     assert ticks[-1] >= 40
     assert all(t == round(t, 10) for t in ticks)
     assert statsview.nice_ticks(5, 5) == [5]
+
+
+def test_demo_files_are_not_history(stats_dir):
+    """Demo replays write a stats file so the pipeline can be exercised with
+    no game - but they are rehearsals, and a row per demo run would bury the
+    real games. The author's folder once held one phantom game per minute of
+    a forgotten demo."""
+    write_game(stats_dir, "2026-07-25_real.json")
+    write_game(stats_dir, "2026-07-25_120000_demo.json")
+
+    rows = statsview.list_stats()
+
+    assert [p.name for p, _, _ in rows] == ["2026-07-25_real.json"]

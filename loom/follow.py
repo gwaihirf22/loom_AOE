@@ -32,10 +32,17 @@ works unchanged in overlay.py and in browser.live_focus.
 
 import math
 
-# What the panel is doing, as three names rather than two booleans.
+# What the panel is doing, as four names rather than two booleans.
 FOLLOWING = "following"     # the game is driving; the normal case
 HOLDING = "holding"         # a hotkey moved the step; auto resumes shortly
 MANUAL = "manual"           # following is switched off until told otherwise
+# The build is finished and the panel is resting on its last card. Not a
+# FollowState state - mode() never returns it, because it is a fact about
+# the BUILD rather than about the cursor. The overlay substitutes it for
+# FOLLOWING once the build completes, so describe_follow can name the key
+# that steps forward to the report instead of claiming to follow a game
+# that has nothing left to follow.
+DONE = "done"
 
 
 class FollowState:
@@ -54,6 +61,16 @@ class FollowState:
         self.auto = True
         self.cursor = None          # in current_index() semantics, or None
         self.hold_until = None
+        # Slots the panel can reach PAST the last step. The overlay raises
+        # this to 1 when the build completes, so the report card becomes a
+        # position the step keys can walk off and back onto rather than a
+        # dead end.
+        #
+        # Named for what it is rather than for what fills it: this module
+        # decides where the panel is looking and must not learn what a
+        # report is. Anything else the overlay wants to park after the build
+        # arrives the same way.
+        self.tail = 0
 
     # ---- what the player does ------------------------------------------
 
@@ -90,6 +107,11 @@ class FollowState:
         self.auto = True
         self.cursor = None
         self.hold_until = None
+        # The tail goes too, and that is load-bearing rather than tidiness:
+        # a slot left over from the last game's completed build would be a
+        # position the player could step onto in the middle of this one,
+        # showing a report for a build that has not finished.
+        self.tail = 0
 
     # ---- what the overlay asks -----------------------------------------
 
@@ -114,6 +136,16 @@ class FollowState:
         if self.cursor is not None and not self._expired(now):
             return HOLDING
         return FOLLOWING
+
+    def on_tail(self, index):
+        """Is this index past the last step, in the tail?
+
+        The predicate the overlay branches on to draw the report instead of
+        a step. Here rather than there so it can be tested without a
+        QApplication - nothing under tests/ imports the overlay entry point,
+        so a decision left in it is a decision nothing checks.
+        """
+        return self.step_count is not None and index >= self.step_count
 
     def seconds_left(self, now):
         """How much of the hold remains, rounded up, or None when not holding."""
@@ -146,11 +178,17 @@ class FollowState:
         The floor is -1, not 0: that is "before the first step" in
         current_index() semantics, and it is a real position - it is what the
         overlay shows at the start of a match.
+
+        The ceiling carries the tail, so a completed build can be stepped off
+        and back onto. With no tail this is the last step, exactly as before.
         """
         if index < -1:
             return -1
-        if self.step_count is not None and index > self.step_count - 1:
-            return self.step_count - 1
+        ceiling = None
+        if self.step_count is not None:
+            ceiling = self.step_count - 1 + self.tail
+        if ceiling is not None and index > ceiling:
+            return ceiling
         return index
 
     def _expired(self, now):

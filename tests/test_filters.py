@@ -103,3 +103,58 @@ def test_time_formatting():
     assert filters.format_time(75) == "01:15"
     assert filters.format_time(605) == "10:05"
     assert filters.format_time(None) == "--:--"
+
+
+# ---- the read gap ------------------------------------------------------
+
+def test_fresh_reads_never_announce_a_gap():
+    gap = filters.ReadGap(announce_after=10, misses_before=3)
+    assert gap.update(6, 100) is None
+    assert gap.update(6, 102) is None
+    assert gap.update(7, 104) is None
+
+
+def test_a_band_gone_quiet_while_the_clock_runs_is_announced():
+    """Regression: the frozen villager count.
+
+    Live, the villager band stopped producing reads while the clock kept
+    going; the count filter held its belief of 6 - as designed - and the
+    panel wore that held number as if it were read, for the rest of the
+    game. The gap is what lets the panel admit it is holding."""
+    gap = filters.ReadGap(announce_after=10, misses_before=3)
+    gap.update(6, 100)
+    assert gap.update(None, 104) is None          # too soon to accuse
+    assert gap.update(None, 108) is None
+    assert gap.update(None, 112) == 12            # long enough, misses enough
+    assert gap.update(None, 120) == 20            # and it keeps counting
+
+
+def test_one_good_read_clears_the_gap():
+    gap = filters.ReadGap(announce_after=10, misses_before=3)
+    gap.update(6, 100)
+    for t in (104, 108, 112):
+        gap.update(None, t)
+    assert gap.update(7, 116) is None             # read again: fresh
+    assert gap.update(None, 118) is None          # and the count restarts
+
+
+def test_a_menu_does_not_accuse_the_band():
+    """With the clock gone too, the whole HUD is gone - a menu, not a band
+    failure. Those polls say nothing, and must not spend the miss guard."""
+    gap = filters.ReadGap(announce_after=10, misses_before=3)
+    gap.update(6, 100)
+    for _ in range(30):                            # a long menu
+        assert gap.update(None, None) is None
+    # Back from the menu in multiplayer: the clock leaps forward. A single
+    # missed read must not flash an accusation the band never earned.
+    assert gap.update(None, 220) is None
+    assert gap.update(None, 222) is None
+    assert gap.update(None, 224) == 124            # but persistent misses do
+
+
+def test_a_new_game_is_not_charged_the_old_games_gap():
+    gap = filters.ReadGap(announce_after=10, misses_before=3)
+    gap.update(30, 900)
+    assert gap.update(None, 5) is None             # clock went backwards
+    for t in (7, 9, 11, 13, 15, 17):
+        assert gap.update(None, t) is None         # no old moment to count from

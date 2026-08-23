@@ -40,11 +40,19 @@ class PaceTracker:
         self._delta_on_arrival = None
         self.complete = False
 
-    def update(self, villager_count, game_time):
+    def update(self, villager_count, game_time, age=None,
+               clicked=None):
         """Feed in one reading. Returns seconds behind, or None if unknown.
 
         Negative means ahead. None means there is nothing to compare against
         yet, which is honest for the opening seconds of a game.
+
+        `age` is the crest's answer, passed through to the step lookup as a
+        ceiling. Without it the build could "complete" while the player was
+        still an age short of the last step - measured live: an accidental
+        23rd villager exhausted the villager constraint and the panel
+        showed the report card at 13:30 with Castle Age still ninety
+        seconds of research away.
         """
         if villager_count is None or game_time is None:
             return None
@@ -56,7 +64,8 @@ class PaceTracker:
         # from the dead to nag about pace would help nobody.
         if self.complete:
             return None
-        if self.build.active_step(villager_count, game_time) is None:
+        if self.build.active_step(villager_count, game_time, age,
+                                  clicked) is None:
             self.complete = True
             return None
 
@@ -65,7 +74,7 @@ class PaceTracker:
         if villager_count != self._villagers:
             self._villagers = villager_count
             if build_order.extra_villagers(self.build, villager_count,
-                                           game_time) > 0:
+                                           game_time, age, clicked) > 0:
                 # A villager trained INTO A HOLD (the build repeats a count
                 # across an age-up, meaning stop training) is not a
                 # checkpoint - the build never requested it. Scoring it
@@ -80,7 +89,7 @@ class PaceTracker:
                 self._delta_on_arrival = (None if expected is None
                                           else game_time - expected)
 
-        overdue = self._overdue(villager_count, game_time)
+        overdue = self._overdue(villager_count, game_time, age, clicked)
 
         # Report whichever is worse: how late the last villager was, or how
         # overdue the current instruction is. Taking the maximum means the
@@ -95,7 +104,40 @@ class PaceTracker:
             return self._delta_on_arrival
         return max(self._delta_on_arrival, overdue)
 
-    def _overdue(self, villager_count, game_time):
+    def player_time(self, game_time):
+        """The game clock on the PLAYER'S schedule, for the step cursor.
+
+        The fundamental decision (2026-08-22): the cursor follows the
+        player, not the build's ideal timings - Loom's audience is
+        someone learning the game, and a cursor that marches on the
+        author's clock abandons exactly the player it exists for. The
+        ideal times still judge: pace, the recorder and the report all
+        stay on true game time.
+
+        So this returns game_time shifted by how late the player's
+        villagers are actually arriving, which is what makes a step
+        become "current" when THEY reach it rather than when a perfect
+        player would have. Two traps decide the shape:
+
+        * Only `_delta_on_arrival` may feed the shift - it is measured
+          from villager arrival events and holds steady while the player
+          is merely late. The overdue term grows a second per second
+          while production stalls, so shifting by the full delta would
+          hold the clock still and the cursor would never advance again:
+          a read filter that gets stuck, the oldest rule here.
+        * The shift only ever DELAYS. A player running ahead is carried
+          forward by the villager count on its own; letting a negative
+          delta advance the clock too would credit being ahead twice.
+
+        None (no arrival measured yet, or no clock) means no shift.
+        """
+        # Carry the build's clock forward by how late the player's villagers are.
+        if self._delta_on_arrival is None:
+            return game_time
+        return game_time - max(0, self._delta_on_arrival)
+
+    def _overdue(self, villager_count, game_time, age=None,
+                 clicked=None):
         """How long past due the current instruction is. Negative if not due.
 
         This is what makes an idle Town Center show up: the next step's time
@@ -103,7 +145,8 @@ class PaceTracker:
         grows. It also catches being late to click an age up, since that is a
         step with a time like any other.
         """
-        step = self.build.active_step(villager_count, game_time)
+        step = self.build.active_step(villager_count, game_time, age,
+                                      clicked)
         if step is None or step.time is None:
             return None
         return game_time - step.time

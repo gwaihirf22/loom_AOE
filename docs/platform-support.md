@@ -52,9 +52,20 @@ Two things Windows does better than macOS:
   places the overlay correctly.
 
 Reading the HUD is verified at **1920x1080 and 2560x1440**, on the stock bar
-and on Anne_HK, against recorded games rather than by eye: every band - the
-clock, the villager count, the population display and the production queue -
-is replayed frame by frame at both sizes.
+and on Anne_HK, against recorded games rather than by eye: the clock, the
+villager count, the population display, the production queue and the age
+crest are all replayed frame by frame at both sizes.
+
+**The notification feed is the exception, and at 1920x1080 it is largely
+unread.** The game does not draw that feed by scaling one master - at 1080p
+it lays the text out at a smaller point size - and Loom's character set was
+harvested at 2560x1440, so those templates do not fit the smaller
+rendering. Two features read the feed and both suffer at 1080p: the
+checklist's **green "observed" ticks**, and the **Town Centre count** that
+the idle-TC warning is built on. Expect items not to tick off, and a second
+Town Centre to go uncounted. Everything else on the list above is
+unaffected. **2560x1440 is the confirmed-working resolution for the feed;**
+closing the gap is a harvesting job, not a code change.
 
 The overlay sits above the game in fullscreen - measured at 2560x1440, with
 click-through confirmed by asking Windows for the window's `WS_EX_TRANSPARENT`

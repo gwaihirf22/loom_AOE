@@ -243,7 +243,7 @@ def set_build_browser(enabled):
 
 
 def preview_alerts():
-    """Whether the build preview shows the overlay's alert bands. Default: no.
+    """Whether the build preview shows the overlay's alert bands. Default: yes.
 
     Deliberately separate from hiding the overlay, so the two can be combined
     however a player's desk actually works: alerts in both windows while they
@@ -252,10 +252,12 @@ def preview_alerts():
     control for "hide the panel" and one for "warn me over here" is two ideas
     rather than one mode.
 
-    Off by default: this window has been a quiet browser for its whole life
-    and a flashing band nobody asked for is a poor surprise.
+    On by default since 1.0.5: living with it said the bands are the point
+    of glancing at the preview mid-game, and the lost-sight banner rides
+    the same channel. The checkbox is still there for whoever wants the
+    quiet browser back.
     """
-    return load().get("preview_alerts") is True
+    return load().get("preview_alerts") is not False
 
 
 def set_preview_alerts(enabled):
@@ -495,9 +497,13 @@ HOTKEY_ACTIONS = OVERLAY_HOTKEY_ACTIONS + LAUNCHER_HOTKEY_ACTIONS
 # be switched off entirely - AoE2 players remap heavily, and a hotkey Loom
 # registers is TAKEN FROM THE GAME, so a fixed binding would be a bug.
 #
-# start_stop_overlay ships UNBOUND: an empty binding is the grammar's own
-# "switched off", and a key that starts and stops a whole program is one a
-# player should choose to have, not discover by accident.
+# start_stop_overlay ships as Ctrl+Shift+F1 - the author's own binding,
+# promoted to the default for 1.0.5 along with the rest of this table
+# matching the author's live setup. The safety that used to ship it unbound
+# moved up a level: hotkeys as a WHOLE now ship disabled (see
+# hotkeys_enabled), so no key is taken from the game until the player
+# throws the master switch - at which point the bindings waiting behind it
+# are a working set rather than blanks to fill in.
 #
 # toggle_hidden is Ctrl+Shift+0, chosen by the author. Worth knowing that it
 # sits in the same family as the game's control groups - Ctrl+digit assigns
@@ -509,7 +515,7 @@ DEFAULT_HOTKEYS = {
     "next_step": "Ctrl+Shift+W",
     "toggle_follow": "Ctrl+Shift+R",
     "toggle_hidden": "Ctrl+Shift+0",
-    "start_stop_overlay": "",
+    "start_stop_overlay": "Ctrl+Shift+F1",
 }
 
 # How long a step hotkey may suspend automatic following. The floor stops a
@@ -559,11 +565,13 @@ def set_hotkey(action, binding):
 def hotkeys_enabled():
     """Should Loom register hotkeys at all?
 
-    Default-on like the preview and APM, so the `is not False` check. The
-    master switch exists so a player can hand every combination back to the
-    game at once, without clearing three settings one at a time.
+    Default-OFF, deliberately: a registered combination is TAKEN FROM THE
+    GAME, and that must be a choice, not a surprise on first launch. The
+    bindings behind the switch ship as a working set, so turning it on is
+    one click rather than a setup session. The master switch also still
+    hands every combination back to the game at once.
     """
-    return load().get("hotkeys_enabled") is not False
+    return load().get("hotkeys_enabled") is True
 
 
 def set_hotkeys_enabled(enabled):
@@ -599,10 +607,11 @@ def set_manual_hold_seconds(value):
 BACKGROUND_OPACITY_BOUNDS = (0.0, 1.0)
 TEXT_VISIBILITY_BOUNDS = (0.0, 1.0)
 
-# The designed card is alpha 205 of 255. The default reproduces it exactly,
-# so an untouched install paints byte-identical frames - and it happens to
-# be the "75% ish" the beta feedback asked the default to feel like.
-DEFAULT_BACKGROUND_OPACITY = 205 / 255
+# 0.83, the author's own setting, promoted to the default for 1.0.5 - a
+# touch more solid than the designed alpha-205 card (0.804) it used to
+# reproduce, and the value every appearance default in this file now
+# follows: ship what the author actually plays with.
+DEFAULT_BACKGROUND_OPACITY = 0.83
 
 
 def background_opacity():
@@ -629,13 +638,104 @@ def text_visibility():
     changed: above the midpoint this is not an opacity at all, and a saved
     1.0 from the old scale silently becoming "maximum contrast" would be a
     surprise nobody asked for."""
-    return _scale("text_visibility", TEXT_VISIBILITY_BOUNDS, default=0.5)
+    return _scale("text_visibility", TEXT_VISIBILITY_BOUNDS, default=0.82)
 
 
 def set_text_visibility(value):
     """Remember the player's text visibility."""
     settings = load()
     settings["text_visibility"] = float(value)
+    save(settings)
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# The build preview's appearance
+#
+# Four knobs of their own rather than reusing the overlay's, because the two
+# windows sit over different things: the overlay over the game, the preview
+# over the desktop. A ground that is right against terrain says nothing about
+# what is right against a wallpaper.
+#
+# Unlike the overlay's settings these apply LIVE - the preview is a widget in
+# the launcher's own process, not a child process reading its config once.
+
+# The window ground at each end of the hover fade. Rest may be zero - cards
+# floating straight on the desktop is the designed look - and hover may be
+# too, for someone who wants no ground ever.
+PREVIEW_GROUND_BOUNDS = (0.0, 1.0)
+
+# TRUE opacity of the current card's fill, like the overlay's background
+# knob. Ships solid (the author's setting) rather than the designed
+# alpha-235; the other roles keep their designed ratio to it - see
+# browser.card_alpha.
+PREVIEW_CARD_OPACITY_BOUNDS = (0.0, 1.0)
+DEFAULT_PREVIEW_CARD_OPACITY = 1.0
+
+# The card text multiplier. A tighter ceiling than the overlay's 2.0: a card
+# grows taller to fit its text but never wider, and half again the designed
+# height is already as tall as a card can go while three still fit a small
+# window.
+PREVIEW_TEXT_SCALE_BOUNDS = (0.75, 1.5)
+
+
+def preview_rest_opacity():
+    """The preview window's ground with the pointer away. 0.0 is cards
+    floating on the desktop - the designed look."""
+    return _scale("preview_rest_opacity", PREVIEW_GROUND_BOUNDS,
+                  default=0.51)
+
+
+def set_preview_rest_opacity(value):
+    """Remember the preview's at-rest ground."""
+    settings = load()
+    settings["preview_rest_opacity"] = float(value)
+    save(settings)
+    return settings
+
+
+def preview_hover_opacity():
+    """The preview window's ground with the pointer on it."""
+    return _scale("preview_hover_opacity", PREVIEW_GROUND_BOUNDS, default=0.8)
+
+
+def set_preview_hover_opacity(value):
+    """Remember the preview's hovered ground."""
+    settings = load()
+    settings["preview_hover_opacity"] = float(value)
+    save(settings)
+    return settings
+
+
+def preview_card_opacity():
+    """How solid the preview's cards are. TRUE opacity of the current card;
+    the other roles keep their designed ratio to it."""
+    return _scale("preview_card_opacity", PREVIEW_CARD_OPACITY_BOUNDS,
+                  default=DEFAULT_PREVIEW_CARD_OPACITY)
+
+
+def set_preview_card_opacity(value):
+    """Remember the preview's card opacity."""
+    settings = load()
+    settings["preview_card_opacity"] = float(value)
+    save(settings)
+    return settings
+
+
+def preview_text_scale():
+    """How much bigger than designed the preview's card text is drawn.
+
+    Text growth makes a card TALLER, never wider - the same rule as the
+    overlay's text knob, and for the same reason: lines that collide are
+    worse than lines that moved."""
+    return _scale("preview_text_scale", PREVIEW_TEXT_SCALE_BOUNDS,
+                  default=1.05)
+
+
+def set_preview_text_scale(value):
+    """Remember the preview's card text size."""
+    settings = load()
+    settings["preview_text_scale"] = float(value)
     save(settings)
     return settings
 

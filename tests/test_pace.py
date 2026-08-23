@@ -198,3 +198,85 @@ def test_a_missing_reading_is_not_treated_as_a_number(tracker):
     tracker.update(10, 175)
     assert tracker.update(None, 200) is None
     assert tracker.update(10, None) is None
+
+
+def test_the_build_cannot_complete_before_its_last_age_is_reached():
+    """The measured live failure: an extra villager exhausted the villager
+    constraint, the build's ideal times ran out, and the meter declared
+    the build complete - showing the report card - while the last step's
+    age was still ninety seconds of research away. The crest is a ceiling
+    on the step, so completion now waits for the age to actually arrive.
+    """
+    aged = {
+        "name": "Aged Build",
+        "build_order": [
+            {"villager_count": 6, "age": 1, "time": "1:15",
+             "resources": {"food": 6, "wood": 0, "gold": 0, "stone": 0},
+             "notes": ["Six to Sheep"]},
+            {"villager_count": 10, "age": 1, "time": "2:55",
+             "resources": {"food": 6, "wood": 4, "gold": 0, "stone": 0},
+             "notes": ["Click Feudal Age"]},
+            {"villager_count": 10, "age": 2, "time": "4:00",
+             "resources": {"food": 6, "wood": 4, "gold": 0, "stone": 0},
+             "notes": ["In Feudal Age: build a Market"]},
+        ],
+    }
+    tracker = PaceTracker(BuildOrder(aged))
+    # Villagers and clock past everything, crest still Dark Age: the last
+    # step is not reached, so the build is not complete and the meter
+    # keeps reporting how overdue the age-up is.
+    assert tracker.update(11, 400, age=1) is not None
+    assert not tracker.complete
+    # Feudal arrives: the final step is reached and the meter retires.
+    tracker.update(11, 410, age=2)
+    assert tracker.complete
+
+
+def test_no_age_reading_completes_the_way_it_always_did():
+    """Every caller that passes no age keeps the old behaviour - the demo
+    front end has no crest to read."""
+    tracker = PaceTracker(BuildOrder(SAMPLE))
+    tracker.update(15, 345)
+    assert tracker.complete
+
+
+def test_player_time_delays_by_measured_lateness(tracker):
+    # Villager 10 arrived thirty seconds late: the player's clock runs
+    # thirty seconds behind the game's from then on.
+    tracker.update(10, 205)
+    assert tracker.player_time(300) == 270
+
+
+def test_player_time_never_advances_for_an_ahead_player(tracker):
+    # Twenty seconds ahead. The villager count already carries an ahead
+    # player forward; the clock must not credit it twice - and ahead of a
+    # fixed build usually means out of sequence, which delays the end
+    # goal anyway (the author's ruling).
+    tracker.update(10, 155)
+    assert tracker._delta_on_arrival < 0
+    assert tracker.player_time(300) == 300
+
+
+def test_player_time_without_a_measurement_is_the_game_clock(tracker):
+    assert tracker.player_time(300) == 300
+
+
+def test_more_villagers_than_the_age_allows_is_extra():
+    """The live false NEGATIVE, from a real scouts game: a player behind
+    the clock, whose cursor had not reached the hold window yet, at 18
+    villagers in a build whose Dark Age never asks past 17. The hold test
+    saw active and completed steps with different counts and said 0 - but
+    the steps asking for more are all gated behind an age the crest says
+    has not arrived, so the surplus is real whatever the clock says."""
+    from loom.build_order import BuildOrder, extra_villagers
+    build = BuildOrder.load_by_name("scoutsrush18pop")
+    # Behind the clock, before the hold window (step 7 is 17 vills at 6:15).
+    assert extra_villagers(build, 18, 360, age=1) == 1
+    assert extra_villagers(build, 19, 360, age=1) == 2
+    # Feudal arrives: the build asks for 20 there, so 18 is growth, not
+    # surplus.
+    assert extra_villagers(build, 18, 560, age=2, clicked=2) == 0
+    # Without an age reading the ceiling would be a guess: unchanged.
+    assert extra_villagers(build, 18, 360) == 0
+    # Exactly the age's ask is not surplus.
+    assert extra_villagers(build, 17, 420, age=1) == 0

@@ -33,17 +33,21 @@ following has nothing to follow.
 
 import time
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QLabel, QPushButton,
+from PyQt6.QtCore import QEvent, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (QFontMetrics, QColor, QCursor, QFont, QPainter, QPainterPath,
+                         QPalette, QPen)
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame,
+                             QGraphicsOpacityEffect, QLabel, QPushButton,
                              QScrollArea, QScrollBar, QVBoxLayout,
                              QHBoxLayout, QWidget)
 
 from . import alerts as alerts_module
-from . import config, placement
+from . import checklist as checklist_module
+from . import config, placement, steplayout
 from .flowlayout import flow_row
 from .build_order import format_time
-from .overlay import (AHEAD_COLOR, ALERT_BAND_HEIGHT, ALERT_FULL_BRIGHT,
+from .overlay import (draw_items, item_indent, measure_segments,
+                      AHEAD_COLOR, ALERT_BAND_HEIGHT, ALERT_FULL_BRIGHT,
                       ALERT_FULL_DIM, ALERT_FULL_TEXT, ALERT_GAP,
                       ALERT_SOFT_FILL, ALERT_SOFT_TEXT, FLASH_SECONDS,
                       MAX_ALERT_BANDS,
@@ -151,6 +155,103 @@ EMPTY_OPACITY = 0.35
 # the drag.
 SAVE_SIZE_AFTER_MS = 1000
 
+# --- the chrome, and how it comes and goes --------------------------------
+#
+# Everything in this window that is not a card fades away while the pointer
+# is elsewhere, leaving the build and nothing else.
+#
+# The window earned that when the alert bands arrived: it stopped being a
+# reference you read before a match and became somewhere to play FROM, which
+# means it spends the match on a second monitor being glanced at while both
+# hands are in the game. Controls that are useful for the few seconds they
+# are actually clicked do not earn a permanent strip across the top of it.
+#
+# Fading in is quicker than fading out. Reaching for a control wants the
+# control now; leaving wants to be undramatic, and the slower exit also stops
+# the chrome strobing when the pointer clips a corner of the window.
+CHROME_FADE_IN_SECONDS = 0.12
+CHROME_FADE_OUT_SECONDS = 0.22
+
+# How long the chrome stays up after the pointer leaves, so that brushing
+# past the window on the way somewhere else does not flash it.
+CHROME_LINGER_SECONDS = 0.4
+
+# How long the chrome stays up when the window opens.
+#
+# A window that opened with no visible controls at all would read as broken
+# rather than as designed, and there would be nothing to teach the player the
+# rule. Showing the chrome once and then taking it away demonstrates it.
+CHROME_OPENING_SECONDS = 2.0
+
+# How often the pointer is looked for, and how often a fade steps.
+#
+# A poll rather than enterEvent/leaveEvent, which is not laziness: the cards
+# cover the whole viewport, and Qt sends a widget a Leave the moment the
+# pointer crosses into any of its children. Every one of those looks exactly
+# like leaving the window. Testing the cursor's global position against the
+# frame has none of that problem, and it works while the window is unfocused
+# - the normal case for a window on the monitor you are not playing on.
+HOVER_POLL_MS = 80
+FADE_TICK_MS = 16
+
+# Below this the chrome is gone rather than faint, and has to stop taking
+# clicks with it: an invisible button that still works is a trap.
+CHROME_DEAD_OPACITY = 0.02
+
+# How close to an edge counts as reaching for it to resize the window.
+RESIZE_MARGIN = 6
+
+# The gutter the window keeps around its contents, and the smallest it can
+# be: the two are deliberately the same number.
+#
+# The ground around the cards should be as thin as it can be - the cards are
+# the window and everything else is packaging. But the gutter has a second
+# job now that the frame is Loom's own. It is the strip of window belonging
+# to no child widget, and so the only place the resize hit-test can see the
+# pointer at all: a child covering those pixels takes the mouse events with
+# it. Below RESIZE_MARGIN the window stops being resizable by its own edge
+# before it looks any better, so that is where this stops.
+WINDOW_MARGIN = RESIZE_MARGIN
+
+# The ground the cards sit on, and the chrome that floats over them.
+#
+# Solid and dark on purpose. With the native frame gone this ground IS the
+# window, and the platform's window grey behind dark cards reads as an
+# unfinished dialog rather than a panel.
+WINDOW_BACKGROUND = QColor(12, 12, 15)
+CHROME_BACKGROUND = QColor(20, 20, 26, 247)
+
+# How round the window's own corners are.
+#
+# The same radius the cards use for theirs, so the window reads as one more
+# card holding the rest rather than as a box they happen to be in.
+#
+# It costs the window a translucent background: the corners have to be
+# painted with antialiasing to be smooth, and the pixels outside the curve
+# have to be genuinely absent rather than merely dark. setMask is the
+# alternative and would give a jagged, unantialiased edge - the one thing a
+# rounded corner cannot afford.
+#
+# It fits inside WINDOW_MARGIN by construction. The content starts at
+# (WINDOW_MARGIN, WINDOW_MARGIN), which is well inside the arc centred at
+# (WINDOW_RADIUS, WINDOW_RADIUS) - so no child widget ever has a square
+# corner poking out through a round one.
+WINDOW_RADIUS = 10
+
+# Which cursor says which edge, and which Qt.Edge to hand the window manager.
+EDGE_CURSORS = {
+    frozenset({"left"}): Qt.CursorShape.SizeHorCursor,
+    frozenset({"right"}): Qt.CursorShape.SizeHorCursor,
+    frozenset({"top"}): Qt.CursorShape.SizeVerCursor,
+    frozenset({"bottom"}): Qt.CursorShape.SizeVerCursor,
+    frozenset({"left", "top"}): Qt.CursorShape.SizeFDiagCursor,
+    frozenset({"right", "bottom"}): Qt.CursorShape.SizeFDiagCursor,
+    frozenset({"right", "top"}): Qt.CursorShape.SizeBDiagCursor,
+    frozenset({"left", "bottom"}): Qt.CursorShape.SizeBDiagCursor,
+}
+QT_EDGES = {"left": Qt.Edge.LeftEdge, "right": Qt.Edge.RightEdge,
+            "top": Qt.Edge.TopEdge, "bottom": Qt.Edge.BottomEdge}
+
 
 def visible_indices(focus, step_count, count=CARD_SLOTS):
     """Which step index each slot shows: [prev, focus, +1, +2, ...].
@@ -175,18 +276,64 @@ def visible_indices(focus, step_count, count=CARD_SLOTS):
             for index in range(first, first + count)]
 
 
-def cards_for_height(available_height, scale, gap):
-    """How many cards fit a stack this tall, clamped to the sane range.
+def step_plan(step, scale, text=1.0):
+    """The item layout for one step on a card at this scale and text size.
 
-    The count is what makes the window fit its own contents: pick it from the
-    height and the cards never need scrolling inside their own scroll area,
-    which is what let the wheel and the scrollbar disagree about what
-    scrolling meant.
+    Measured with a standalone QFontMetrics rather than a painter's, because
+    the answer decides how TALL the card is and a widget cannot resize
+    itself inside its own paintEvent.
     """
-    card = max(1, round(CARD_HEIGHT * scale))
-    step = card + max(0, gap)
-    fits = (available_height + max(0, gap)) // step
-    return max(MIN_VISIBLE_CARDS, min(MAX_VISIBLE_CARDS, int(fits)))
+    rows = step.items_segments if step is not None else []
+    if not rows:
+        return steplayout.plan_items(0)
+    points = max(1, round(steplayout.ITEM_POINTS * scale * text))
+    metrics = QFontMetrics(QFont("sans", points))
+    _radius, indent = item_indent(metrics, scale)
+    # Width follows the card scale alone - bigger text makes a card taller,
+    # never wider - so the room for columns does not grow with the text
+    # while the items in them do.
+    content = round(CARD_WIDTH * scale) - round(32 * scale)
+    widest = max(measure_segments(metrics, row, points, scale)
+                 for row in rows)
+    columns = steplayout.columns_for(content, widest + indent, len(rows),
+                                     round(steplayout.COLUMN_GAP * scale))
+    return steplayout.plan_items(len(rows), columns)
+
+
+def card_height(step, scale, text=1.0):
+    """How tall the card for one step has to be, in real pixels."""
+    grown = CARD_HEIGHT + step_plan(step, scale, text).extra
+    return round(grown * scale * text)
+
+
+def cards_for_steps(heights, available_height, gap):
+    """How many cards fit a stack this tall, given each one's own height.
+
+    The count is what makes the window fit its own contents: pick it from
+    the heights and the cards never need scrolling inside their own scroll
+    area, which is what let the wheel and the scrollbar disagree about what
+    scrolling meant.
+
+    Cards used to be one height, so this was a division. They are not any
+    more - a step with seven instructions is taller than a step with one -
+    so it accumulates instead. `heights` must be in the order the stack
+    shows them, because visible_indices only ever APPENDS as the count
+    grows: that is what makes the total monotonic in the count, and so what
+    makes stopping at the first overflow right rather than a guess.
+
+    MIN_VISIBLE_CARDS always fit whatever their heights say. Below that this
+    has stopped being a preview of anything, and the caller shrinks the
+    scale instead - the same escape the width has.
+    """
+    used = 0
+    count = 0
+    for height in heights[:MAX_VISIBLE_CARDS]:
+        need = used + height + (max(0, gap) if count else 0)
+        if count >= MIN_VISIBLE_CARDS and need > available_height:
+            break
+        used = need
+        count += 1
+    return max(MIN_VISIBLE_CARDS, count)
 
 
 def zoomed(chosen, fit, floor=MIN_CARD_SCALE, ceiling=MAX_CARD_SCALE):
@@ -240,6 +387,103 @@ def card_scale(available_width):
                min(MAX_CARD_SCALE, available_width / CARD_WIDTH))
 
 
+def chrome_target(pointer_inside, warning_showing):
+    """How visible the chrome should be: all the way, or not at all.
+
+    The pointer arriving is the ordinary reason. The other one is not
+    negotiable. While the chip is warning that the overlay has stopped
+    following the game, the chrome stays up whether anyone is reaching for it
+    or not - CLAUDE.md forbids the panel ceasing to follow the game quietly,
+    and chrome that faded would leave "manual" and "following" looking
+    identical from across the desk. That is the same class of failure as a
+    wrong villager count: silent, and trusted.
+
+    "following game" is not a warning and pins nothing. The absence of an
+    alarm is not an alarm.
+    """
+    return 1.0 if (pointer_inside or warning_showing) else 0.0
+
+
+def stepped_opacity(current, target, seconds,
+                    fade_in=CHROME_FADE_IN_SECONDS,
+                    fade_out=CHROME_FADE_OUT_SECONDS):
+    """Where the fade has reached `seconds` after being at `current`.
+
+    Driven by elapsed time rather than by a fixed step per tick, so a window
+    that misses a few ticks still finishes in the time it promised instead of
+    fading slower - the same reason the notification watcher counts game
+    seconds rather than looks.
+
+    Monotone and clamped: it walks toward the target and stops there, and
+    cannot overshoot however long the gap between two ticks turns out to be.
+    """
+    if current == target:
+        return target
+    duration = fade_in if target > current else fade_out
+    if duration <= 0:
+        return target
+    step = max(0.0, seconds) / duration
+    if target > current:
+        return min(target, current + step)
+    return max(target, current - step)
+
+
+def resize_edges(x, y, width, height, margin=RESIZE_MARGIN):
+    """Which window edges a point this close to the frame is reaching for.
+
+    Plain arithmetic returning names rather than Qt flags, so it can be
+    tested the way the rest of this file's arithmetic is - with no
+    QApplication and no window on screen. The caller maps the names to a
+    cursor and to Qt.Edge.
+
+    The margin is clamped to less than half the window in each direction, so
+    a window dragged all the way to its minimum still has a middle that is
+    not an edge. Without that the two sides meet and every point in the
+    window becomes a resize handle.
+    """
+    margin = max(0, min(margin, (width - 1) // 2, (height - 1) // 2))
+    edges = set()
+    if x < margin:
+        edges.add("left")
+    elif x >= width - margin:
+        edges.add("right")
+    if y < margin:
+        edges.add("top")
+    elif y >= height - margin:
+        edges.add("bottom")
+    return frozenset(edges)
+
+
+def ground_opacity(chrome, rest, hover):
+    """How solid the window's ground is at this point of the chrome fade.
+
+    The fade is the interpolant between two player-set endpoints: the ground
+    with the pointer away and the ground with the pointer on the window. The
+    designed look is exactly (rest=0, hover=1) - cards floating on the
+    desktop, a solid ground on arrival - and both knobs exist because that
+    is a choice about the player's wallpaper, which Loom cannot see.
+    """
+    # The two-product form rather than rest + (hover - rest) * chrome,
+    # because only this one is EXACT at both ends: the subtraction form
+    # returns 0.19999... for (1.0, 0.8, 0.2), and an endpoint that misses
+    # the player's own number is the golden case failing by a float crumb.
+    value = rest * (1.0 - chrome) + hover * chrome
+    return max(0.0, min(1.0, value))
+
+
+def card_alpha(designed_alpha, opacity):
+    """A card fill's alpha at the player's chosen card opacity.
+
+    opacity is TRUE opacity of the CURRENT card, whose designed fill is
+    alpha 235 - the same semantics as the overlay's background knob. The
+    other roles keep their designed ratio to it, so the stack's tints stay
+    in proportion however solid the player makes it. At the default
+    (config.DEFAULT_PREVIEW_CARD_OPACITY, 235/255) every designed alpha
+    comes back byte-identical, which is the golden case the tests pin.
+    """
+    return min(255, max(0, round(designed_alpha * opacity * 255 / 235)))
+
+
 class StepCard(QWidget):
     """One step of the build, drawn like a small overlay panel.
 
@@ -254,6 +498,15 @@ class StepCard(QWidget):
         super().__init__(parent)
         self._icons = icons     # resource icons, baked at the current scale
         self._scale = 1.0
+        # The player's appearance knobs, pushed by the browser: how solid
+        # the fill is (true opacity of the current card's designed 235) and
+        # how much bigger than designed the text is drawn.
+        self._fill_opacity = 235 / 255
+        self._text = 1.0
+        self._plan = steplayout.plan_items(0)
+        # Checklist states for this step's items, one each. Empty means
+        # nothing is ticked, which is what browsing wants.
+        self._states = []
         self.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
         self._index = None      # step index in the build, None = empty slot
         self._step = None
@@ -274,29 +527,67 @@ class StepCard(QWidget):
         self._icons = icons
         if self._scale != scale:
             self._scale = scale
-            self.setFixedSize(round(CARD_WIDTH * scale),
-                              round(CARD_HEIGHT * scale))
+            self._fix_size()
             self.update()
+
+    def set_appearance(self, fill_opacity, text_scale):
+        """The player's card opacity and text size, from the settings tab."""
+        if (self._fill_opacity, self._text) == (fill_opacity, text_scale):
+            return
+        self._fill_opacity = fill_opacity
+        self._text = text_scale
+        self._fix_size()
+        self.update()
+
+    def _fix_size(self):
+        """Width from the card scale alone; height from the text too.
+
+        Bigger text makes a card TALLER, never wider - the same rule as the
+        overlay's text knob, and for the same reason: lines that collide are
+        worse than lines that moved.
+
+        A step with a lot of instructions makes it taller again, on the same
+        axis: steplayout grows the box before it will shrink the writing.
+        """
+        self._plan = step_plan(self._step, self._scale, self._text)
+        grown = CARD_HEIGHT + self._plan.extra
+        self.setFixedSize(round(CARD_WIDTH * self._scale),
+                          round(grown * self._scale * self._text))
 
     def _s(self, base):
         """A designed pixel value at the current scale."""
         return round(base * self._scale)
 
+    def _sy(self, base):
+        """A designed VERTICAL position, which the text size stretches too.
+
+        Every row's y rides the text multiplier along with the fonts, so the
+        rows spread apart exactly as fast as the text grows into them.
+        Horizontal positions stay _s: the card does not get wider, and the
+        headline already knows how to elide.
+        """
+        return round(base * self._scale * self._text)
+
     def _pt(self, base):
-        """A designed font size at the current scale, never 0."""
-        return max(1, round(base * self._scale))
+        """A designed font size at the current scale and text size, never 0."""
+        return max(1, round(base * self._scale * self._text))
 
     # ---- what to show --------------------------------------------------
 
-    def show_step(self, index, step, total, role):
-        state = (index, step, total, role)
-        if (self._index, self._step, self._total, self._role) != state:
-            self._index, self._step, self._total, self._role = state
+    def show_step(self, index, step, total, role, states=()):
+        state = (index, step, total, role, tuple(states))
+        if (self._index, self._step, self._total, self._role,
+                tuple(self._states)) != state:
+            self._index, self._step, self._total, self._role = state[:4]
+            self._states = list(states)
+            self._fix_size()
             self.update()
 
     def show_empty(self):
         if self._index is not None or self._live is not None:
             self._index = self._step = self._live = None
+            self._states = []
+            self._fix_size()
             self.update()
 
     def set_live(self, villagers, game_time, pace_delta, per_resource):
@@ -331,7 +622,7 @@ class StepCard(QWidget):
 
         self._draw_frame(painter)
         self._draw_header(painter)
-        self._draw_headline(painter)
+        self._draw_items(painter)
         self._draw_resources(painter)
 
     def _draw_empty(self, painter):
@@ -350,19 +641,25 @@ class StepCard(QWidget):
         # stay the thing the eye lands on, so the other two are only a breath
         # away from the plain background.
         if self._role == "current":
-            painter.setBrush(CURRENT_BACKGROUND)
+            fill = QColor(CURRENT_BACKGROUND)
             painter.setPen(QColor(AHEAD_COLOR))
         else:
-            painter.setBrush(PAST_BACKGROUND if self._role == "previous"
-                             else UPCOMING_BACKGROUND)
+            fill = QColor(PAST_BACKGROUND if self._role == "previous"
+                          else UPCOMING_BACKGROUND)
             painter.setPen(BORDER)
+        # A per-paint copy at the player's opacity, never a change to the
+        # module constants - the overlay's panel_background records why that
+        # is load-bearing: these colours are shared art, and one window's
+        # setting must not fade the other window.
+        fill.setAlpha(card_alpha(fill.alpha(), self._fill_opacity))
+        painter.setBrush(fill)
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1),
                                 self._s(10), self._s(10))
 
     def _draw_header(self, painter):
         painter.setFont(QFont("sans", self._pt(9), QFont.Weight.Bold))
         painter.setPen(FAINT_TEXT)
-        painter.drawText(self._s(16), self._s(22),
+        painter.drawText(self._s(16), self._sy(22),
                          f"STEP {self._index + 1} OF {self._total}")
 
         # The right side of the header: targets normally; live truth plus
@@ -374,14 +671,14 @@ class StepCard(QWidget):
             painter.setFont(QFont("sans", self._pt(9), QFont.Weight.Bold))
             painter.setPen(pace_color)
             width = painter.fontMetrics().horizontalAdvance(pace_text)
-            painter.drawText(right - width, self._s(22), pace_text)
+            painter.drawText(right - width, self._sy(22), pace_text)
             right -= width + self._s(12)
 
             painter.setFont(QFont("sans", self._pt(9)))
             painter.setPen(DIM_TEXT)
             live_text = f"{format_time(game_time)} · {villagers} vills"
             width = painter.fontMetrics().horizontalAdvance(live_text)
-            painter.drawText(right - width, self._s(22), live_text)
+            painter.drawText(right - width, self._sy(22), live_text)
         else:
             when = ""
             if self._step.time is not None:
@@ -390,38 +687,34 @@ class StepCard(QWidget):
             painter.setFont(QFont("sans", self._pt(9)))
             painter.setPen(FAINT_TEXT)
             width = painter.fontMetrics().horizontalAdvance(when)
-            painter.drawText(right - width, self._s(22), when)
+            painter.drawText(right - width, self._sy(22), when)
 
-    def _draw_headline(self, painter):
-        painter.setFont(QFont("sans", self._pt(15), QFont.Weight.Bold))
-        painter.setPen(TEXT)
-        available = self.width() - self._s(32)
-        if self._step.details_segments:
-            draw_segments(painter, self._step.details_segments, self._s(16),
-                          self._s(56), available,
-                          icon_height=self._s(24), spacing=self._scale)
-        else:
-            painter.drawText(self._s(16), self._s(56),
-                             elide(painter, self._step.details, available))
+    def _draw_items(self, painter):
+        """The step's instructions, as a checklist of equal items.
 
-        painter.setFont(QFont("sans", self._pt(10)))
-        painter.setPen(DIM_TEXT)
-        y = self._s(78)
-        # Cap at two footnotes, same as the overlay - a card is not a manual.
-        for row, segments in enumerate(self._step.footnotes_segments[:2]):
-            painter.drawText(self._s(16), y, "·")
-            if segments:
-                draw_segments(painter, segments, self._s(28), y,
-                              self.width() - self._s(44),
-                              icon_height=self._s(16), spacing=self._scale)
-            elif row < len(self._step.footnotes):
-                painter.drawText(self._s(28), y,
-                                 elide(painter, self._step.footnotes[row],
-                                       self.width() - self._s(44)))
-            y += self._s(18)
+        Every one of them. The old version drew the first at 15pt bold and
+        capped the rest at two, which in the busiest shipped step showed
+        three of seven and said nothing about the four it dropped.
+        """
+        plan = self._plan
+        rows = self._step.items_segments[:plan.shown]
+        if not rows:
+            return
+        text = self._scale * self._text
+        draw_items(
+            painter, rows, self._states[:plan.shown],
+            x=self._s(16), baseline=self._sy(56),
+            width=self.width() - self._s(32),
+            columns=plan.columns,
+            points=max(1, round(plan.points * text)),
+            row_height=round(plan.row_height * text),
+            icon_height=max(1, round(plan.points * text)),
+            column_gap=round(steplayout.COLUMN_GAP * self._scale),
+            spacing=self._scale,
+            more_text=steplayout.more_label(plan.hidden))
 
     def _draw_resources(self, painter):
-        y = self.height() - self._s(14)
+        y = self.height() - self._sy(14)
         painter.setFont(QFont("sans", self._pt(9), QFont.Weight.Bold))
         painter.setPen(FAINT_TEXT)
         painter.drawText(self._s(16), y, "VILLS")
@@ -512,6 +805,133 @@ class AlertBands(QWidget):
                              Qt.AlignmentFlag.AlignCenter, text)
 
 
+class ChromeBar(QWidget):
+    """Everything in the preview that is not a card, floating over the cards.
+
+    Deliberately NOT in the window's layout, and that is the whole design.
+    Chrome that collapsed out of the layout would hand its height back to the
+    scroll viewport, _relayout would re-derive the card count from the taller
+    viewport, and the stack would redeal - every card sliding down as the
+    pointer approached the one it was aiming at, and back up again when it
+    left. This file already carries two comments about that oscillation (see
+    STACK_MARGIN, and the viewport eventFilter); this would have been the
+    third place it appeared, and the first where it moved a click target out
+    from under a moving mouse.
+
+    Floating costs one setGeometry per resize and changes no layout at all,
+    so the cards do not move by a pixel whether the chrome is up or not. What
+    it covers while it is up is card 0 - the step already behind you, drawn at
+    PREVIOUS_OPACITY and the least important thing on screen.
+    """
+
+    def __init__(self, controls, parent=None):
+        super().__init__(parent)
+        self.title = QLabel()
+        self.title.setStyleSheet(f"color: rgb({DIM_TEXT.red()},"
+                                 f" {DIM_TEXT.green()},"
+                                 f" {DIM_TEXT.blue()}); font-size: 9pt;")
+
+        # The X the native frame used to carry. Losing it would strand
+        # nobody either way - the launcher's "Show build preview" checkbox is
+        # the real switch and is always reachable - but a window with no
+        # visible way to close it is a window people distrust.
+        self.close_button = QPushButton("✕")
+        self.close_button.setFixedWidth(ZOOM_BUTTON_WIDTH)
+        self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_button.setToolTip("Close the preview.")
+
+        strip = QHBoxLayout()
+        strip.setContentsMargins(0, 0, 0, 0)
+        strip.addWidget(self.title)
+        strip.addStretch()
+        strip.addWidget(self.close_button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(WINDOW_MARGIN, 2, WINDOW_MARGIN, 2)
+        layout.setSpacing(2)
+        layout.addLayout(strip)
+        layout.addWidget(controls)
+
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        # The chrome covers the window's top edge, so it has to take part in
+        # the resize hit-test or that edge could never be grabbed.
+        self.setMouseTracking(True)
+
+    def set_title(self, text):
+        self.title.setText(text)
+
+    def heightForWidth(self, width):
+        """Tall enough for the controls at this width, wrapped rows included.
+
+        Asked explicitly because this widget's geometry is set by hand rather
+        than negotiated by a parent layout - nothing else is going to ask,
+        and a wrapped row given one row's height draws its second row over
+        the cards.
+        """
+        layout = self.layout()
+        wrapped = layout.heightForWidth(width) if layout.hasHeightForWidth() \
+            else -1
+        return max(wrapped, self.sizeHint().height(),
+                   self.minimumSizeHint().height())
+
+    def paintEvent(self, event):
+        """A solid ground of its own, so text stays readable over a card.
+
+        Rounded across the top to sit inside the window's own corners, and
+        square across the bottom where it meets the cards. Both at once by
+        rounding a rectangle that extends a radius BELOW this widget: the
+        bottom curves fall outside the paint area and never arrive.
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        shape = QPainterPath()
+        shape.addRoundedRect(
+            QRectF(self.rect()).adjusted(0, 0, 0, WINDOW_RADIUS),
+            WINDOW_RADIUS, WINDOW_RADIUS)
+        painter.fillPath(shape, CHROME_BACKGROUND)
+        painter.setPen(BORDER)
+        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+
+    def mouseMoveEvent(self, event):
+        """Show the resize cursor for the window edge underneath this bar."""
+        super().mouseMoveEvent(event)
+        window = self.window()
+        shape = EDGE_CURSORS.get(
+            window.edge_at(event.globalPosition().toPoint()))
+        if shape is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(shape)
+
+    def mousePressEvent(self, event):
+        """Drag the window by its chrome, using the window manager's own move.
+
+        Qt hands the drag to Windows (or to the X server) rather than moving
+        the window per mouse event, so Aero Snap, edge tiling and the native
+        feel all survive losing the caption. A press on a control never
+        reaches here - the control accepts it - so only the empty parts of
+        the strip drag the window.
+
+        Resizing is tried FIRST, because this bar lies across the window's
+        own top edge. Without that the top edge and both top corners would be
+        the only ones that could not be grabbed, and reaching for them would
+        silently move the window instead.
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            window = self.window()
+            if window.begin_resize(
+                    window.edge_at(event.globalPosition().toPoint())):
+                event.accept()
+                return
+            handle = window.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
 class BuildBrowser(QWidget):
     """The preview window: a stack of step cards, follow/browse switching, and
     a card size the player controls."""
@@ -530,11 +950,30 @@ class BuildBrowser(QWidget):
         # preview routinely opened hidden behind the launcher that spawned it.
         # A parent is the one fix that works the same on X11, Wayland, macOS
         # and Windows, none of which agree about a client positioning itself.
-        super().__init__(parent, Qt.WindowType.Window)
+        #
+        # Frameless as well, with Loom drawing what the caption used to. Qt
+        # cannot fade a native title bar, and toggling FramelessWindowHint on
+        # and off recreates the native window - which flickers, shifts the
+        # geometry, and can steal focus. Focus theft is not cosmetic here: it
+        # would minimise a fullscreen game every time the pointer crossed
+        # this window. So the caption goes for good and the chrome carries a
+        # strip of its own that fades with everything else.
+        super().__init__(parent,
+                         Qt.WindowType.Window
+                         | Qt.WindowType.FramelessWindowHint)
+        # Still worth setting with no caption to draw it: this is the name in
+        # alt-tab and in the taskbar.
         self.setWindowTitle("Loom — Build preview")
         self.build = None
         self.focus = 0
         self.following = False
+        # Which items of which steps are done. The preview keeps its OWN,
+        # fed from the same state line the focus comes from: the assumption
+        # rule is a pure function of the step index and both windows have
+        # that already, so only SIGHTINGS have to travel.
+        self.checklist = None
+        # The last index seen from the game, so a new match can be spotted.
+        self._last_index = None
         # What the overlay says it is doing, from the statefeed. None when
         # there is no overlay to ask.
         self.follow_mode = None
@@ -553,6 +992,27 @@ class BuildBrowser(QWidget):
         # mid-match shows what is happening now rather than waiting for the
         # next one to arrive.
         self._alerts = []
+        # The appearance settings, re-read live by apply_appearance whenever
+        # the launcher's Preview tab changes one.
+        self._rest_ground = config.preview_rest_opacity()
+        self._hover_ground = config.preview_hover_opacity()
+        self._card_opacity = config.preview_card_opacity()
+        self._text_scale = config.preview_text_scale()
+
+        # The chrome fade. _chrome_opacity is where it is, _chrome_wanted is
+        # where it is going, and the two timers below close the gap.
+        self._chrome_opacity = 1.0
+        self._chrome_wanted = 1.0
+        # When the pointer left, for the linger; when the window opened, for
+        # the one showing that teaches the rule; and when the fade last
+        # stepped, so a step is measured in elapsed time rather than ticks.
+        self._left_at = None
+        self._opened_at = time.monotonic()
+        self._faded_at = time.monotonic()
+        # Whether the chip is saying something the player must not miss. Set
+        # by _show_mode, read by chrome_target - a warning pins the chrome up
+        # with no pointer anywhere near the window.
+        self._chip_warning = False
 
         self.chip = QLabel()
 
@@ -662,7 +1122,7 @@ class BuildBrowser(QWidget):
         # bug. The card count now follows the window's height, so the stack
         # always fits and the scroll area has nothing of its own to scroll -
         # leaving this bar as the single meaning.
-        self.position = QScrollBar(Qt.Orientation.Vertical)
+        self.position = QScrollBar(Qt.Orientation.Vertical, self)
         self.position.setToolTip("Where you are in the build.")
         self.position.valueChanged.connect(self._position_moved)
         self.position.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -670,7 +1130,16 @@ class BuildBrowser(QWidget):
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.addWidget(self.scroll)
-        body.addWidget(self.position)
+        # The position bar is NOT in this layout. It floats over the right
+        # edge of the card area the way the chrome floats over the top, so
+        # the strip it used to reserve goes back to the cards - fourteen
+        # pixels that were spent all match on a control nobody can use while
+        # the overlay is following the game.
+        #
+        # The cost is that it overlays the right edge of a card while it is
+        # up, where "by M:SS · N vills" is right-aligned. That is the trade
+        # the author asked for, and it is only paid while the pointer is
+        # actually on the window.
 
         # The alert bands sit under the cards, where the overlay puts them
         # too. Hidden and zero-height unless there is something to say, so a
@@ -678,9 +1147,61 @@ class BuildBrowser(QWidget):
         self.bands = AlertBands()
 
         layout = QVBoxLayout(self)
-        layout.addWidget(header)
+        # Set rather than inherited from the platform, because the gutter is
+        # load-bearing now: it is the strip of window belonging to no child
+        # widget, and so the only place the resize hit-test can see the
+        # pointer at all.
+        layout.setContentsMargins(WINDOW_MARGIN, WINDOW_MARGIN,
+                                  WINDOW_MARGIN, WINDOW_MARGIN)
         layout.addLayout(body)
         layout.addWidget(self.bands)
+
+        # The chrome is a child of the window and NOT of the layout - see
+        # ChromeBar for why that is the whole point. Raised so it sits over
+        # the top card rather than under it.
+        self.chrome = ChromeBar(header, self)
+        self.chrome.close_button.clicked.connect(self.close)
+        self.chrome.set_title("Loom — Build preview")
+        self.chrome.raise_()
+        self._chrome_effect = QGraphicsOpacityEffect(self.chrome)
+        self.chrome.setGraphicsEffect(self._chrome_effect)
+        # The position bar fades with the chrome, but is NOT hidden with it:
+        # it lives in `body`, so hiding it would reflow the cards, which is
+        # exactly what floating the chrome exists to avoid.
+        self._position_effect = QGraphicsOpacityEffect(self.position)
+        self.position.setGraphicsEffect(self._position_effect)
+
+        # The ground the cards sit on. With no native frame this is the whole
+        # window, and the platform's window grey behind dark cards reads as
+        # an unfinished dialog. Set as a palette rather than a stylesheet so
+        # it inherits to the scroll area and its viewport without fighting
+        # the widgets' own one-line colour rules.
+        ground = self.palette()
+        ground.setColor(QPalette.ColorRole.Window, WINDOW_BACKGROUND)
+        ground.setColor(QPalette.ColorRole.Base, WINDOW_BACKGROUND)
+        ground.setColor(QPalette.ColorRole.WindowText, TEXT)
+        ground.setColor(QPalette.ColorRole.Text, TEXT)
+        self.setPalette(ground)
+        # NOT autoFillBackground: the ground is painted by hand in
+        # paintEvent, because a rounded window has to leave the pixels
+        # outside its corners genuinely empty rather than merely dark - and
+        # because the ground fades with the chrome, which a palette fill
+        # cannot do.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # The viewport and the scroll area's frame paint NOTHING of their
+        # own. Whatever shows between and around the cards is the window's
+        # ground while the chrome is up, and the desktop once it has gone -
+        # the disappearing is the point, so anything that fills a rectangle
+        # here would quietly put the box back.
+        self.scroll.viewport().setAutoFillBackground(False)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # setWidget() silently turned autoFillBackground ON for the column
+        # when it was adopted - Qt's documented behaviour, and invisible in
+        # this file because nothing here asked for it. Found by rendering
+        # the window at rest and mapping which pixels were opaque: a solid
+        # block exactly the scroll area's rectangle, surviving both switches
+        # above.
+        self.scroll.widget().setAutoFillBackground(False)
 
         # Arrow keys move through the build, so the window has to be able to
         # hold focus. The zoom buttons and the bar decline it (NoFocus) so a
@@ -692,6 +1213,24 @@ class BuildBrowser(QWidget):
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._remember_geometry)
+
+        # Where the pointer is, and where the fade has got to. Two jobs, two
+        # timers, both stopped while the window is not on screen.
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(HOVER_POLL_MS)
+        self._hover_timer.timeout.connect(self._check_pointer)
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(FADE_TICK_MS)
+        self._fade_timer.timeout.connect(self._fade_step)
+
+        # Without this the window is told about the pointer only while a
+        # button is held, and the resize cursors never appear.
+        self.setMouseTracking(True)
+
+        # Wear the saved appearance from the first paint - the cards were
+        # built at their designed defaults above.
+        for card in self.cards:
+            card.set_appearance(self._card_opacity, self._text_scale)
 
         self._apply_minimum_size()
         self.resize(*(config.browser_window() or DEFAULT_WINDOW))
@@ -742,9 +1281,198 @@ class BuildBrowser(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Only the geometry save. The card scale rides the viewport's resize
-        # instead - see eventFilter.
+        # The chrome is placed by hand because it is not in the layout, so
+        # this is the only thing that will ever move it.
+        self._place_chrome()
+        # Otherwise only the geometry save. The card scale rides the
+        # viewport's resize instead - see eventFilter.
         self._save_timer.start(SAVE_SIZE_AFTER_MS)
+
+    def showEvent(self, event):
+        """Open with the chrome up, then take it away.
+
+        A window that opened showing no controls at all would read as broken
+        rather than as designed, and nothing would teach the player that
+        moving the pointer onto it brings them back. Showing them once and
+        then fading them demonstrates the rule in two seconds.
+        """
+        super().showEvent(event)
+        self._opened_at = time.monotonic()
+        self._left_at = None
+        self._set_chrome_opacity(1.0)
+        self._place_chrome()
+        self._hover_timer.start()
+
+    def hideEvent(self, event):
+        """A closed preview costs nothing: both timers stop with the window."""
+        super().hideEvent(event)
+        self._hover_timer.stop()
+        self._fade_timer.stop()
+
+    def _place_chrome(self):
+        """Across the top of the window, as tall as its controls need - and
+        the position bar down the right edge of the cards."""
+        width = max(1, self.width())
+        height = max(1, self.chrome.heightForWidth(width))
+        self.chrome.setGeometry(0, 0, width, height)
+        # Over the card area's right edge rather than beside it. Asked of the
+        # scroll area rather than computed, so it follows the layout's own
+        # margins instead of a second copy of them that could drift.
+        area = self.scroll.geometry()
+        bar = max(1, self.position.sizeHint().width())
+        # It starts BELOW the chrome rather than at the top of the card area,
+        # because the chrome's close button is in the same corner and the two
+        # would otherwise be drawn on top of each other. Nothing is lost by
+        # it: the bar and the chrome come and go together, so the strip this
+        # gives up is a strip the bar is never visible in anyway.
+        top = max(area.top(), height)
+        self.position.setGeometry(area.right() - bar + 1, top,
+                                  bar, max(1, area.bottom() - top + 1))
+        self.position.raise_()
+        # Last, so the chrome stays above the bar wherever they still meet.
+        self.chrome.raise_()
+
+    def _check_pointer(self):
+        """Where the pointer is, and therefore where the chrome is going."""
+        now = time.monotonic()
+        inside = self.frameGeometry().contains(QCursor.pos())
+        if inside:
+            self._left_at = None
+        elif self._left_at is None:
+            self._left_at = now
+        lingering = (self._left_at is not None
+                     and now - self._left_at < CHROME_LINGER_SECONDS)
+        opening = now - self._opened_at < CHROME_OPENING_SECONDS
+        self._chrome_wanted = chrome_target(inside or lingering or opening,
+                                            self._chip_warning)
+        if (self._chrome_wanted != self._chrome_opacity
+                and not self._fade_timer.isActive()):
+            self._faded_at = now
+            self._fade_timer.start()
+
+    def _fade_step(self):
+        """One step of the fade, measured in elapsed time rather than ticks."""
+        now = time.monotonic()
+        seconds = now - self._faded_at
+        self._faded_at = now
+        self._set_chrome_opacity(
+            stepped_opacity(self._chrome_opacity, self._chrome_wanted,
+                            seconds))
+        if self._chrome_opacity == self._chrome_wanted:
+            self._fade_timer.stop()
+
+    def _set_chrome_opacity(self, value):
+        self._chrome_opacity = value
+        self._chrome_effect.setOpacity(value)
+        self._position_effect.setOpacity(value)
+        gone = value <= CHROME_DEAD_OPACITY
+        # Hidden rather than merely invisible, because an invisible button
+        # that still takes clicks is a trap - and because a hidden widget
+        # lets the click through to the card underneath instead of eating it.
+        # Hiding costs nothing here precisely because the chrome is not in
+        # the layout: nothing moves.
+        self.chrome.setVisible(not gone)
+        # The bar can be hidden outright now that it is out of the layout,
+        # which is better than merely making it invisible: a hidden widget
+        # takes no clicks and lets them through to the card underneath.
+        self.position.setVisible(not gone)
+        self.update()
+
+    # ---- moving and resizing a window with no frame --------------------
+
+    def edge_at(self, global_point):
+        """Which of this window's edges a point on the screen is reaching for.
+
+        Takes a screen position rather than a local one so the chrome can ask
+        the same question about itself - it lies across the top edge, and the
+        answer has to be about the WINDOW either way.
+        """
+        local = self.mapFromGlobal(global_point)
+        return resize_edges(local.x(), local.y(),
+                            self.width(), self.height())
+
+    def begin_resize(self, edges):
+        """Hand a resize to the window manager. False if there was no edge."""
+        handle = self.windowHandle()
+        if not edges or handle is None:
+            return False
+        wanted = Qt.Edge(0)
+        for name in edges:
+            wanted |= QT_EDGES[name]
+        return handle.startSystemResize(wanted)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        shape = EDGE_CURSORS.get(
+            self.edge_at(event.globalPosition().toPoint()))
+        if shape is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(shape)
+
+    def leaveEvent(self, event):
+        """Drop the resize cursor on the way out.
+
+        Qt sends this when the pointer crosses into a CHILD as well as when
+        it leaves the window - useless for the fade, which is why that polls
+        instead, and exactly right here. Once the pointer is over a card the
+        window stops hearing about it, and a resize cursor left set would be
+        inherited by every child that has none of its own.
+        """
+        super().leaveEvent(event)
+        self.unsetCursor()
+
+    def mousePressEvent(self, event):
+        """Grab an edge and let the window manager do the resize itself."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.begin_resize(
+                    self.edge_at(event.globalPosition().toPoint())):
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        """The rounded ground the cards sit on, and the outline around it.
+
+        Both ride the chrome fade, and so does the repaint that carries
+        them: at rest this window paints NOTHING of its own. The cards float
+        directly on the desktop, which is the disappearing the author asked
+        for - the ground turned out to be chrome like everything else, just
+        chrome shaped like a background.
+
+        Painted rather than filled by the palette because the window is
+        translucent: everything outside the corner arcs - and at rest, the
+        whole rectangle - has to be left genuinely empty, not merely dark.
+        """
+        solidity = ground_opacity(self._chrome_opacity,
+                                  self._rest_ground, self._hover_ground)
+        if solidity <= 0.01 and self._chrome_opacity <= CHROME_DEAD_OPACITY:
+            # Nothing at all. At rest with no ground asked for, the window
+            # has no ground, no frame and no outline - the cards paint
+            # themselves and everything between them is desktop.
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if solidity > 0.01:
+            painter.setOpacity(solidity)
+            ground = QPainterPath()
+            ground.addRoundedRect(QRectF(self.rect()),
+                                  WINDOW_RADIUS, WINDOW_RADIUS)
+            painter.fillPath(ground, WINDOW_BACKGROUND)
+        if self._chrome_opacity <= CHROME_DEAD_OPACITY:
+            # A resting ground is the player's setting; the outline is still
+            # chrome and stays hover-only.
+            return
+        painter.setOpacity(self._chrome_opacity)
+        # Half a pixel in, so the one-pixel stroke lands inside the window
+        # instead of straddling its edge and losing half its width.
+        outline = QPainterPath()
+        outline.addRoundedRect(
+            QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+            WINDOW_RADIUS, WINDOW_RADIUS)
+        painter.setOpacity(self._chrome_opacity)
+        painter.strokePath(outline, QPen(BORDER))
 
     def _apply_minimum_size(self):
         """Stop the window shrinking past what the smallest card needs.
@@ -758,14 +1486,17 @@ class BuildBrowser(QWidget):
         from the same constants rather than guessed at.
         """
         chrome = self.layout().contentsMargins()
-        # Everything the window spends before a card gets any of it. The
-        # position bar counts: it was added beside the scroll area and left
-        # out of this sum, and the result was six pixels of horizontal
-        # overflow at the minimum width - with the bar switched off, six
-        # pixels of card that simply were not there.
+        # Everything the window spends before a card gets any of it.
+        #
+        # The position bar used to count, and getting that wrong once cost
+        # six pixels of horizontal overflow at the minimum width - with the
+        # bar switched off, six pixels of card that simply were not there.
+        # It is out of the sum again now, but for the opposite reason and
+        # safely: it no longer sits in the layout at all, so it takes none of
+        # the width a card is measured against. It floats over the cards
+        # instead - see _place_chrome.
         spent = (2 * STACK_MARGIN
                  + self.scroll.verticalScrollBar().sizeHint().width()
-                 + self.position.sizeHint().width()
                  + chrome.left() + chrome.right()
                  + 2 * self.scroll.frameWidth()
                  + MINIMUM_SLACK)
@@ -774,8 +1505,19 @@ class BuildBrowser(QWidget):
         # MIN_VISIBLE_CARDS' worth of height: the step you are on, the one
         # before it and at least one ahead. Fewer than that and it has
         # stopped being a preview of anything.
-        cards = (round(CARD_HEIGHT * MIN_CARD_SCALE) * MIN_VISIBLE_CARDS
-                 + CARD_GAP * (MIN_VISIBLE_CARDS - 1))
+        # The text multiplier counts: it makes every card taller, and a
+        # minimum that ignored it would let the window shrink below three
+        # cards of the text the player actually reads.
+        # And the tallest step in THIS build counts, for the same
+        # reason: cards grow to fit their instructions, so a build
+        # holding a seven-item step needs a taller floor than one that
+        # never exceeds three. Generous by construction - it assumes
+        # three tall steps in a row, which no shipped build has - and a
+        # floor a few pixels roomy costs nothing where one a few pixels
+        # short costs a scrollbar that must never appear.
+        tallest = max(self._designed_heights(), default=CARD_HEIGHT)
+        card = round(tallest * MIN_CARD_SCALE * self._text_scale)
+        cards = card * MIN_VISIBLE_CARDS + CARD_GAP * (MIN_VISIBLE_CARDS - 1)
         height = (cards + 2 * STACK_MARGIN
                   + chrome.top() + chrome.bottom()
                   + 2 * self.scroll.frameWidth()
@@ -798,7 +1540,8 @@ class BuildBrowser(QWidget):
         # cards ended up 12px taller than the space they had.
         height = max(1, (self.scroll.viewport().height() or self.height())
                      - 2 * STACK_MARGIN)
-        count = cards_for_height(height, scale, CARD_GAP)
+        count = cards_for_steps(self._card_heights(scale), height,
+                                CARD_GAP)
 
         # A chosen size too tall for the window shrinks, exactly as one too
         # wide does: the floor is the only thing the window may not override.
@@ -810,12 +1553,31 @@ class BuildBrowser(QWidget):
             # a scale that fits exactly can round up into one pixel of
             # overflow - and one pixel is enough for a scrollbar to appear.
             per_card = max(1, (room - 1) / MIN_VISIBLE_CARDS)
-            scale = max(MIN_CARD_SCALE, min(scale, per_card / CARD_HEIGHT))
-            count = cards_for_height(height, scale, CARD_GAP)
+            # Measured against the TALLEST of the cards that must fit,
+            # not the designed height: a seven-item step is half again as
+            # tall as a one-item step, and dividing the room by the small
+            # one leaves the big one hanging out of the window.
+            tallest = max(self._designed_heights()[:MIN_VISIBLE_CARDS],
+                          default=CARD_HEIGHT)
+            scale = max(MIN_CARD_SCALE,
+                        min(scale, per_card / (tallest * self._text_scale)))
+            count = cards_for_steps(self._card_heights(scale), height,
+                                    CARD_GAP)
 
         self._apply_scale(scale)
         self._apply_count(count)
         self._update_zoom_label()
+        # The bar is placed from the scroll area's geometry, so it has to be
+        # re-placed whenever that settles rather than only on a resize.
+        #
+        # QUEUED, and it has to be. Placing it inline here recurses until the
+        # stack gives out: this method is reached from the viewport's resize
+        # filter, and moving the chrome invalidates the layout that owns the
+        # viewport, which resizes it, which arrives back here. Measured as a
+        # hard 0xC0000409 with no traceback at all. Deferring to the next turn
+        # of the event loop breaks the cycle without needing a re-entrancy
+        # flag to paper over it.
+        QTimer.singleShot(0, self._place_chrome)
         # The bands are sized in the same designed pixels the cards are, so
         # they grow and shrink with them instead of staying a fixed strip.
         self._refresh_bands()
@@ -854,6 +1616,28 @@ class BuildBrowser(QWidget):
         self.zoom_out.setEnabled(self._scale > MIN_CARD_SCALE)
         self.zoom_auto.setEnabled(self._chosen is not None)
 
+    def _designed_heights(self):
+        """Each card's height in DESIGNED pixels, in stack order.
+
+        Scale-free, so it can help CHOOSE a scale without the circular
+        dependency of measuring at one not yet decided. The column decision
+        is made at scale 1.0 for the same reason; columns only ever reduce
+        the height, so this is the safe side to be wrong on.
+        """
+        steps = self.build.steps if self.build else []
+        return [CARD_HEIGHT + step_plan(None if index is None
+                                        else steps[index], 1.0).extra
+                for index in visible_indices(self.focus, len(steps),
+                                             MAX_VISIBLE_CARDS)]
+
+    def _card_heights(self, scale):
+        """Each card's real height at this scale, in stack order."""
+        steps = self.build.steps if self.build else []
+        return [card_height(None if index is None else steps[index],
+                            scale, self._text_scale)
+                for index in visible_indices(self.focus, len(steps),
+                                             MAX_VISIBLE_CARDS)]
+
     def _card_width(self):
         """The width a card may take, this instant."""
         viewport = self.scroll.viewport().width() or (self.width()
@@ -877,12 +1661,27 @@ class BuildBrowser(QWidget):
         """A different build order: start the view from the top."""
         self.build = build
         self.focus = 0
+        self.checklist = (checklist_module.Checklist(build)
+                          if build is not None else None)
+        self._last_index = None
+        # A step's height depends on how many instructions it holds, so the
+        # window's floor depends on the build. Asked again here rather than
+        # only at startup.
+        self._apply_minimum_size()
+        # The chrome's strip names the build, which is a better use of it
+        # than the caption's "Loom — Build preview" ever was.
+        self.chrome.set_title(build.name if build is not None
+                              else "Loom — Build preview")
         self._deal()
 
     def set_focus(self, index):
         if self.build is None:
             return
         self.focus = max(0, min(index, len(self.build.steps) - 1))
+        # Moving the focus changes WHICH steps are on the stack, and steps
+        # are no longer all one height - so how many fit has to be settled
+        # again before they are dealt.
+        self._relayout()
         self._deal()
 
     def _deal(self):
@@ -899,7 +1698,11 @@ class BuildBrowser(QWidget):
             if index is None:
                 card.show_empty()
             else:
-                card.show_step(index, steps[index], total, role)
+                states = ()
+                if self.checklist is not None:
+                    states = self.checklist.states(
+                        index, len(steps[index].items))
+                card.show_step(index, steps[index], total, role, states)
             if role != "current":
                 card.clear_live()
         self._sync_position()
@@ -942,7 +1745,25 @@ class BuildBrowser(QWidget):
         # same semantics, so live_focus needs no special case.
         self.follow_mode = payload.get("mode")
         self._hold = payload.get("hold")
-        self.focus = live_focus(payload.get("idx", -1), len(self.build.steps))
+        index = payload.get("idx", -1)
+        # The checklist follows where the GAME is, which is not where the
+        # panel is looking while a hotkey holds the cursor somewhere else.
+        # Older overlays send no "auto"; falling back to "idx" is what they
+        # always meant, since without the field there was no cursor either.
+        reached = payload.get("auto", index)
+        if self.checklist is not None:
+            # A match that has plainly restarted takes the observed ticks
+            # with it. Assumptions need no clearing - they are a view of the
+            # index and follow it backwards on their own.
+            if self._last_index is not None and reached < self._last_index - 1:
+                self.checklist.reset()
+            self.checklist.observe(reached)
+            self.checklist.apply_observed(payload.get("ticks"))
+        self._last_index = reached
+        self.focus = live_focus(index, len(self.build.steps))
+        # Steps differ in height, so which ones are on the stack changes how
+        # many fit. Settle that before dealing them.
+        self._relayout()
         self._deal()
         self.cards[1].set_live(payload.get("vills"), payload.get("t"),
                                payload.get("pace"), payload.get("res"))
@@ -963,6 +1784,25 @@ class BuildBrowser(QWidget):
         # The launcher owns the process; it decides whether anything needs
         # doing to a session that is already running.
         self.overlay_disabled_changed.emit(bool(disabled))
+
+    def apply_appearance(self):
+        """Re-read the appearance settings and wear them, immediately.
+
+        The launcher's Preview tab calls this on every slider tick. It can,
+        because this window lives in the launcher's own process - the one
+        settings page whose changes do not wait for a restart.
+        """
+        self._rest_ground = config.preview_rest_opacity()
+        self._hover_ground = config.preview_hover_opacity()
+        self._card_opacity = config.preview_card_opacity()
+        self._text_scale = config.preview_text_scale()
+        for card in self.cards:
+            card.set_appearance(self._card_opacity, self._text_scale)
+        # Text size changes every card's height, so the count and the
+        # minimum both have to resettle around the new stack.
+        self._apply_minimum_size()
+        self._relayout()
+        self.update()
 
     def set_show_alerts(self, enabled):
         """Turn the alert bands on or off. The launcher's checkbox calls this."""
@@ -1063,6 +1903,12 @@ class BuildBrowser(QWidget):
             # window must not contradict the panel about it.
             self.chip.setText("")
             color = FAINT_TEXT
+        # Whether that chip is a warning decides whether the chrome may
+        # fade at all - see chrome_target. "manual" and "holding" are the
+        # panel saying it has stopped following the game, which the player
+        # must be able to see without reaching for the window.
+        self._chip_warning = bool(
+            self.following and self.follow_mode in ("manual", "holding"))
         self.chip.setStyleSheet(
             f"color: rgb({color.red()}, {color.green()}, {color.blue()});"
             " font-size: 9pt;")

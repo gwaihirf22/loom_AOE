@@ -65,6 +65,23 @@ def test_the_sentinel_cannot_be_confused_with_a_state_line():
     assert not stopline.is_stop_line(statefeed.SENTINEL)
 
 
+def test_no_request_can_be_mistaken_for_another():
+    """Three of them now, all whole lines on one pipe. Checked as a matrix
+    rather than in pairs by hand, so a fourth cannot be added without this
+    test having an opinion about it."""
+    readers = {
+        stopline.SENTINEL: stopline.is_stop_line,
+        stopline.TOGGLE_HIDDEN_SENTINEL: stopline.is_toggle_hidden_line,
+        stopline.SETTINGS_SENTINEL: stopline.is_settings_line,
+    }
+    assert len(set(readers)) == 3, "two requests share a sentinel"
+    for line, _ in readers.items():
+        for other, reads_other in readers.items():
+            assert reads_other(line) is (other == line), (line, other)
+        # And none of them is a state line going the other way.
+        assert not statefeed.is_state_line(line)
+
+
 # ---- the read loop --------------------------------------------------------
 
 def test_the_request_stops_the_loop_and_reports_why():
@@ -248,3 +265,71 @@ def test_a_reader_given_no_hide_handler_ignores_the_request():
         lambda: stops.append(True))
 
     assert ended is True and len(stops) == 1
+
+
+# ---- settings changed: the third request -----------------------------------
+#
+# The launcher writes config.json and then says so; the child re-reads it.
+# No payload, so there is no second copy of the settings schema to drift out
+# of step with the first.
+
+
+def test_the_settings_request_is_its_own_whole_line():
+    assert stopline.is_settings_line("LOOM_SETTINGS")
+    assert stopline.is_settings_line("LOOM_SETTINGS\n")
+    # Whole lines, not prefixes - the same rule as the other two. This one
+    # matters more than most, because a payload is the obvious way to send
+    # settings and it is deliberately not how this works.
+    assert not stopline.is_settings_line('LOOM_SETTINGS {"scale": 1.5}')
+    assert not stopline.is_settings_line("LOOM_SETTINGS_CHANGED")
+    assert not stopline.is_settings_line("LOOM_STOP")
+
+
+def test_the_settings_encoder_writes_one_clean_line():
+    assert stopline.encode_settings_changed() == b"LOOM_SETTINGS\n"
+
+
+def test_a_settings_change_does_not_stop_the_child():
+    """Sent on every tick of a slider drag, so this is the one request that
+    arrives in floods. Every one of them must leave the child running."""
+    import io as _io
+
+    changes = []
+    stops = []
+    ended = stopline.read_until_stop(
+        _io.StringIO("LOOM_SETTINGS\n" * 5 + "LOOM_STOP\n"),
+        lambda: stops.append(True),
+        on_settings=lambda: changes.append(True))
+
+    assert ended is True
+    assert len(changes) == 5, "every change should have been delivered"
+    assert len(stops) == 1
+
+
+def test_a_reader_given_no_settings_handler_ignores_the_request():
+    """loom_read, loom_coach and placement mode all pass only on_stop. A
+    settings line reaching one of those is just an unknown line."""
+    import io as _io
+
+    stops = []
+    ended = stopline.read_until_stop(
+        _io.StringIO("LOOM_SETTINGS\nLOOM_STOP\n"),
+        lambda: stops.append(True))
+
+    assert ended is True and len(stops) == 1
+
+
+def test_all_three_requests_share_one_reader():
+    """The launcher sends whatever the player does, in whatever order."""
+    import io as _io
+
+    seen = []
+    ended = stopline.read_until_stop(
+        _io.StringIO("LOOM_SETTINGS\nLOOM_TOGGLE_HIDDEN\n"
+                     "LOOM_SETTINGS\nLOOM_STOP\n"),
+        lambda: seen.append("stop"),
+        on_toggle_hidden=lambda: seen.append("hide"),
+        on_settings=lambda: seen.append("settings"))
+
+    assert ended is True
+    assert seen == ["settings", "hide", "settings", "stop"]

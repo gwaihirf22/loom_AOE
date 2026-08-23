@@ -106,14 +106,27 @@ Loom cannot find your HUD. Loom follows the HUD at whatever size it is,
 across a wide range of sizes, but there are limits at both ends and they
 depend on your screen as much as on the slider.</p>
 <p><b>Set the notification duration to its shortest</b>, in the same
-Options &rarr; Interface panel. Loom counts your Town Centres by reading the
-game's own <i>&#8212;Town Center Built&#8212;</i> line, and how long a message
-stays on screen changes what that feed shows: the game will not reprint a
+Options &rarr; Interface panel. This one is close to a requirement rather
+than advice. Loom counts your Town Centres by reading the game's own
+<i>&#8212;Town Center Built&#8212;</i> line, and ticks off the steps of your
+build from the same feed, so it decides both how many Town Centres Loom
+thinks you have and which instructions it can confirm you carried out. How
+long a message stays on screen changes what that feed shows: the game will not reprint a
 line that is still up, and it brings recent messages back whenever the feed
 has faded. Every timing Loom uses here was measured at the shortest setting.
 The others are untested rather than known bad &mdash; but if one misbehaves,
 what you will see is an idle-Town-Centre warning for a Town Centre you do not
 have.</p>
+<p><b>Playing at 1920x1080? That feed is mostly unread there, for now.</b>
+At 1080p the game draws its messages in a smaller typeface rather than a
+shrunken version of the big one, and Loom's letters were cut from the
+larger one, so most lines do not read. The two things built on the feed
+&mdash; the <b>green ticks</b> on the step checklist, and <b>counting your
+Town Centres</b> &mdash; will be quiet or wrong at that resolution.
+Everything else reads normally: the villager count, the clock, population,
+the production queue, the age, pace and the housing alerts.
+<b>2560x1440 is the confirmed-working resolution</b> for those two
+features.</p>
 <p>You can start the overlay before the game. The panel comes up straight
 away with your build on it, its numbers at zero and a banner across the top
 saying what it is waiting for &mdash; <b>WAITING FOR THE GAME</b> until Age of
@@ -141,6 +154,21 @@ walk the build, the scrollbar says where in it you are, and the <b>+</b> and
 the window. Make the window taller and it shows more of the build. The step
 you are on always sits second from the top, with the one before it above and
 the rest ahead below, tinted faintly red behind you and green in front.</p>
+<p><b>It keeps only the cards until you reach for it.</b> Move the pointer
+onto the window and the background, the title strip, the buttons, the tick
+boxes and the scrollbar fade in; take it away and all of it goes, leaving the
+cards floating on your desktop and nothing else. That is deliberate - this is a window you read far more often
+than you operate, usually from across the desk with both hands in the game.
+Nothing is disabled by it: everything is still there the moment you reach
+for it, and clicking a card still works whether the controls are showing or
+not.</p>
+<p>Two things never fade, because you are not allowed to miss them: an alert
+band, and the <b>manual</b> warning that says the panel has stopped following
+the game. While either is showing, the controls stay up on their own.</p>
+<p>The <b>Preview</b> tab in the launcher's settings tunes all of this: how
+much background stays under the cards at rest and on hover, how solid the
+cards themselves are, and the size of their text. Those settings apply
+immediately - drag a slider with the preview open and watch it follow.</p>
 <p><b>Playing on a second monitor.</b> Two tick boxes at the top of the
 preview window set this up, and both are remembered.</p>
 <p><b>Alerts here</b> shows the same TC IDLE and HOUSE SOON bands the overlay
@@ -170,9 +198,35 @@ turned off individually if you would rather not see them.</p>
 
     ("Reading the panel", """
 <h3>What the overlay is telling you</h3>
-<p><b>The big line</b> is the step to do now, with its details beneath and
-its deadline to the right ("by 7:30 &middot; 22 vills"). The <b>THEN</b>
-row underneath is the step after it, so you can read ahead.</p>
+<p><b>The step is a checklist.</b> A build order step is usually several
+instructions, not one, so they are all listed at the same size with a
+bullet each - and the panel grows taller when a step has a lot of them.
+The step's deadline sits in the middle of the top row ("by 7:30
+&middot; 22 vills"), and the <b>THEN</b> row at the bottom is the step
+after this one, so you can read ahead.</p>
+<p><b>The bullets say whether Loom KNOWS or is only assuming</b>, and the
+difference matters more than it looks:</p>
+<p style="margin-left:18px;"><span style="color:#a0a0a8;">&#9675;</span>
+&nbsp;<b>hollow</b> &mdash; still to do.</p>
+<p style="margin-left:18px;"><span style="color:#78dc82;">&#9679;</span>
+&nbsp;<b>filled green</b> &mdash; <b>Loom saw it happen.</b> The game
+announced it in its own message feed and Loom read that line.</p>
+<p style="margin-left:18px;"><span style="color:#787880;">&#9675;</span>
+&nbsp;<b>faded, struck through</b> &mdash; <b>assumed.</b> The build moved
+past that step, so it probably happened, but nothing confirmed it.</p>
+<p style="margin-left:18px;"><span style="color:#ebbe5a;">&#9675;</span>
+&nbsp;<b>amber</b> &mdash; <b>not confirmed.</b> In the build preview, on a
+step you have already gone past: this was something Loom WAS watching for,
+and it never saw it. Worth a glance, and no more than that &mdash; Loom
+does not read every line the game prints, so a missing sighting is a reason
+to look, not proof you skipped it.</p>
+<p>Some items can never go green, and that is not a fault. "Next 3
+Villager to Wood" is a real instruction that the game never announces -
+there is no message when you re-task a villager - so it can only ever be
+assumed. Buildings, technologies and units are the things Loom can
+actually see, and then only when the step asks you to MAKE one:
+"Eat it under the Town Center" mentions a Town Centre because that is
+where to eat, not because you should build one, so it is assumed too.</p>
 <p><b>The VILLS row</b> is your villagers per resource against what the
 build wants, each resource in its own colour. A number goes white with a
 red underline when you are more than one villager off the plan.</p>
@@ -227,6 +281,13 @@ seconds is adjustable in the launcher.</p>
 overlay drives on your keys alone and the panel says <b>MANUAL</b> across the
 top, naming the key that gets you back. A new match always returns to
 following the game.</p>
+<p><b>After the build is done</b>, the panel rests on its report card and you
+can step off it: <b>Ctrl+Shift+Q</b> goes back to the last step of the build
+and keeps going from there, so you can see how it went and then read back
+through what it asked for. This review does not time out either - there is no
+live build left to drift out of sync with - so the panel says <b>MANUAL</b>
+until you walk forward off the last step, or press <b>Ctrl+Shift+R</b>. Either
+brings the report back.</p>
 <h3>Getting the panel out of the way</h3>
 <p><b>Ctrl+Shift+0</b> — hide the panel, or bring it back. The launcher's
 <b>Hide overlay</b> button does the same thing, and turns green while the
@@ -239,14 +300,15 @@ throw the match away.</p>
 as the game's control groups (Ctrl and a number assigns one, Shift and a
 number adds to a selection). If you have remapped into that territory, give
 this a different key in the launcher.</p>
-<p>There is also an optional <b>start/stop overlay</b> key — one key doing
-what the launcher's Start and Stop buttons do, so the overlay can be launched
-mid-game without alt-tabbing. It ships unbound; give it keys in the launcher
-to switch it on.</p>
-<h3>Changing them</h3>
-<p>All of these are editable in the launcher, under <b>Build-order
-hotkeys</b>, and any of them can be left empty to switch that action off.
-There is also a single <b>Use hotkeys</b> switch for all of them.</p>
+<p>There is also a <b>start/stop overlay</b> key, Ctrl+Shift+F1 — one key
+doing what the launcher's Start and Stop buttons do, so the overlay can be
+launched mid-game without alt-tabbing.</p>
+<h3>Switching them on</h3>
+<p>Hotkeys ship <b>switched off</b>: a key Loom registers is taken away from
+the game, and that should be your choice, not a surprise. Tick
+<b>Use hotkeys</b> in the launcher and the bindings above are live. All of
+them are editable there too, under <b>Build-order hotkeys</b>, and any of
+them can be left empty to switch that one action off.</p>
 <p>Worth knowing: these are registered with the operating system, so
 <b>while Loom is running, the game does not see them</b>. If one of them
 clashes with a hotkey you use in Age of Empires, change it here — Loom will
@@ -271,9 +333,14 @@ pressed; the code cannot see it, by construction.</p>
 <p><b>More build orders.</b> Loom plays any build written in the
 community's format, and there is a page of its own on where to find them
 and where to put them - see <b>Adding build orders</b>.</p>
-<p>Settings apply <b>the next time the overlay starts</b> - a running
-overlay keeps what it launched with. The one exception is the start/stop
-hotkey, which re-registers the moment you change it.</p>
+<p><b>Appearance settings apply immediately.</b> Drag a transparency
+slider or change the overlay's size with the panel on screen and it follows
+you - no restart, and no need to stop a match to try something. The build
+preview's own tab does the same.</p>
+<p>The <b>Alerts</b> settings still apply the next time the overlay starts,
+because they decide what it warns you about and changing that mid-match is
+its own kind of surprise. The start/stop hotkey re-registers the moment you
+change it.</p>
 """),
     ("Adding build orders", f"""
 <h3>Any build the community has written</h3>
@@ -297,6 +364,23 @@ no restart, and no folder for you to find.</p>
 <p>If Loom cannot use the file at all it says why rather than importing it.
 If it can use it but something is odd - steps out of order, no times, icons
 it has no picture for - it tells you and lets you decide.</p>
+<h3>Writing steps Loom can tick off</h3>
+<p>Loom ticks an instruction green when the game announces it, and it works
+out what to watch for from the <b>@icon@ tokens</b> the build already
+uses. Two habits make that work, and neither costs you anything:</p>
+<p style="margin-left:14px;"><b>Use the icon for the thing itself.</b>
+"Build 2 @House@" is watched for; "Build 2 houses" spelled out in words is
+not, because nothing tells Loom which building you meant.</p>
+<p style="margin-left:14px;"><b>Say what to DO with it.</b> Loom only
+watches for a thing when the step asks you to make one - <i>build</i>,
+<i>research</i>, <i>train</i>, <i>hammer</i>, <i>add</i>, <i>get</i>,
+<i>seed</i>. That is deliberate: "Eat it under the @Town Center@" names a
+Town Centre as the PLACE to eat, and if Loom watched for it, the Town
+Centre you already own would tick that instruction off as done.</p>
+<p>A step that does not fit either habit still works perfectly - it is
+simply assumed once you pass it, like every instruction about moving
+villagers around. Nothing is lost by writing a build the way you always
+have; this only says how to get the extra.</p>
 <h3>Where they are kept</h3>
 <p><b>Open builds folder</b> opens the place:<br>
 <b>{BUILDS_DIR}</b></p>

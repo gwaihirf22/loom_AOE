@@ -23,11 +23,13 @@ right volume does:
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
-from . import production
+from . import build_order, production
+from .age import NAMES as AGE_NAMES
 
 # How loud an alert should be.
 FULL = "full"      # the obnoxious treatment: this is costing the game
 SOFT = "soft"      # visible but calm: worth knowing, not worth a klaxon
+URGE = "urge"      # flashes like FULL but blue: an instruction, not a failure
 OFF = "off"        # say nothing
 
 # Default villager counts where the idle-TC warning softens and shuts off.
@@ -125,6 +127,75 @@ def production_alerts(tracker, villagers, policy, game_time=None,
             found.append((text, severity))
 
     return found
+
+
+# How long the CLICK UP band defers to unfinished prerequisites before
+# reminding anyway, in game seconds. The suppression rests on the reader
+# having SEEN the prerequisite buildings go up, and the reader misses
+# lines - a guard built on a reading is only as good as the reading - so
+# patience must run out. The caller owns the clock (this module is pure
+# policy and holds no state); this is just the number, in one place.
+# 30 by the author's live judgment, and the SOFT downgrade below is what
+# makes 30 right: patience expiring no longer fakes a confirmed click -
+# it turns on the calm early warning ("get the buildings going"), and
+# the earlier that arrives the more useful it is. Before the downgrade
+# existed this was headed for 45, to keep a full-volume band from
+# jumping a real market's build time.
+PREREQUISITE_PATIENCE_SECONDS = 30
+
+
+def age_up_alert(build, villagers, game_time, age, advancing,
+                 clicked=None, prerequisites_done=None,
+                 patience_spent=False):
+    """The "click up" band, or None when there is nothing to say.
+
+    `age` is the crest's believed age (None when unread), `advancing` the
+    believed state of the red research bar - True while an age-up runs,
+    False when none is, None when the bar could not be read at all.
+
+    The question this answers: the build has moved past everything it can
+    do in the current age, so the age-up click IS the current instruction -
+    is that worth a band, and how loud? build_order.held_by_age says
+    whether the build is waiting on an age-up and nothing else; it is
+    already False when `age` is None, so a missing crest reading never
+    speaks. The age being advanced TO is always the current one plus one
+    (see loom/age.py), and AGE_NAMES turns it into words.
+
+    `prerequisites_done` is the checklist's verdict on the held card's
+    own watched items (the author's rule: most civilizations cannot click
+    up until two of the current age's buildings stand, and the build
+    lists them on the very card that ends in the click). False means
+    watched work remains, and the band stays quiet - the card's items are
+    the instruction, and CLICK UP would nag the player toward a click the
+    game would refuse. True means the watched work is done. None means no
+    verdict - the card has nothing watchable, or the caller has no
+    checklist - and no verdict never silences the reminder.
+
+    `patience_spent` says the caller's clock on an unfinished verdict ran
+    out (PREREQUISITE_PATIENCE_SECONDS): the suppression rests on the
+    reader having seen the buildings, and the reader misses lines, so
+    silence cannot be forever. But a reminder that exists because a TIMER
+    expired must not wear the voice of one resting on readings - the same
+    rule that draws an assumed tick differently from an observed one. So
+    the way out of suppression is the SOFT band: still, calm, "the
+    build's clock says click, the buildings unconfirmed" - and the blue
+    flashing URGE stays reserved for a gate lifted by real observations.
+
+    Returns (text, severity) like the production alerts, so the overlay
+    can stack it with them unchanged.
+    """
+    # Alert when the build is held by an age-up and nothing else.
+    held = build_order.held_by_age(build, villagers, game_time, age,
+                                   clicked)
+    if not held:
+        return None
+    if advancing is False:
+        if prerequisites_done is False:
+            if patience_spent:
+                return (f"CLICK UP — {AGE_NAMES[age + 1]}", SOFT)
+            return None
+        return (f"CLICK UP — {AGE_NAMES[age + 1]}", URGE)
+    return None
 
 
 def production_alert(tracker, villagers, policy, game_time=None,

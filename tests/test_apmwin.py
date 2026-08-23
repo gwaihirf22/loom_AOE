@@ -73,14 +73,22 @@ def mouse(button_flags=0):
     return record
 
 
-def test_a_key_going_down_is_one_action():
-    assert apmwin.counts_one_action(keyboard()) == (1, 0)
+def test_a_key_counts_when_it_comes_up_so_repeats_do_not():
+    """Raw Input delivers a held key as an unbroken stream of down records
+    with no repeat marker - counting downs measured 1,476 APM in a real
+    game, twenty-five actions a wall second. A held key comes UP exactly
+    once, so the break is the action, and repeats vanish without ever
+    reading which key it was."""
+    assert apmwin.counts_one_action(keyboard(apmwin.RI_KEY_BREAK)) == (1, 0)
+    # The downs - first press and every auto-repeat alike - count nothing.
+    assert apmwin.counts_one_action(keyboard()) == (0, 0)
 
 
-def test_a_key_coming_back_up_is_not_a_second_action():
-    """Otherwise every keystroke counts twice and APM doubles."""
-    assert apmwin.counts_one_action(
-        keyboard(apmwin.RI_KEY_BREAK)) == (0, 0)
+def test_one_press_is_one_action_however_long_the_hold():
+    down, up = keyboard(), keyboard(apmwin.RI_KEY_BREAK)
+    presses = [down, down, down, down, up]      # a held, repeating key
+    keys = sum(apmwin.counts_one_action(r)[0] for r in presses)
+    assert keys == 1
 
 
 def test_a_mouse_button_going_down_is_one_click():

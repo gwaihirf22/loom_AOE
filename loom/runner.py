@@ -145,6 +145,28 @@ class ChildProcess(QObject):
             # never lands simply leaves the button where it was.
             pass
 
+    def request_settings_changed(self):
+        """Tell the child its settings file has changed, so it re-reads it.
+
+        The same pipe again, and the same rule as the hide request: write
+        only, never closeWriteChannel. That sends EOF, which is how stopping
+        makes itself certain, and here it would mean the player got one
+        settings change per overlay and no more.
+
+        Repeated far harder than any other request - a slider drag fires on
+        every tick - so the caller throttles. Nothing is sent about WHAT
+        changed; the child re-reads config for itself. See stopline.
+        """
+        if self._process is None:
+            return
+        try:
+            self._process.write(stopline.encode_settings_changed())
+        except (RuntimeError, OSError):
+            # The child may already be gone, which is not worth reporting:
+            # the setting is already saved, and it will be picked up the
+            # next time an overlay starts.
+            pass
+
     # ---- internals -----------------------------------------------------
 
     def _ask_politely(self, process):
