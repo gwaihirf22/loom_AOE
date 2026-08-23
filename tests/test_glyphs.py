@@ -474,3 +474,53 @@ def test_the_trim_leaves_an_ordinary_line_alone():
     assert glyphs.trim_to_message(runs, 21) == runs
     assert glyphs.trim_to_message(runs, 15) == runs
     assert glyphs.trim_to_message([], 21) == []
+
+
+# --- the font, read back to itself -----------------------------------------
+
+def test_no_two_labels_hold_the_same_picture(font):
+    """The check test_digits.py has always made of the ten digit templates,
+    finally made of the font as well - and it found the same class of fault
+    the moment it was written.
+
+    The notification font is forty times larger than the digit set and is
+    cut by a tool from transcribed lines, so a slipped alignment files a
+    glyph under its neighbour's letter and nothing downstream can tell.
+    Thirty-three variants were filed wrongly that way, eighteen of them
+    pixel-identical to a variant of a DIFFERENT letter - one picture, two
+    labels, one of which has to be a lie. They were the commonest letters
+    in the vocabulary (e, l, n, t, r, a), so nearly every line paid: on the
+    1080p corpus run, removing them took understood lines from 36 to 64 and
+    events from 74 to 104.
+
+    A variant that is a near-perfect match for another letter cannot be
+    defended whichever of the two is right, so this refuses the pair
+    outright. Genuine near-twins - i against l, e against c at some
+    renderings - sit well below this bar and are left alone; they are the
+    reason the vocabulary gate exists downstream.
+    """
+    matrix, labels, aspects, scales, skins = glyphs._pack(font)
+    assert matrix.shape[0] > 0
+    labels = np.asarray(labels, dtype=object)
+
+    worst = []
+    for row in range(matrix.shape[0]):
+        allowed = glyphs._allowed_mask(
+            aspects[row], aspects, scales,
+            None if np.isnan(scales[row]) else scales[row],
+            skins, skins[row] or None)
+        # Variants of the same letter are meant to look alike; only a
+        # DIFFERENT letter matching this closely is evidence of a slip.
+        allowed &= labels != labels[row]
+        if not allowed.any():
+            continue
+        scores = matrix @ matrix[row] / matrix.shape[1]
+        scores[~allowed] = -9.0
+        best = int(np.argmax(scores))
+        if scores[best] >= 0.98:
+            worst.append(f"{labels[row]} and {labels[best]} "
+                         f"({scores[best]:.3f})")
+
+    assert not worst, (
+        "these labels hold the same picture, so one of each pair is "
+        "mislabelled: " + "; ".join(sorted(set(worst))[:10]))

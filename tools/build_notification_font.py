@@ -181,6 +181,43 @@ def pairs_are_plausible(mask, pairs):
     return True
 
 
+def shapes_match_their_labels(mask, pairs, font):
+    """Is every pairing the right SHAPE for the letter it claims to be?
+
+    pairs_are_plausible above separates dashes from letters by vertical
+    footprint, which is the axis that told those two apart. It cannot tell
+    one letter from another - they all reach from the cap line to the
+    baseline - so a slip that lands entirely among letters walks straight
+    past it. One did, harvesting 1080p lines: a 3px "l" was filed under
+    lower_e, and the run it came from went on to poison every reading of
+    that letter.
+
+    Width is the axis that catches it, and the font already knows what
+    each letter's width should be - in the only form that survives a
+    change of rendering, the ratio of width to height. An "l" is a third
+    as wide as it is tall at every size the game draws; an "e" is two
+    thirds. So a cut glyph must be in the same proportion as SOME variant
+    the font already holds under that label, within the tolerance
+    classification itself uses - a glyph outside it could never match its
+    own label when read back, so writing it could only ever do harm.
+
+    A label the font has never seen is accepted: there is nothing to
+    compare against, and refusing would make the first variant of every
+    new letter impossible to harvest.
+    """
+    for (start, end), label in pairs:
+        known = font.get(label)
+        if not known:
+            continue
+        aspect = (end - start) / max(1, mask.shape[0])
+        if not any(1 / glyphs.ASPECT_TOLERANCE
+                   <= aspect / known_aspect
+                   <= glyphs.ASPECT_TOLERANCE
+                   for _t, known_aspect, _s, _k in known):
+            return False
+    return True
+
+
 def next_variant(label):
     existing = globbing.glob(str(glyphs.FONT_DIR / f"{label}_*.png"))
     numbers = [int(os.path.splitext(p)[0].rsplit("_", 1)[1])
@@ -213,6 +250,14 @@ def harvest(line_bgr, text, source_name):
                              mask.shape[0])
     if pairs is not None and not pairs_are_plausible(mask, pairs):
         pairs = None            # the alignment slipped; refuse the line
+    # The font has to be in hand before the shape check, so the load moved
+    # up from the write loop below.
+    global _harvest_font
+    if _harvest_font is None:
+        _harvest_font = glyphs.load_font()
+    if pairs is not None and not shapes_match_their_labels(
+            mask, pairs, _harvest_font):
+        pairs = None            # slipped among the letters; refuse it too
     if pairs is None:
         debug = line_bgr.copy()
         for start, end in runs:
@@ -226,14 +271,11 @@ def harvest(line_bgr, text, source_name):
         return 0
 
     os.makedirs(glyphs.FONT_DIR, exist_ok=True)
-    # Load the font once per process, not once per line. It is seconds of
+    # Loaded once per process above, not once per line: it is seconds of
     # work now that it holds a thousand-odd variants, and this runs for
     # every line of a manifest - a 265-line manifest timed out at ten
     # minutes doing little else. The in-process additions below keep the
     # cached copy honest between lines.
-    global _harvest_font
-    if _harvest_font is None:
-        _harvest_font = glyphs.load_font()
     font = _harvest_font
     written = 0
     for (start, end), label in pairs:

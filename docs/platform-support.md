@@ -56,16 +56,22 @@ and on Anne_HK, against recorded games rather than by eye: the clock, the
 villager count, the population display, the production queue and the age
 crest are all replayed frame by frame at both sizes.
 
-**The notification feed is the exception, and at 1920x1080 it is largely
-unread.** The game does not draw that feed by scaling one master - at 1080p
+**The notification feed is the exception, and at 1920x1080 it is still
+patchy.** The game does not draw that feed by scaling one master - at 1080p
 it lays the text out at a smaller point size - and Loom's character set was
-harvested at 2560x1440, so those templates do not fit the smaller
-rendering. Two features read the feed and both suffer at 1080p: the
-checklist's **green "observed" ticks**, and the **Town Centre count** that
-the idle-TC warning is built on. Expect items not to tick off, and a second
-Town Centre to go uncounted. Everything else on the list above is
-unaffected. **2560x1440 is the confirmed-working resolution for the feed;**
-closing the gap is a harvesting job, not a code change.
+harvested at 2560x1440. Coverage has been cut at 1080p since, and the
+labelled corpus for that rendering went from 74 events read to 137 of 275,
+but it is not whole: a capital "H" loses its crossbar at that size and
+segments as two separate bars, so "--House Built--" can still read
+"--llouse Built--". Two features depend on the feed - the checklist's
+**green "observed" ticks** and the **Town Centre count** the idle-TC
+warning is built on - so at 1080p expect some items not to tick off and
+the occasional event to be missed. A missed line is a gap, never a wrong
+answer. **2560x1440 remains the fully-verified resolution for the feed.**
+
+The numbers at 1080p are settled: the digit templates are cut at that
+rendering now, and the clock, villager count and population read 99-100%
+on recorded games at that size.
 
 The overlay sits above the game in fullscreen - measured at 2560x1440, with
 click-through confirmed by asking Windows for the window's `WS_EX_TRANSPARENT`

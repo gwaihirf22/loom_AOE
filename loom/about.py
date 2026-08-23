@@ -117,16 +117,17 @@ has faded. Every timing Loom uses here was measured at the shortest setting.
 The others are untested rather than known bad &mdash; but if one misbehaves,
 what you will see is an idle-Town-Centre warning for a Town Centre you do not
 have.</p>
-<p><b>Playing at 1920x1080? That feed is mostly unread there, for now.</b>
-At 1080p the game draws its messages in a smaller typeface rather than a
-shrunken version of the big one, and Loom's letters were cut from the
-larger one, so most lines do not read. The two things built on the feed
-&mdash; the <b>green ticks</b> on the step checklist, and <b>counting your
-Town Centres</b> &mdash; will be quiet or wrong at that resolution.
-Everything else reads normally: the villager count, the clock, population,
-the production queue, the age, pace and the housing alerts.
-<b>2560x1440 is the confirmed-working resolution</b> for those two
-features.</p>
+<p><b>Playing at 1920x1080? The feed is better than it was, but still
+patchy.</b> At 1080p the game draws its messages in a smaller typeface
+rather than a shrunken version of the big one, and Loom's letters were
+first cut from the larger one. Letters have been cut at the smaller size
+since and most lines read now, but not all &mdash; so the two things
+built on the feed, the <b>green ticks</b> on the step checklist and
+<b>counting your Town Centres</b>, will miss the occasional one. What it
+does report is still sound: a line Loom cannot read is skipped, never
+guessed. The numbers all read normally at this size &mdash; villagers,
+the clock, population, the queue, the age, pace and the housing alerts.
+<b>2560x1440 remains the fully-verified resolution.</b></p>
 <p>You can start the overlay before the game. The panel comes up straight
 away with your build on it, its numbers at zero and a banner across the top
 saying what it is waiting for &mdash; <b>WAITING FOR THE GAME</b> until Age of

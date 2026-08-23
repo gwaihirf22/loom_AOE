@@ -160,16 +160,18 @@ play at a resolution that is not your monitor's own, the overlay can appear
 to shimmer slightly; that is the display scaling the picture rather than
 Loom, and playing at the native resolution or in windowed mode removes it.
 
-> **Playing at 1920x1080? One part does not work yet.** Loom also reads the
-> game's own message feed ("--Barracks Built--"), and at 1080p the game
-> draws that feed in a smaller typeface rather than a scaled-down version of
-> the big one — so Loom's letters do not fit it and most lines go unread.
-> Two things depend on that feed: the **green ticks** on the step checklist,
-> and **counting your Town Centres** (which the idle-TC warning is built
-> on). At 1080p expect items not to tick off, and a second Town Centre to
-> go uncounted. Everything else works normally. **2560x1440 is the
-> confirmed-working resolution** for those two features; fixing 1080p means
-> harvesting the smaller typeface, which is on the list.
+> **Playing at 1920x1080? It works, but the message feed is still patchy.**
+> At 1080p the game draws everything smaller, and Loom's reference images
+> were originally cut at 1440p. The numbers are sorted — the clock,
+> villager count and population now read at 99–100% on recorded games at
+> this size. The game's own message feed ("--Barracks Built--") is much
+> better than it was but still misses lines, and two things depend on it:
+> the **green ticks** on the step checklist, and **counting your Town
+> Centres** (which the idle-TC warning is built on). So at 1080p expect
+> some items not to tick off, and the odd event to be missed. Nothing is
+> wrong with what it *does* report — a missed line is a gap, never a wrong
+> answer. **2560x1440 remains the fully-verified resolution**; closing the
+> rest of the 1080p gap is the top item on the list.
 
 Loom reads **the stock HUD** and **the Anne_HK Better UI mod**, and works
 out which is on screen by itself when a match starts. Any other mod that

@@ -8,6 +8,52 @@ on 2026-08-18.
 
 ## 1.0.5 — 2026-08-23
 
+*Rebuilt the same day, before more than a handful of people had it, with a
+night's work on 1920x1080 folded in. The version did not change because
+nothing shipped in between; the notes below are what the second build
+adds.*
+
+### Fixed (1920x1080, 2026-08-23)
+
+- **The clock, villager count and population now read at 1080p.** Every
+  digit template had been cut at 2560x1440 and stored at 14x20, so a 1080p
+  glyph - about 7x11 - was stretched into a box nearly twice its size and
+  compared against a shape the screen never drew. The failing "8" of
+  00:08:03 classified CORRECTLY, by a mile (0.503 against 0.291 for the
+  runner-up), and died on a 0.55 confidence gate: a right answer thrown
+  away for lack of confidence. Templates are cut at 1080p now, harvested
+  from the reads that already succeed and cross-validated before any were
+  written. Clock 92 → 99% on a full game with all three mods on;
+  population 59 → 82% on another; two of three fresh 1080p recordings read
+  100%. 1440p is unchanged at 100%.
+- **A half-eaten digit can no longer pass as a whole one.** The height test
+  that skips colons only ever ran on NARROW runs, so a wide one skipped
+  it - and at a strict mask pass the "2" of 00:02:41 loses its bottom bar
+  and is a "7" to any honest reader. It scored 0.674 as one and the clock
+  came back 00:07:41. A digit stands as tall as its neighbours whatever
+  its width; a colon and a half-eaten digit both fail that now.
+- **The notification font had 33 mislabelled variants, and nothing had
+  ever asked it.** `test_digits.py` has always fed each of the ten digit
+  templates back through the classifier; the notification font is forty
+  times larger, is cut by a tool from transcribed lines, and had never had
+  the same check. 126 of 1295 variants read back as a different letter, 18
+  of them pixel-identical to a variant of another label - one picture, two
+  labels, one of which has to be a lie - and they were the commonest
+  letters in the vocabulary, so nearly every line paid. Removing the 33
+  that no variant of their own label could support took the 1080p corpus
+  run from 36 understood lines to 64, and 74 events to 104, with every
+  1440p run untouched. A test pins it now.
+- **Letters cut at the 1080p rendering**, which took that run on to 137
+  events of 275. Three mass harvests before it made the reader WORSE, and
+  the guard that fixed it is a check on the way out: cut a line's glyphs,
+  read the line back with them in the font, and withdraw every one if it
+  does not reproduce its own transcription. That withdrew 82% of what the
+  tool wanted to write.
+
+The 1080p feed is **better, not finished** - see the known-issues note
+below, which is rewritten for what is actually left.
+
+
 **An audit round, after the big merge.** The July round has a precedent
 entry; this one follows it. The findings that were bugs are fixed, the
 findings that were bigger than a cleanup are on the roadmap, and the
@@ -395,16 +441,27 @@ tech tree 0 → 12, and the same tech-tree game captured at 2560x1440 reads
 
 ### Known and not fixed
 
-- **At 1920x1080 the notification feed is largely unread**, so the
-  checklist's green "observed" ticks and the Town Centre count - the two
-  features built on it - do not work there. Found by playing at 1080p, and
-  the templates say why: the character set holds 1253 variants harvested at
-  2560x1440 and none at the smaller point size the game uses at 1080p,
-  because the game re-lays that feed out rather than scaling one master.
-  Everything else - villager count, clock, population, queue, age, pace,
-  alerts - reads at both sizes. **1440p is the confirmed-working
-  resolution** for the feed; closing the gap is a harvest, not a code
-  change, and it is the top item on the roadmap.
+- **At 1920x1080 the notification feed still misses lines**, so the
+  checklist's green ticks and the Town Centre count are incomplete there.
+  Much better than the first 1.0.5 build - 137 events of 275 on the
+  labelled 1080p run against 74 - but not whole, and the reason is no
+  longer coverage. At that size a capital **"H" loses its crossbar
+  entirely**: it is absent from the mask, not faint, so the two verticals
+  segment as separate runs and each classifies as an "l" at 0.97.
+  "--House Built--" reads "--llouse Built--", and the commonest event in
+  any build order is lost. That is segmentation, not missing letters, and
+  no amount of harvesting reaches a glyph cut in half before anything
+  classifies it. Three exits were measured and all three refused: joining
+  the runs reads "H" at 0.906, LOWER than either half, while a genuine
+  "ll" (Villager, every game) reads 1.00 and 1.00 - the scores do not
+  separate the cases; softening the ink floor recovers other letters and
+  destroys 1440p (understood 438 → 281), because the font was harvested
+  through the current mask; and harvesting cannot reach it at all. The
+  honest fix is a per-rendering mask with its own harvest behind it, and
+  it is the top item on the roadmap. Hollow digits fragment the same way
+  at a strict mask pass, which is why a 1080p clock reading 10:xx can
+  still refuse.
+  **1440p remains the fully-verified resolution** for the feed.
 - **`--Double-Bit Axe Research Complete--` does not read**, reproducibly:
   it fails in the live Mongol game and in two separate corpus runs, and
   it is why that technology never ticks off a build. This one is not the

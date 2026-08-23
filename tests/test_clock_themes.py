@@ -156,10 +156,40 @@ def test_it_needs_narrow_but_tall_runs_to_count_as_digits(templates,
         band(SMALL), templates, SMALL_GLYPH_WIDTH)[0] is None
 
 
-def test_it_needs_glyphs_scored_at_their_own_size(templates, monkeypatch):
+def large_hud_templates():
+    """The template set as it was before any were cut at 1080p.
+
+    Two different repairs cover this fixture now and each has to be tested
+    against the problem it was built for, or one silently stops being
+    exercised: scoring a glyph at its own size (below), and templates cut
+    at the rendering the glyph came from (test_small_templates_read_it_
+    stretched). With both in place the fixture reads either way, which is
+    the point - but it also means the plain read no longer proves either.
+    """
+    import glob
+    import os
+
+    import cv2
+
+    from loom import paths
+    out = []
+    for path in sorted(glob.glob(str(paths.DIGIT_TEMPLATES_DIR / "*.png"))):
+        if "1080p" in os.path.basename(path):
+            continue
+        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        out.append((int(os.path.basename(path).split("_")[0]),
+                    digits._normalize(image)))
+    return out
+
+
+def test_it_needs_glyphs_scored_at_their_own_size(monkeypatch):
     """Stretching a 6x12 glyph into the 14x20 template box invents detail
     the screen never drew. Shrinking the template to the glyph instead
-    compares what the game actually rendered."""
+    compares what the game actually rendered.
+
+    Against the LARGE-HUD templates, which is the set that made this
+    necessary: with only those, and only the stretching path, the small
+    HUD does not read at all."""
     as_shipped = digits.classify_glyph
 
     def stretched_only(glyph, tmpl, native=None):
@@ -168,7 +198,23 @@ def test_it_needs_glyphs_scored_at_their_own_size(templates, monkeypatch):
     monkeypatch.setattr(digits, "classify_glyph", stretched_only)
 
     assert digits.read_clock_seconds(
-        band(SMALL), templates, SMALL_GLYPH_WIDTH)[0] is None
+        band(SMALL), large_hud_templates(), SMALL_GLYPH_WIDTH)[0] is None
+
+
+def test_small_templates_read_it_stretched(templates, monkeypatch):
+    """The other repair, on its own terms. Templates cut at 1080p are
+    compared against a 1080p glyph in the same box, so the stretching does
+    the same thing to both and the detail it invents matches - no
+    shrink-to-fit needed."""
+    as_shipped = digits.classify_glyph
+
+    def stretched_only(glyph, tmpl, native=None):
+        return as_shipped(glyph, tmpl)
+
+    monkeypatch.setattr(digits, "classify_glyph", stretched_only)
+
+    assert digits.read_clock_seconds(
+        band(SMALL), templates, SMALL_GLYPH_WIDTH)[0] == 161
 
 
 def test_a_band_of_split_zeros_never_reads_as_a_marathon():

@@ -62,13 +62,40 @@ def test_two_digit_counts_read_whole(templates, name, expected):
 def test_without_the_rule_the_leading_one_vanishes(templates, monkeypatch):
     """Pinned as its own case because the failure it prevents is not a
     crash or a gap - it is a plausible smaller number that every filter
-    downstream will happily believe."""
+    downstream will happily believe.
+
+    The rule this disables is the ORIGINAL width test, restored here
+    verbatim. is_character measures height alone now, so setting the
+    height fraction out of reach no longer reproduces the bug - it refuses
+    every run and reads nothing, which is a gap rather than a lie. The
+    width shortcut is what produced the lie, so the width shortcut is what
+    this puts back."""
+    def width_only(binary, start, end, min_glyph_width, tallest):
+        if end - start >= min_glyph_width:
+            return True
+        box = digits._run_box(binary, start, end)
+        return box is not None and box[1] >= max(
+            2, round(tallest * digits.COLON_HEIGHT_FRACTION))
+
     monkeypatch.setattr(digits, "COLON_HEIGHT_FRACTION", 99.0)
+    monkeypatch.setattr(digits, "is_character", width_only)
 
     value, _score = digits.read_count(
         band("small_hud_1080p_18.png"), templates, SMALL_HUD_GATE)
 
     assert value == 8, "the fixture no longer reproduces the original bug"
+
+
+def test_the_height_rule_refuses_rather_than_shrinks_the_number(templates,
+                                                               monkeypatch):
+    """And with height the only test, disabling it fails safe: nothing
+    reads at all. A gap costs a poll; the 8 above costs the whole game."""
+    monkeypatch.setattr(digits, "COLON_HEIGHT_FRACTION", 99.0)
+
+    value, _score = digits.read_count(
+        band("small_hud_1080p_18.png"), templates, SMALL_HUD_GATE)
+
+    assert value is None
 
 
 def test_a_short_narrow_run_is_still_skipped(templates):

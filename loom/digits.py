@@ -467,14 +467,30 @@ def is_character(binary, start, end, min_glyph_width, tallest):
     capture: 189 of 300 frames lost a full-height 3px run that way, every
     one of them a "1".
 
-    Height is what tells them apart. A "1" stands as tall as every digit
-    beside it; a colon is two dots around the middle and never does.
+    Height is what tells them apart, and it is asked of EVERY run rather
+    than only the narrow ones. A digit stands as tall as the digits beside
+    it whatever its width; two different things fail that test and both
+    must be skipped:
+
+      * a colon, which is two dots around the middle, and
+      * a digit the mask has eaten half of, which is not a digit any more.
+
+    The second is why the width shortcut had to go. At a strict white pass
+    the "2" of 00:02:41 loses its bottom bar entirely and what is left -
+    a top bar and a diagonal, six rows where its neighbours stand eleven -
+    is a "7" to any honest reader, scoring 0.674 as one. It was wide, so
+    it skipped the height test, classified confidently, and the clock
+    came back 00:07:41. Refusing it here makes the pass come up short of
+    six digits, which is what sends the read on to the fainter pass that
+    keeps the bar and reads the "2" at 1.000.
+
+    `min_glyph_width` is kept in the signature and no longer consulted: it
+    used to be the whole test, and every caller still has it to hand.
     """
-    if end - start >= min_glyph_width:
-        return True
     box = _run_box(binary, start, end)
-    return box is not None and box[1] >= max(
-        2, round(tallest * COLON_HEIGHT_FRACTION))
+    if box is None:
+        return False
+    return box[1] >= max(2, round(tallest * COLON_HEIGHT_FRACTION))
 
 
 def _merge_hollow_pairs(binary, runs, tallest):
