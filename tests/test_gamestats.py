@@ -187,3 +187,113 @@ def test_the_watched_span_travels_in_the_file():
     assert written["duration"] == 1999
     assert written["observed"] == 199
 
+class FakeProfile:
+    name = "annehk"
+
+
+def a_found_hud(**over):
+    """What HudReader.hud looks like once the anchor has landed."""
+    found = {"profile": FakeProfile(), "scale": 0.68, "score": 0.913,
+             "frame": (1920, 1080), "backdrop": 84.0}
+    found.update(over)
+    return found
+
+
+def test_a_stats_file_says_what_it_was_read_from():
+    """Twice now, working out which skin and resolution wrote a bad file
+    has meant dating git commits. The file should just say."""
+    import json
+    meta = gamestats.hud_meta(a_found_hud())
+    flat = json.dumps(meta)          # it has to survive being written out
+    assert "annehk" in flat, "the skin is not in there"
+    assert "1920" in flat and "1080" in flat, "the resolution is not in there"
+    assert "0.913" in flat or "0.91" in flat, "the anchor score is not in there"
+    assert "84" in flat, "the backdrop luminance is not in there"
+
+
+def test_the_hud_scale_is_never_recorded_as_a_percentage():
+    """reader.py carries the scar: found["scale"] is the HUD's size against
+    a 2560x1440 reference, NOT the in-game slider. A 1080p screen with the
+    slider at 100% measures 0.68, and Loom once printed that as "~68% -
+    Loom reads best at 100%" to players who were already at 100%.
+
+    Writing it into a file a human reads months later is the same trap with
+    a longer fuse, so whatever it is called, it must not call itself a
+    percentage."""
+    meta = gamestats.hud_meta(a_found_hud(scale=0.68))
+    for key in meta:
+        assert "percent" not in key.lower() and "pct" not in key.lower(), key
+    assert 68 not in meta.values(), "0.68 was written out as 68"
+
+
+def test_a_hud_is_described_once_and_the_first_answer_stands():
+    """Re-acquiring the anchor mid-game must not relabel readings that
+    were taken under the first one."""
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    recorder.describe_hud(a_found_hud())
+    recorder.describe_hud(a_found_hud(scale=1.0, score=0.5))
+    assert "0.913" in json.dumps(recorder.meta["hud"]) or         "0.91" in json.dumps(recorder.meta["hud"]), "the second call won"
+
+
+def test_no_hud_means_no_claim_about_one():
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    recorder.describe_hud(None)
+    assert "hud" not in recorder.meta
+
+
+def test_a_stats_file_records_which_BUILD_wrote_it(monkeypatch):
+    """meta.loom cannot answer this and looks as though it can. The version
+    moves on releases; readers change between them, so every file written
+    on the day three notification fixes landed says 1.0.5 on BOTH sides of
+    them, and a corpus grouped by version silently mixes generations.
+
+    The rejected alternative was bumping the version by hand on material
+    reader changes: it makes a machine-checkable fact depend on discipline,
+    fails silently when someone forgets, and overloads a number the
+    launcher shows to players."""
+    from loom import paths
+    monkeypatch.setattr(paths, "build_commit", lambda: "abc1234")
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    assert recorder.meta["commit"] == "abc1234"
+
+
+def test_a_build_that_cannot_say_which_commit_it_is_says_nothing(monkeypatch):
+    """Absence is a real answer - "written before this was recorded" beats
+    a guess, and it is the same rule as unplaceable_buckets: the key is
+    there only when it means something."""
+    from loom import paths
+    monkeypatch.setattr(paths, "build_commit", lambda: None)
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    assert "commit" not in recorder.meta
+
+
+def test_army_losses_are_the_population_that_was_not_villagers():
+    """The author's correction, and he is right: generic losses ARE
+    readable even though the unit type is not. Population minus villagers,
+    falling, is every non-villager leaving the population."""
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    for moment, vills, pop in ((100, 20, 30), (105, 20, 30), (110, 20, 24)):
+        recorder.observe(moment, vills, 0, population=(pop, 50))
+    assert recorder.army_losses == [(110, 6, False)]
+    assert recorder.max_army == 10
+
+
+def test_a_dead_villager_is_not_also_an_army_loss():
+    """A villager dying moves BOTH numbers, so the difference is unchanged
+    and cannot be counted twice."""
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    for moment, vills, pop in ((100, 20, 30), (110, 17, 27)):
+        recorder.observe(moment, vills, 0, population=(pop, 50))
+    assert recorder.army_losses == []
+    assert [d[1] for d in recorder.deaths] == [3]
+
+
+def test_an_unread_population_is_not_an_army_of_zero():
+    """Both halves must have been read or the difference means nothing -
+    a subtraction with one side missing is not a small army."""
+    recorder = gamestats.GameRecorder("t", "T", "2026-08-25T12:00:00")
+    recorder.observe(100, 20, 0, population=(30, 50))
+    recorder.observe(105, 20, 0, population=None)
+    recorder.observe(110, 20, 0, population=(30, 50))
+    assert recorder.army_losses == [], "an unread poll was read as a wipe"
+

@@ -73,3 +73,75 @@ def test_track_apm_defaults_on(tmp_path, monkeypatch):
     assert config.track_apm() is False
     config.save({"track_apm": "sure"})
     assert config.track_apm() is True     # garbage means the default: on
+
+
+def test_a_new_game_discards_the_OLD_one_not_the_real_one():
+    """Measured on 2026-08-25_224115: the overlay attached to a game
+    already at 0:54, lost it, and a new game began - all in one session.
+    The recorder's timeline restarted for the new game; this series did
+    not, which is why apm.t was the only series in 266 files ever going
+    backwards.
+
+    The tempting fix is to drop whatever lands behind the last bucket. On
+    this file that keeps the OLD game's four buckets and throws away the
+    first sixty-three seconds of the real one - a series that looks
+    monotonic and clean and belongs to two matches. A plausible hybrid is
+    worse than an obvious seam, so the EARLIER game goes."""
+    pairs = [(1000.0, 54), (1010.0, 64), (1020.0, 6), (1030.0, 16)]
+    buckets = [(1000.0, 9, 0), (1010.0, 9, 0), (1020.0, 3, 0), (1030.0, 3, 0)]
+    section = apm.align(buckets, pairs)
+    assert section["t"] == [6, 16], "the earlier game was kept instead"
+    assert section["buckets_from_an_earlier_game"] == 2
+    # Named for what they were: calling them unplaceable would send
+    # someone hunting a fault that is not there.
+    assert "unplaceable_buckets" not in section
+
+
+def test_a_clock_that_wobbles_is_not_a_new_game():
+    """A second the clock did not advance past has nowhere honest to go,
+    but it must not throw away everything before it."""
+    pairs = [(1000.0, 100), (1010.0, 110), (1020.0, 108), (1030.0, 130)]
+    buckets = [(1000.0, 5, 0), (1010.0, 5, 0), (1020.0, 5, 0), (1030.0, 5, 0)]
+    section = apm.align(buckets, pairs)
+    assert section["t"] == [100, 110, 130], "a wobble restarted the series"
+    assert section["unplaceable_buckets"] == 1
+    assert "buckets_from_an_earlier_game" not in section
+
+
+def test_a_clean_game_makes_no_claim_about_dropped_buckets():
+    """The key is absent rather than zero, so its presence always means
+    something happened."""
+    pairs = [(1000.0, 100), (1010.0, 110)]
+    section = apm.align([(1000.0, 5, 0), (1010.0, 5, 0)], pairs)
+    assert "unplaceable_buckets" not in section
+
+
+def test_the_timeline_tells_the_seam_rather_than_the_clock_hinting_at_it():
+    """Measured on 2026-08-25_224115: one overlay session, two matches.
+    The buckets run across both; the recorder started a fresh file for the
+    second and its timeline begins at 1. Nothing in the bucket stream says
+    where the join is - the timeline does, because it only ever held the
+    game the file is about."""
+    pairs = [(1000.0, 54), (1010.0, 64), (1020.0, 6), (1030.0, 16)]
+    buckets = [(1000.0, 9, 0), (1010.0, 9, 0), (1020.0, 3, 0), (1030.0, 3, 0)]
+    section = apm.align(buckets, pairs, game_from=1)
+    assert section["t"] == [6, 16]
+    assert section["buckets_from_an_earlier_game"] == 2
+
+
+def test_a_bucket_just_before_the_first_reading_still_counts():
+    """The timeline starts at Loom's first successful read, not at the
+    game's first second. A bucket a moment earlier belongs to this game
+    and must not be thrown out for being punctual."""
+    pairs = [(1000.0, 48), (1010.0, 58)]
+    section = apm.align([(1000.0, 4, 0), (1010.0, 4, 0)], pairs, game_from=50)
+    assert section["t"] == [48, 58], "a bucket from this game was discarded"
+
+
+def test_being_told_nothing_falls_back_to_noticing_the_step():
+    """Every stats file written before the timeline was passed in, and any
+    caller that has no timeline to offer."""
+    pairs = [(1000.0, 54), (1010.0, 64), (1020.0, 6), (1030.0, 16)]
+    buckets = [(1000.0, 9, 0), (1010.0, 9, 0), (1020.0, 3, 0), (1030.0, 3, 0)]
+    assert apm.align(buckets, pairs)["t"] == [6, 16]
+

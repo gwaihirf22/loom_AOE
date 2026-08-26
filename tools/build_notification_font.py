@@ -239,6 +239,57 @@ _harvest_font = None
 HARVEST_SKIN = None
 
 
+def _withdraw(written, font):
+    """Undo one line's harvest: delete the files and forget the variants.
+
+    Writing a glyph is not the same as improving the font, and this is the
+    only check that knows the difference by MEASURING rather than by
+    reasoning about shapes.
+    """
+    for path, label, entry in written:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        variants = font.get(label)
+        if variants and variants[-1] is entry:
+            variants.pop()
+    _repack()
+
+
+def _repack():
+    """Force glyphs to rebuild its packed matrix.
+
+    _pack caches on the font dict's IDENTITY, and harvesting mutates that
+    dict in place - so without this the newly written variants would not
+    compete in the read-back below, and every line would appear to verify
+    against the font as it was before its own glyphs were added.
+    """
+    glyphs._packed["font"] = None
+
+
+def reads_back(line_bgr, text, font, scale_skin):
+    """Does the line now read as its own transcription?
+
+    The safeguard that matters, and the only one that ever caught the real
+    failure. At a small rendering segment_line can produce the RIGHT
+    NUMBER of runs with the WRONG boundaries, so the alignment "succeeds"
+    while every glyph after the slip is filed under its neighbour's label.
+    Counting runs cannot see that; neither can comparing shapes to a font
+    that does not yet know this rendering. Reading the line back can:
+    glyphs cut from a slipped pairing do not reproduce the words they were
+    cut from.
+
+    Measured when this was a throwaway script: it withdrew 82% of what the
+    tool wanted to write, and three harvests without it each made the
+    reader WORSE - one took a corpus run from 12 lines understood to 3.
+    That is why it lives in the tool now instead of beside it.
+    """
+    _repack()
+    read, _score = glyphs.read_line(line_bgr, font, skin=scale_skin)
+    return read == text
+
+
 def harvest(line_bgr, text, source_name):
     """Cut one transcribed line into labelled glyph files."""
     mask, runs = glyphs.segment_line(line_bgr)
@@ -263,8 +314,17 @@ def harvest(line_bgr, text, source_name):
         for start, end in runs:
             cv2.rectangle(debug, (start, 0), (end, debug.shape[0] - 1),
                           (0, 255, 255), 1)
-        out = paths.CAPTURES_DIR / f"font_mismatch_{source_name}.png"
-        os.makedirs(paths.CAPTURES_DIR, exist_ok=True)
+        # Their own folder. A refused line writes one of these, and a
+        # manifest of a few hundred lines refuses most of them - 344 of
+        # these had piled up loose in captures/ beside the run folders,
+        # which is where anyone looking for a capture has to look.
+        # The stem is stripped rather than trusted: one caller passes a
+        # file name and another passes a stem, and the difference had been
+        # writing "font_mismatch_line_0001.png.png".
+        out_dir = paths.CAPTURES_DIR / "font_mismatch"
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(str(source_name)))[0]
+        out = out_dir / f"{stem}.png"
         cv2.imwrite(str(out), debug)
         print(f"REFUSED {source_name}: {len(runs)} glyphs seen for "
               f"{text!r} - debug at {out}")
@@ -277,7 +337,7 @@ def harvest(line_bgr, text, source_name):
     # minutes doing little else. The in-process additions below keep the
     # cached copy honest between lines.
     font = _harvest_font
-    written = 0
+    written = []
     for (start, end), label in pairs:
         # Full line height, matching glyphs.extract - vertical position is
         # part of the glyph's identity (see extract's docstring).
@@ -303,14 +363,23 @@ def harvest(line_bgr, text, source_name):
                 else f"{label}@{tag:.2f}")
         path = glyphs.FONT_DIR / f"{stem}_{next_variant(stem)}.png"
         cv2.imwrite(str(path), column_slice)
-        font.setdefault(label, []).append(
-            (digits._normalize(boxed),
-             column_slice.shape[1] / column_slice.shape[0], tag,
-             HARVEST_SKIN))
-        written += 1
-    print(f"{source_name}: {written} new glyph variants "
-          f"({len(pairs) - written} already covered)")
-    return written
+        entry = (digits._normalize(boxed),
+                 column_slice.shape[1] / column_slice.shape[0], tag,
+                 HARVEST_SKIN)
+        font.setdefault(label, []).append(entry)
+        written.append((path, label, entry))
+
+    # The line must now prove itself. See reads_back: everything above
+    # reasons about the alignment, and only this MEASURES it.
+    if written and not reads_back(line_bgr, text, font, HARVEST_SKIN):
+        _withdraw(written, font)
+        print(f"WITHDRAWN {source_name}: {len(written)} variants cut from "
+              f"{text!r} did not read it back")
+        return 0
+    _repack()
+    print(f"{source_name}: {len(written)} new glyph variants "
+          f"({len(pairs) - len(written)} already covered)")
+    return len(written)
 
 
 def list_lines(image_path):

@@ -40,6 +40,7 @@ re-measuring events caught it.
 
 import argparse
 import glob
+import re
 import os
 import sys
 
@@ -47,7 +48,8 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loom import glyphs, paths  # noqa: E402
+from loom import glyphs, paths
+from loom import lines as line_reader  # noqa: E402
 from tools.build_notification_font import expected_tokens  # noqa: E402
 
 CORPUS_DIR = paths.CAPTURES_DIR / "notif_corpus"
@@ -104,7 +106,7 @@ def report():
         labels = read_labels(run_dir)
         if not labels:
             continue
-        totals = {"read": 0, "understood": 0, "event": 0}
+        totals = {"read": 0, "understood": 0, "event": 0, "wrong": 0}
         misses = []
         for name, truth in sorted(labels.items()):
             crop = cv2.imread(os.path.join(run_dir, name))
@@ -121,12 +123,27 @@ def report():
                 repair = glyphs.nearest_event_repair(text)
                 if repair is not None:
                     got_event = repair[0]
+                if got_event is None:
+                    # And the whole-line analyser, last, exactly as the
+                    # watcher runs it - so this measures the whole chain.
+                    matched = line_reader.nearest_line(text)
+                    if matched is not None:
+                        got_event = matched[1]
             if text:
                 totals["read"] += 1
             if text == truth:
                 totals["understood"] += 1
             if expected_event is not None and got_event == expected_event:
                 totals["event"] += 1
+            elif expected_event is not None and got_event is not None:
+                # An event Loom STATED that the game never printed, counted
+                # apart from a line it merely missed. The totals above score
+                # both as zero, and that is the one distinction the
+                # never-guess rule turns on: a missed line costs a stats
+                # entry, an invented one poisons the checklist and the Town
+                # Centre count. Keeping it in the committed baseline is what
+                # makes `git diff` show a reader that has started guessing.
+                totals["wrong"] += 1
             ok = (text == truth and (expected_event is None
                                      or got_event == expected_event))
             if text == truth and expected_event is None and got_event is None:
@@ -145,16 +162,84 @@ def report():
         lines.append(f"{run}: {count} labelled | "
                      f"read {totals['read']}/{count} | "
                      f"understood {totals['understood']}/{count} | "
-                     f"event {totals['event']}/{count}")
+                     f"event {totals['event']}/{count} | "
+                     f"wrong {totals['wrong']}")
         for name, kind, truth, text in misses:
             lines.append(f"    {name}  [{kind:10}]  {truth!r}  read {text!r}")
     return lines, misses_for_manifest
+
+
+SUMMARY = re.compile(
+    r"^(?P<run>\S+): (?P<count>\d+) labelled \| read (?P<read>\d+)/\d+"
+    r" \| understood (?P<understood>\d+)/\d+ \| event (?P<event>\d+)/\d+"
+    r"(?: \| wrong (?P<wrong>\d+))?")
+
+
+def scores(body):
+    """{run: {metric: number}} parsed from a report body."""
+    found = {}
+    for line in body.splitlines():
+        match = SUMMARY.match(line)
+        if match:
+            found[match.group("run")] = {
+                key: int(match.group(key) or 0)
+                for key in ("count", "read", "understood", "event", "wrong")}
+    return found
+
+
+def check(body):
+    """Complaints about a fresh report against the committed baseline.
+
+    An empty list means the change is safe to keep.
+
+    The gate the reliability programme was missing, and why it was missing
+    is the point. Every safeguard until now judged ONE line: does its glyph
+    count reconcile, do its shapes match their labels, does it read itself
+    back. All of those are local, and the failure they cannot see is a
+    glyph cut from one line that breaks a DIFFERENT one.
+
+    Measured, and it is why this exists: a 1080p harvest whose every line
+    verified individually still put "--Fervor Research Complete--" - a line
+    that same harvest had REFUSED - within reach of "--Bracer Research
+    Complete--", a real technology that never happened. The per-line
+    read-back guard is necessary and it is structurally blind here.
+    Nothing smaller than the whole corpus can see it.
+
+    Two rules, in the order they matter:
+
+      * WRONG must never rise. An invented event is worse than a missing
+        one, so this is a veto rather than a trade.
+      * EVENTS must never fall. A plausible improvement once read 14% more
+        lines while finding FEWER events, and only re-measuring events
+        caught it.
+    """
+    if not BASELINE.exists():
+        return ["no committed baseline to check against"]
+    before = scores(BASELINE.read_text(encoding="utf-8"))
+    after = scores(body)
+    complaints = []
+    for run, now in sorted(after.items()):
+        was = before.get(run)
+        if was is None:
+            continue                  # a new corpus run has nothing to beat
+        if now["wrong"] > was["wrong"]:
+            complaints.append(
+                f"{run}: INVENTED EVENTS {was['wrong']} -> {now['wrong']}")
+        if now["event"] < was["event"]:
+            complaints.append(
+                f"{run}: events {was['event']} -> {now['event']}")
+    for run in sorted(set(before) - set(after)):
+        complaints.append(f"{run}: in the baseline but not measured now")
+    return complaints
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest",
                         help="write a harvest manifest built from the misses")
+    parser.add_argument("--check", action="store_true",
+                        help="compare against the committed baseline and exit"
+                             " non-zero on a regression, without rewriting it")
     arguments = parser.parse_args()
     lines, misses = report()
     if not lines:
@@ -162,6 +247,15 @@ def main():
         return
     body = "\n".join(lines) + "\n"
     print(body, end="")
+    if arguments.check:
+        complaints = check(body)
+        if complaints:
+            print("\nREGRESSION - the baseline is left alone:")
+            for complaint in complaints:
+                print(f"    {complaint}")
+            sys.exit(1)
+        print("\nno regression against the committed baseline")
+        return
     BASELINE.write_text(body, encoding="utf-8")
     print(f"\nbaseline written to {BASELINE}")
     if arguments.manifest:

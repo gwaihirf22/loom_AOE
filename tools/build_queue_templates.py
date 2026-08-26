@@ -8,7 +8,7 @@ frames: at 1.0 a man-at-arms cell scores 0.23 against its own icon, at 1.25 it
 scores ~0.33 and clearly beats every wrong icon.
 
 This tool cuts ready-to-match templates from my local icon library
-(master_aoe2_images/, not committed) and writes them into templates/queue/
+(master_aoe2_images/, which ships) and writes them into templates/queue/
 (committed), pre-zoomed so the matcher never has to think about it. Run it
 again whenever a new unit or tech needs to be recognisable:
 

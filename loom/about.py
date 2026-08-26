@@ -68,6 +68,22 @@ misread resource number can never drag the whole build off course.</p>
 memory, never injects anything, and never sends it input. If it cannot see
 the HUD clearly it says so rather than guessing, because a wrong villager
 count would quietly put you on the wrong step for the rest of the match.</p>
+<p><b>One thing Loom reads that is not pixels, and the rule around it.</b>
+The game saves a recorded game for every match, and after a match ends Loom
+reads it so the statistics can be checked against what the game was actually
+told to do. Nothing from it reaches the overlay - only the statistics window
+ever opens one.</p>
+<p>The reason that boundary exists is not tidiness. A recorded game contains
+every command <i>both</i> players issued, including everything the fog of war
+hid from you, so reading one mid-match would not be a better reader, it would
+be a maphack. So Loom refuses to open a record the match is still writing, and
+refuses it at the point the file is opened - every way in gets the same answer,
+whether Loom found the file itself or you picked it by hand.</p>
+<p>You will see one of two messages if you try. <i>That is the game being
+played right now</i> means you have picked the live record. <i>The game is
+still writing that file</i> means the match has only just ended - wait a few
+seconds and it will read. Neither is an error about the file; both are Loom
+declining, which is a different thing and says so.</p>
 <p>The overlay draws on top of the game and is invisible to the mouse, so
 you can click straight through it. After each match, the <b>Statistics</b>
 window has the full story: graphs of your villagers, pace, idle time and
@@ -87,6 +103,12 @@ own profile before Loom can read it. It will not fail silently: it says so,
 and names the closest skin it found and how well it scored. A mod that only
 changes colours or transparency without redrawing the icons will usually be
 fine.</p>
+<p><b>Transparent UI</b> works with either skin. That mod removes the HUD
+backdrop, so the clock is drawn straight onto the map - grass, stone,
+buildings, whatever the camera happens to be over, changing every frame
+while the digits do not. Loom used to lose most of the clock to it. It now
+separates the digits from the terrain by the one thing that never varies:
+the digits are pure white and the map behind them is not.</p>
 <h3>Two mods worth installing (optional)</h3>
 <p><b><a href="https://www.ageofempires.com/mods/details/3762">Anne_HK —
 Better UI</a></b> is the layout Loom was originally built against: it gives
@@ -183,9 +205,14 @@ on your other screen.</p>
 temporary version of that: they hide the panel for as long as Loom is running
 and are forgotten when it closes, so a quick peek never changes what happens
 next time.</p>
-<p><b>2. Place the panel.</b> Use <b>Place overlay</b> to drag the panel
-wherever you want it, then close it - no game needed, though with one
-running it lines up exactly. Loom remembers the spot relative to the game
+<p><b>2. Place the panel.</b> <b>Place overlay</b> opens the real panel -
+frameless and see-through, exactly as it will appear in a game. Drag it by
+the card itself, then press <b>Set Overlay Position</b> on the panel -
+that saves the spot and closes it. To back out instead press <b>Esc</b>, or
+press <b>Close placement</b> in the launcher, which is what the Place
+overlay button becomes while a panel is open. Nothing is saved unless you
+press the panel's own button, so trying a spot costs you nothing. No game is needed, though
+with one running the position lines up exactly. Loom remembers the spot relative to the game
 window, so it survives a resolution change or a move to another monitor.
 <b>Reset position</b> puts it back in the top-right corner if it ever ends
 up somewhere unhelpful.</p>
@@ -194,7 +221,9 @@ waits for the game, then picks up wherever the match already is.</p>
 <p><b>4. Check the alerts.</b> Idle Town Centre and housing warnings can be
 turned off individually if you would rather not see them.</p>
 <p>Loom writes a statistics file for every game, which the
-<b>Statistics</b> button opens.</p>
+<b>Statistics</b> button opens. Once a match has finished, it also reads
+the game's own recorded game to check those numbers against what the game
+was told to do.</p>
 """),
 
     ("Reading the panel", """
@@ -248,13 +277,26 @@ showing stale advice.</p>
 
     ("Placing and appearance", """
 <h3>Put it where you want it - and make it as subtle as you like</h3>
-<p><b>Place overlay</b> opens the panel as a normal draggable window: drag
-it anywhere, close it, and the spot is saved. You do not need the game
-running, though with it running the position lines up exactly. The saved
-spot is relative to the game window, so it survives resolution changes.
-<b>Reset position</b> returns it to the default - top right, tucked under
-the game's bar - and if a saved spot would ever land off your screens
-entirely, Loom ignores it and uses the default rather than vanishing.</p>
+<p><b>Place overlay</b> opens the panel itself, frameless and translucent -
+there is no title bar or border, because those are opaque chrome the real
+overlay does not have and they would hide the very thing you are judging.
+Drag it by the card, then press <b>Set Overlay Position</b> to save the
+spot and close the panel. Two ways to back out without saving: <b>Esc</b>,
+or <b>Close placement</b> in the launcher - the Place overlay button becomes
+that while a panel is open, because a frameless panel has no close button of
+its own and its other two exits need it to hold the focus. You do not need the game running, though with it running the
+position lines up exactly. The saved spot is relative to the game window, so
+it survives resolution changes. <b>Reset position</b> returns it to the
+default - top right, tucked under the game's bar - and if a saved spot would
+ever land off your screens entirely, Loom ignores it and uses the default
+rather than vanishing.</p>
+<p>What you are dragging is the real panel showing your selected build, at
+its <i>tallest</i>: the step with the most items, with the idle-Town-Centre
+and housing bands both up. Those bands hang below the card, so this is the
+full footprint the overlay can ever take - place it against that and no
+match will surprise you by growing over something you needed to see. The
+<b>Appearance</b> settings apply to it live, so you can size and fade the
+panel with the sliders while looking at the spot it will actually occupy.</p>
 <p><b>Overlay size</b> has two knobs: overall size grows the whole panel,
 text size grows only the writing (the panel gets taller, never wider).</p>
 <p><b>Overlay transparency</b> has two sliders. <b>Background</b> is the

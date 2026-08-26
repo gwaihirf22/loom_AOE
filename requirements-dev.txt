@@ -26,3 +26,35 @@ pillow==12.3.0
 # For building the Windows bundle (pyinstaller loom.spec). Dev-only: the
 # artifact ships, the builder does not.
 pyinstaller==6.22.2
+
+# For tools/replay_truth.py: reading a recorded game (.aoe2record). This earns
+# its place because nothing else can say what the game ACTUALLY did - every
+# other gate Loom has scores one crop of pixels at a time, and the bug that
+# cost the most lived in the relationship between two crops.
+#
+# Note Loom reads the recorded game's BODY and never its header. mgz cannot
+# parse the header at save version 67.2 or 68.0, which is the current game;
+# the two are framed separately, so seeking past header_len reads 42 of 42
+# files here, including the eleven whose header fails. See the tool's
+# --header-note for the fix, which is worth sending upstream.
+#
+# NO LONGER DEV-ONLY, and the reason it was is worth keeping. A recorded
+# game holds BOTH players' orders including what fog would hide, so being
+# out of the overlay's reach was the whole safeguard. That safeguard is now
+# CODE rather than packaging: loom/replay.py refuses rec.aoe2record by name
+# and refuses any record still being written, which is a stronger promise
+# than "the library is not installed" ever was.
+#
+# Pinned to my own fork, not PyPI, and that is meant to be TEMPORARY. Save
+# version 67.2 - the game's current build - moved two header fields and
+# nothing on PyPI reads them; the fix is eight lines and is upstream as
+# happyleavesaoc/aoc-mgz#147. If it lands, this line goes back to `mgz==x.y.z`
+# and the fork gets deleted.
+#
+# A fork is cheap to carry only while its diff stays small enough to replay
+# onto whatever upstream does next, which is the same discipline that makes a
+# change worth upstreaming at all. If this ever grows past a handful of lines
+# without being merged, that is the signal to reconsider rather than to keep
+# patching. See docs/mgz-upstream.md.
+# mgz moved to requirements.txt - see the note there.
+# Everything above about the fork still applies.

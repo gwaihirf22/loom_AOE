@@ -249,3 +249,61 @@ def test_the_hours_bound_is_the_thing_that_stops_it(monkeypatch):
         band("small_hud_1080p_split_zeros.png"), templates, SMALL_GLYPH_WIDTH)
 
     assert value == 36060, "the misread this guard exists for has changed"
+
+
+# The Transparent UI mod removes the HUD backdrop entirely, so the clock is
+# drawn straight onto the map: grass, stone, buildings, units, whatever the
+# camera happens to be over. The glyphs do not change - only what is behind
+# them, and that changes every frame.
+#
+# It cost the clock two thirds of its reads. Across the four matched 1080p
+# recordings of one game: stock 284/284 and Anne_HK 284/285 without the mod,
+# against 210/284 and 102/287 with it. Both skins, so it is the mod and not
+# the skin.
+
+TERRAIN = "transparent_terrain_417.png"
+TERRAIN_SECONDS = 417
+
+
+def test_the_clock_reads_through_the_transparent_ui_mod(templates):
+    assert digits.read_clock_seconds(
+        band(TERRAIN), templates, SMALL_GLYPH_WIDTH)[0] == TERRAIN_SECONDS
+
+
+def test_it_needs_the_tight_colour_spread(templates, monkeypatch):
+    """Terrain is bright and COLOURED; the clock is bright and is not.
+
+    Measured on the pixels each side owns: the clock's ink has a colour
+    spread of 0 at the median and 1 at its worst, while bright terrain runs
+    to 10 at the median and 57 at the ninetieth. WHITE_MAX_SPREAD's 45 was
+    measured against the civ border artwork and is right for that; against
+    terrain it admits the map as ink and glues runs 26 and 38 pixels wide
+    together, where a digit is 6.
+
+    Removing the tight pass leaves the loose one, which is what shipped
+    before, and this band goes back to being unreadable.
+    """
+    monkeypatch.setattr(digits, "CLOCK_TIGHT_SPREAD", digits.WHITE_MAX_SPREAD)
+
+    assert digits.read_clock_seconds(
+        band(TERRAIN), templates, SMALL_GLYPH_WIDTH)[0] is None
+
+
+def test_the_tight_pass_is_tried_before_the_loose_one(templates):
+    """Order is the whole design, not tidiness.
+
+    A terrain-contaminated band has to meet a colourless pass BEFORE a
+    loose one sees it, or the loose pass answers first with the map mixed
+    into the digits. The looser passes still exist because the theme
+    fixtures need them - those came through screenshot scaling, which adds
+    chroma noise the game window never has - but they answer last.
+    """
+    passes = digits.clock_passes()
+    tight = [i for i, (_gate, spread) in enumerate(passes)
+             if spread == digits.CLOCK_TIGHT_SPREAD]
+    loose = [i for i, (_gate, spread) in enumerate(passes)
+             if spread == digits.WHITE_MAX_SPREAD]
+    assert tight and loose, passes
+    assert max(tight) < min(loose)
+    # And every brightness gate is still tried, at both spreads.
+    assert len(passes) == 2 * len(digits.WHITE_PASSES)

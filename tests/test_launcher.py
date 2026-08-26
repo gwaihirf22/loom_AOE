@@ -14,8 +14,8 @@ the table is plain data, which is exactly why it is a table.
 from loom import entry
 from loom.launcher import (COACH_SCENARIOS, DEV_COMMANDS, MINIMUM_SIZE,
                            PLACE_COMMAND, PREFERRED_SIZE, SETTINGS_TABS,
-                           WINDOW_GAP, beside, clamped_position, fitted_size,
-                           overlay_status_text)
+                           WINDOW_GAP, LauncherWindow, beside,
+                           clamped_position, fitted_size, overlay_status_text)
 
 
 def argv_for(label, stem="scoutsrush18pop", scenario="behind"):
@@ -290,3 +290,144 @@ def test_every_hotkey_action_has_a_label_in_the_settings_window():
             f"window would raise KeyError on open")
         label, tip = HotkeysBox.LABELS[action]
         assert label and tip, f"{action} has an empty label or tooltip"
+
+
+def test_record_session_carries_the_chosen_build_as_build_and_label():
+    # The build stem has to reach the overlay, or the session is recorded
+    # against whatever the overlay defaults to and nothing afterwards says
+    # so. That happened once: a 1440p game recorded under a label naming one
+    # build while the overlay ran fast_castle, found days later by reading
+    # the statistics filename. The stem doubles as the folder label so the
+    # folder name itself carries the answer.
+    assert argv_for("Record session") == [
+        "-m", "tools.dev_session",
+        "--build", "scoutsrush18pop", "--label", "scoutsrush18pop"]
+
+
+def test_recording_a_session_refuses_to_run_beside_a_live_overlay():
+    # Two overlays on one HUD both write statistics and both count APM,
+    # silently. The guard is data so this needs no Qt.
+    from loom.launcher import NEEDS_THE_OVERLAY_SLOT_FREE
+    prefixes = {prefix for _label, prefix, _build, _tip in DEV_COMMANDS}
+    assert NEEDS_THE_OVERLAY_SLOT_FREE <= prefixes
+    assert "session" in NEEDS_THE_OVERLAY_SLOT_FREE
+    # Running the test suite or a demo alongside the overlay is harmless and
+    # must stay allowed.
+    assert "pytest" not in NEEDS_THE_OVERLAY_SLOT_FREE
+
+
+# ---- Place overlay is a toggle -----------------------------------------
+#
+# The placement panel is frameless, so it has no close button, and its own
+# two exits (its button, Esc) both need it to hold the focus. The launcher
+# button that opened it is the reliable way out, which makes what that
+# button does on a second press worth pinning down.
+#
+# Still no Qt: these call the methods against a stub, because every one of
+# them reads self.dev_process and writes a line, and none of them touches a
+# widget except through _show_place_state, which the stub records.
+
+
+class FakeChild:
+    """A ChildProcess as far as the placement toggle can tell."""
+
+    def __init__(self, label, running=True):
+        self.label = label
+        self._running = running
+        self.stopped = False
+
+    def is_running(self):
+        return self._running
+
+    def stop(self):
+        self.stopped = True
+        self._running = False
+
+
+class FakeOutput:
+    def __init__(self):
+        self.lines = []
+
+    def append_line(self, line):
+        self.lines.append(line)
+
+
+class FakeLauncher:
+    """Enough of LauncherWindow to exercise the toggle's decisions."""
+
+    def __init__(self, dev_process=None):
+        self.dev_process = dev_process
+        self.output = FakeOutput()
+        self.ran = []
+        self.place_state = None
+
+    def run_dev_command(self, prefix, build_args):
+        self.ran.append(prefix)
+        self.dev_process = FakeChild(prefix)
+
+    def _show_place_state(self, placing):
+        self.place_state = placing
+
+    placing_now = LauncherWindow.placing_now
+    place_overlay = LauncherWindow.place_overlay
+
+
+def test_placing_now_is_false_with_an_empty_slot():
+    assert FakeLauncher().placing_now() is False
+
+
+def test_placing_now_is_false_for_a_different_dev_task():
+    """The dev slot is shared. Only placement may be closed by pressing its
+    own button again - stopping a frame grab that way would throw away a
+    capture the player is in the middle of taking."""
+    launcher = FakeLauncher(FakeChild("frames"))
+
+    assert launcher.placing_now() is False
+
+
+def test_placing_now_is_false_once_the_child_has_exited():
+    """_dev_finished leaves the object in place, so a null check alone would
+    call a long-gone process 'placing'."""
+    launcher = FakeLauncher(FakeChild("place", running=False))
+
+    assert launcher.placing_now() is False
+
+
+def test_the_first_press_opens_placement():
+    launcher = FakeLauncher()
+
+    launcher.place_overlay()
+
+    assert launcher.ran == ["place"]
+    assert launcher.place_state is True
+
+
+def test_the_second_press_closes_it_instead_of_opening_another():
+    launcher = FakeLauncher(FakeChild("place"))
+
+    launcher.place_overlay()
+
+    assert launcher.dev_process.stopped is True
+    assert launcher.ran == [], "a second press must not start a second panel"
+
+
+def test_closing_from_the_launcher_says_that_nothing_was_saved():
+    """Only the panel's own button writes a position down. A player who
+    closed from here and was told nothing would not know which happened."""
+    launcher = FakeLauncher(FakeChild("place"))
+
+    launcher.place_overlay()
+
+    assert any("nothing saved" in line for line in launcher.output.lines)
+
+
+def test_a_refused_start_does_not_claim_to_be_placing():
+    """run_dev_command refuses while another dev task holds the slot. A
+    button that then said "Close placement" over a panel that never opened
+    would be a lie about what pressing it does."""
+    launcher = FakeLauncher(FakeChild("frames"))
+    launcher.run_dev_command = lambda prefix, build_args: None
+
+    launcher.place_overlay()
+
+    assert launcher.place_state is False

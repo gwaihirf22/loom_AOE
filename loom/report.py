@@ -23,6 +23,19 @@ def format_time(seconds):
     return f"{minutes}:{secs:02d}"
 
 
+def tc_time(seconds):
+    """Idle seconds, said in the currency they are actually counted in.
+
+    Idleness integrates PER IDLE TOWN CENTRE: three TCs stopped for ten
+    seconds is thirty, because it is thirty seconds of villager-making
+    that did not happen. That is the number worth having, but printed
+    bare it reads as a stopwatch and looks impossible - one of my
+    half-hour games records 9,025 - and a number nobody believes is a
+    number nobody acts on. So the unit travels with it.
+    """
+    return f"{seconds:.0f}s of TC time"
+
+
 class BuildReport:
     """Accumulates during-the-build facts, then summarises them."""
 
@@ -160,7 +173,7 @@ class BuildReport:
                          False))
 
         idle = int(round(self.tc_idle_seconds))
-        rows.append(("TC idle time", f"{idle}s", idle <= 10))
+        rows.append(("TC idle time", tc_time(idle), idle <= 10))
 
         if self.attacks:
             times = ", ".join(format_time(t) for t in self.attacks[:4])

@@ -252,16 +252,35 @@ def test_techs_never_carry_counts():
         == ("loom", None)
 
 
-def test_every_template_is_classified_unit_or_tech():
-    """Drift guard: a new template must land in exactly one camp, or the
-    count/identity reconciliation cannot reason about it."""
+def test_every_template_has_a_recorded_kind():
+    """Drift guard: a new template must be CLASSIFIED, not defaulted.
+
+    The test this replaces could not fail. It computed
+    `techs = TECH_IDENTITIES & built` and `units = built - TECH_IDENTITIES`
+    and then asserted their union was `built` - true by construction, for
+    any set whatsoever. So 380 templates sat silently in the unit camp
+    because nothing had ever said otherwise, which is the exact failure
+    mode the notification vocabulary audit named: a hand-curated allowlist
+    fails silently.
+
+    KINDS.tsv answers for every template, and "unknown" is one of the
+    answers. Adding a template without a row now fails HERE, by name.
+    """
     built = {path.name.split(".")[0]
              for path in (paths.TEMPLATES_DIR / "queue").glob("*.png")}
-    techs = queue.TECH_IDENTITIES & built
-    units = built - queue.TECH_IDENTITIES
-    assert techs | units == built
-    # Spot-check the two camps contain what they should.
-    assert "castle_age" in techs and "villager_male" in units
+    kinds = queue.identity_kinds()
+    missing = built - set(kinds)
+    assert not missing, (
+        f"{len(missing)} templates have no kind recorded: "
+        f"{sorted(missing)[:8]} - run python -m tools.classify_queue_icons")
+    # Rows WITHOUT a template are allowed and expected: the notification
+    # feed names buildings, which never enter the production queue and so
+    # have no icon to match. Only the other direction is a drift.
+    # Everything the reconciliation already trusts must agree with the file.
+    for identity in queue.TECH_IDENTITIES:
+        assert queue.kind_of(identity) == queue.TECHNOLOGY, identity
+    assert queue.kind_of("villager_male") == queue.UNIT
+    assert queue.kind_of("no_such_icon") == queue.UNKNOWN
     assert production.TC_TECH_IDENTITIES <= queue.TECH_IDENTITIES
 
 
@@ -570,6 +589,68 @@ def test_idle_tc_detected_when_one_of_two_stops():
     tracker.update(113, [vill(), vill()])
     assert TC_RECOVERED in tracker.update(116, [vill(), vill()])
     assert tracker.idle_tcs == 0
+
+
+def test_the_bill_counts_once_per_idle_tc_and_the_stopwatch_does_not():
+    """The two numbers that were being mistaken for each other.
+
+    idle_tc_seconds is what the report and the statistics grade in: one
+    second per IDLE TOWN CENTRE per second, because two stopped TCs is two
+    villagers' worth of time not spent. idle_tc_duration is how long the
+    episode has run, a plain stopwatch that a second TC joining does not
+    multiply and does not restart.
+    """
+    tracker = ProductionTracker()
+    tracker.update(100, [vill(), vill()])
+    tracker.update(102, [vill(), vill()])
+    tracker.update(104, [vill(), vill()])      # two TCs believed
+    assert tracker.idle_tc_seconds == 0
+
+    tracker.update(106, [vill()])              # one stops, first glance
+    tracker.update(108, [vill()])              # confirmed: 1 idle
+    assert tracker.idle_tcs == 1
+    # Dated from the first glance that saw it, not the confirming one.
+    assert tracker.idle_tcs_since == 106
+    assert tracker.idle_tc_duration(118) == 12
+
+    tracker.update(110, [vill()])              # 2s at 1 idle
+    assert tracker.idle_tc_seconds == 2
+    tracker.update(112, [])                    # both stopped, first glance
+    tracker.update(114, [])                    # confirmed: 2 idle
+    tracker.update(116, [])                    # 2s at 2 idle = 4
+    assert tracker.idle_tcs == 2
+    assert tracker.idle_tc_seconds == 10
+    # The episode began when the FIRST one stopped and keeps running.
+    assert tracker.idle_tc_duration(116) == 10
+
+
+def test_the_bill_ignores_a_backwards_or_absurd_clock():
+    """Same guard the report uses: a jump is a misread or a new game, not
+    eleven minutes of idleness."""
+    tracker = ProductionTracker()
+    tracker.update(100, [vill(), vill()])
+    tracker.update(102, [vill(), vill()])
+    tracker.update(104, [vill(), vill()])
+    tracker.update(106, [vill()])
+    tracker.update(108, [vill()])              # 1 idle believed
+    tracker.update(20, [vill()])               # clock went backwards
+    tracker.update(600, [vill()])              # absurd gap
+    assert tracker.idle_tc_seconds == 0
+
+
+def test_a_new_game_forgets_the_bill():
+    tracker = ProductionTracker()
+    tracker.update(100, [vill(), vill()])
+    tracker.update(102, [vill(), vill()])
+    tracker.update(104, [vill(), vill()])
+    tracker.update(106, [])
+    tracker.update(108, [])
+    tracker.update(110, [])
+    assert tracker.idle_tc_seconds > 0
+    tracker.reset()
+    assert tracker.idle_tc_seconds == 0
+    assert tracker.idle_tcs_since is None
+    assert tracker.idle_tc_duration(500) == 0
 
 
 def test_researching_tc_is_not_idle():

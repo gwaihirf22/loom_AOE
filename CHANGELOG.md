@@ -6,6 +6,143 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.6 — 2026-08-26
+
+### Fixed
+
+- **Loom could mistake another window for the game.** With Age of Empires
+  closed, it selected a browser tab whose title happened to mention the
+  game and reported it as the game window — every coordinate after that
+  described a browser on a second monitor, with no error and no warning.
+  A window matched only by its title is now refused unless the executable
+  agrees, and Loom says it is still waiting for the game, which is true.
+- **The overlay could reopen somewhere other than where you put it**, for a
+  second and unrelated reason: placement measured the offset from the game
+  window, and startup applied it from the primary screen. Those are the
+  same point for a full-screen game on the primary monitor, which is how it
+  went unnoticed for so long.
+- **Place overlay now shows the panel you will actually play with** — the
+  busiest step of the build you have selected, with both alert bands up —
+  and it follows the Appearance settings live. It saves on a button rather
+  than when the window closes, so closing it is now a cancel.
+- **The game clock was unreadable through the Transparent UI mod.** That
+  mod removes the HUD backdrop, so the clock is drawn straight onto the
+  map — grass, stone, buildings, whatever the camera is over — and it
+  changes every frame while the digits do not. Across four recordings of
+  one game the clock read 284/284 and 284/285 without the mod, and
+  210/284 and 102/287 with it. The digits are pure white and the terrain
+  behind them is not, which is now what separates them: 287/287 and
+  284/284 on the same recordings.
+- **The same building or technology could be reported several times over.**
+  Three separate causes, each hiding the next:
+  - One Hand Cart research came back as `--Hand Can--`, `--Hand Cart--`,
+    `--Hand Car--` and `--Hand Caet--` across four looks, and each
+    spelling counted as a new event. Twelve technologies were duplicated
+    in a single game that way, and a technology completes at most once.
+    What a line IS is now decided before it is counted as anything.
+  - A line the reader could not make out was treated as a line that had
+    gone, so its return counted again.
+  - A line fading off the top of the feed produced the same illusion. A
+    new notification enters at the BOTTOM, so one that has not moved down
+    cannot be a new one.
+
+  Measured against the game's own recording of a whole match, Loom went
+  from reporting 16 more events than the player ever ordered to reporting
+  none.
+- **Six unit names were refused outright.** Loom checks every word of a
+  notification against a list of real game words, and six were missing —
+  so `--Hei Guang Cavalry Created--` and five others were thrown away as
+  misreads. Fifty of those units had already been fought in recorded
+  games. The list is now checked against every unit and technology the
+  game knows, and refuses none of them.
+- **The game clock lost ten minutes of every 1080p game to one digit.** It
+  read 100% for game minutes 0-9, collapsed to 8-33% for minutes 10-19,
+  and returned to 100% from minute 20 - exactly the window where the
+  minutes-tens digit is a "1". Measured on 500 clock glyphs, every digit
+  matches at 1.00 except the "1", which sits at 0.39 under a 0.55 gate: at
+  some sub-pixel positions antialiasing fills its stem out to the width of
+  its serif and it loses the waist every template has. A run too narrow to
+  be any other digit, which the ink also calls a "1", is now believed on
+  those two agreements. Clock reads went 85% to 100% on both HUD skins,
+  and impossible readings (a clock going backwards or jumping) fell with
+  them.
+- **A lingering notification could be counted many times over.** One
+  `--Barracks Built--` sitting still on screen was counted ELEVEN times
+  across thirteen game seconds. The feed is counted by where a line sits
+  now, not by a stopwatch: a line enters at the bottom and is only ever
+  pushed up, so a text never seen is a new print, more copies than last
+  look is another print beneath the first, and a text seen to leave and
+  come back has provably done so. Replayed over the same game, 410 event
+  firings became 194.
+
+  The old rule was a 15-second cooldown measured with the game's
+  notification-duration setting at its SHORTEST. On NORMAL - the default -
+  a line outlives that cooldown 43% of the time. Counting no longer
+  depends on a setting nothing enforces, so **you no longer need to change
+  it**.
+
+### Added
+
+- **A Reader accuracy tab in the statistics window.** Loom can now attach
+  a match's own recorded game to its statistics and show where the two
+  disagree. "Add recorded game" finds the file for most games and offers
+  a picker when it cannot. It keeps two lists apart on purpose: things
+  Loom counted MORE of than the player ever ordered, which cannot happen
+  and so are the reader counting one thing twice; and things ordered that
+  Loom never saw, which prove nothing, because a foundation can be
+  cancelled and a research abandoned.
+
+  The recorded game is read only AFTER a match ends, never during one. It
+  contains both players' orders, including everything the fog of war hid,
+  so reading it while playing would not be a better reader — it would be
+  cheating. Loom refuses the file the game is still writing.
+- **How long buildings and technologies actually took**, on the same tab —
+  from the order to the game's own announcement, so it includes the
+  villager walking there and however many helped. Shown only for things
+  Loom counted exactly right, because one missed completion shifts every
+  later pairing.
+- **Army losses on the Post-game page**, beside the villager deaths that
+  were already there. Kept separate rather than summed: a dead villager is
+  economy that stops compounding, a dead soldier is resources already
+  spent.
+- **A game whose clock misread now says so.** The numbers are left exactly
+  as they were recorded — nothing is mended — and a warning sits ABOVE
+  them rather than below, because every row underneath is derived from the
+  clock. The warning is about a fault that was always in the file, not a
+  new one.
+- **The Economy, Technology and Military tabs stopped saying "not yet".**
+  They were built and filled some time ago and the placeholder text
+  outlived them.
+- `tools/dev_session.py` - one command that starts the overlay and the
+  frame capture together, stops them together, then gathers that session's
+  log and statistics into the capture folder, drops the frames with no
+  game in them, and prints the read rates.
+- `tools/digit_report.py` - a committed baseline and `--check` gate for
+  the digit readers, which had none. It scores how much each band reads
+  AND whether any reading is impossible.
+- `tools/read_rates.py` - per-band read rates across capture runs, with
+  `--by-minute` on the GAME clock so recordings of one game line up
+  whatever their frame numbers are.
+- `tools/notif_oracle.py` - an independent OCR witness that audits the
+  notification corpus LABELS. All 924 were checked; none was wrong.
+- `tools/prune_captures.py` - removes capture frames with no game in them.
+  A frame in the MIDDLE of a game with no HUD is kept: that is an anchor
+  loss, and the most useful frame in the run.
+
+### Known
+
+- The notification feed cannot report every villager. It showed
+  `--Villager Created--` at most 57 times in a game with 112 villagers, so
+  even read perfectly it carries about half. The villager count on the HUD
+  is the authoritative source and is unaffected.
+- Statistics files written by 1.0.6 will not open in 1.0.5. Nothing can be
+  done about that now, but anyone going back deserves to have been told.
+- Installing FROM SOURCE now needs git installed and GitHub reachable: the
+  library that reads recorded games is pinned to a fork, because the
+  released version cannot parse the game's current build. The two fixes
+  are filed upstream as aoc-mgz#147 and the pin goes away if they land.
+  **The .exe is unaffected** — it carries everything it needs.
+
 ## 1.0.5 — 2026-08-23
 
 *Rebuilt the same day, before more than a handful of people had it, with a

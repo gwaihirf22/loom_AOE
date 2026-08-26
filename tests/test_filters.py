@@ -158,3 +158,47 @@ def test_a_new_game_is_not_charged_the_old_games_gap():
     assert gap.update(None, 5) is None             # clock went backwards
     for t in (7, 9, 11, 13, 15, 17):
         assert gap.update(None, t) is None         # no old moment to count from
+
+def test_a_clock_watched_the_whole_way_cannot_have_leapt():
+    """Measured, live, twice: 32:07 -> 52:07 and 35:41 -> 55:42, both
+    exactly twenty minutes, both the tens-of-minutes digit read as 5
+    instead of 3. The recorded game says the second was 36:00, not 55:45.
+
+    The old confirmation rule could not refuse them. It asked for a
+    second reading to agree - but a digit misread is not a flicker, it
+    reads the same next frame, so 55:42 -> 55:43 "moved forward
+    sensibly" and confirmed itself. The confirming witness was the
+    reader under suspicion.
+
+    What Loom actually knows is stronger: it never lost sight of the
+    clock. Between two consecutive readings the game cannot have run
+    twenty minutes, so the leap is refused outright rather than put to a
+    vote its accuser gets to cast.
+    """
+    clock = filters.StableClock()
+    for reading in (2140, 2141, 2142):
+        clock.update(reading)
+    assert clock.value == 2142, "the clock was watched continuously to here"
+
+    # the misread, and it repeats exactly as the real one did
+    assert clock.update(3342) == 2142, "a 20-minute leap was believed"
+    assert clock.update(3343) == 2142, "the misread confirmed itself"
+
+    # and the real clock is still coming in underneath it. A refusal that
+    # left the filter stuck would be the worse bug of the two.
+    assert clock.update(2143) == 2143, "refusing a leap froze the clock"
+
+
+def test_a_leap_is_believed_once_the_clock_was_actually_lost():
+    """The refusal must not become a stuck filter - the rule Loom has
+    already been bitten by. Loom looking away IS how a clock legitimately
+    jumps: a menu, an alt-tab, a load. Absence has to be observed, so it
+    is the unreadable polls that license the leap, never elapsed time."""
+    clock = filters.StableClock()
+    for reading in (600, 601, 602):
+        clock.update(reading)
+
+    clock.update(None)                      # the HUD went away
+    clock.update(None)
+    assert clock.update(1800) == 602, "one reading is still not enough"
+    assert clock.update(1801) == 1801, "the filter never came back"

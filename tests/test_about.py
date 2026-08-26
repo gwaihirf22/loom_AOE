@@ -262,3 +262,66 @@ def test_the_builds_page_says_a_missing_picture_falls_back_to_words():
         " ".join(html.split()) for _title, html in about.PAGES).lower()
 
     assert "in words" in everything
+
+
+def test_the_recorded_game_page_states_the_after_the_match_boundary():
+    """The one promise on these pages that is about trust rather than use.
+
+    Loom reads the game's own .aoe2record for statistics, and that file
+    contains every command BOTH players issued, fog included. The whole
+    defence of doing it at all is that it happens only after the match has
+    ended - so a page that describes the capability without the boundary
+    would be advertising something that sounds exactly like a maphack.
+
+    Pinned as words rather than derived, because the fact being asserted
+    lives in loom/replay.py's is_finished and there is nothing on these
+    pages to derive it FROM. What this catches is the edit that trims the
+    caveat while keeping the feature.
+    """
+    everything = " ".join(html for _title, html in about.PAGES).lower()
+
+    assert "recorded game" in everything, "the capability is not described"
+    # The caveat, not the feature. "maphack" is the word that carries it -
+    # an edit that keeps the capability and drops the reason why it waits
+    # for the match to end is exactly what this is here to fail on.
+    assert "maphack" in everything, "the page describes the feature but not why it waits"
+    assert "after a match ends" in everything
+
+
+def test_the_fair_play_promise_is_backed_by_the_code(tmp_path):
+    """The docs must not outrun the program.
+
+    The How-to-use page and the README both tell a player that Loom will
+    not open a recorded game the match is still writing. That is a claim
+    about *behaviour*, and a prose test can only ever check that the
+    sentence is present - it would go on passing if the guarantee were
+    removed tomorrow, which is precisely how the original hole survived:
+    the test guarding it read is_finished's SOURCE for a constant name and
+    passed for the whole time harvest() was walking past it.
+
+    So this asks the program instead. If either refusal goes away, the
+    pages are lying and this fails - which is the only way a documentation
+    promise about behaviour can be kept honest.
+    """
+    from loom import replay
+
+    live = tmp_path / "rec.aoe2record"
+    live.write_bytes(bytes(64))
+    with pytest.raises(replay.GameStillRunning):
+        replay.harvest(live)
+
+    still_writing = tmp_path / "MP Replay v101.103 @2026.08.26 010000 (2).aoe2record"
+    still_writing.write_bytes(bytes(64))
+    with pytest.raises(replay.GameStillRunning):
+        replay.harvest(still_writing)
+
+
+def test_declining_to_look_is_not_reported_as_a_broken_file():
+    """Its own exception type, so a caller cannot flatten it into "could
+    not read that recorded game". The picker used to do exactly that, which
+    would have reported Loom's own boundary as a fault in the player's
+    file."""
+    from loom import replay
+
+    assert issubclass(replay.GameStillRunning, Exception)
+    assert replay.GameStillRunning is not Exception

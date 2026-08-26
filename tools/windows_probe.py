@@ -617,12 +617,15 @@ def main():
 
         if args.save and frame is not None:
             import cv2
-            paths.CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+            # Its own folder, beside font_mismatch/: captures/ is where
+            # the run folders live and loose debris makes it hard to read.
+            probe_dir = paths.CAPTURES_DIR / "probe"
+            probe_dir.mkdir(parents=True, exist_ok=True)
             # The whole name, not its first word: "pywin32 BitBlt" and
             # "pywin32 PrintWindow" both start with "pywin32" and one was
             # overwriting the other's frame.
             stem = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-            out = paths.CAPTURES_DIR / f"probe_{stem}.png"
+            out = probe_dir / f"{stem}.png"
             cv2.imwrite(str(out), frame)
             print(f"  saved:  {out}")
 

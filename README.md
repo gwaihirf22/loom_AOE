@@ -228,11 +228,24 @@ overlay controls, and the settings tabs. Everything opens from here.*
 
    *The preview: every step of the build as a card, the current one lit.
    Browse it with the mouse before a match; during one it follows the game.*
-2. **Place the panel.** **Place overlay** opens it as a draggable window:
-   drag it where you want it, close it, and the spot is saved — no game
-   needed, though with one running it lines up exactly. **Reset position**
-   puts it back in the top-right corner if it ever ends up somewhere
-   unhelpful.
+2. **Place the panel.** **Place overlay** opens the real panel —
+   frameless and see-through, at the transparency you will actually play
+   with. It shows your selected build at its *tallest* step with both
+   alert bands up, because the saved position pins the panel's top-left
+   and the panel grows downward: what you want to place around is the
+   biggest it will ever get, not a typical step. Drag it by the card and
+   press **Set Overlay Position**, which saves the spot and closes it.
+   **Esc**, or the launcher's **Close placement**, backs out saving
+   nothing — so trying a corner costs you nothing. The Appearance
+   sliders apply to it live. No game needed, though with one running it
+   lines up exactly. **Reset position** puts it back to the game
+   window's top right if it ever ends up somewhere unhelpful.
+
+   ![Place Overlay](images/place-overlay.png)
+
+   *Place Overlay: the panel you will actually play with, at its fullest
+   — the busiest step of the build, both alert bands, and the button
+   that commits the spot.*
 3. **Start the overlay** — before or during a match, either is fine. It
    waits for the game, then picks up wherever the match already is.
 4. **Check the alerts.** The idle-Town-Centre and housing warnings can each
@@ -437,6 +450,13 @@ technology first appeared), and a per-second timeline. The **Statistics**
 button opens past games with three tabs — the build report, the summary,
 and graphs of villagers, pace and APM.
 
+Once a match has finished, Loom also finds the **recorded game** the match
+wrote and reads it, so the statistics can be checked against what the game was
+actually told to do rather than only against what Loom managed to see. This
+happens after the game and never during it — see
+[On fair play](#is-this-cheating) for why that boundary exists and what
+enforces it.
+
 ---
 
 
@@ -483,6 +503,34 @@ seven villagers because the number 7 is on your HUD. It knows you are behind
 because the clock is too. Even the idle-Town-Centre alert is read off the game's
 own production queue, the widget already sitting in the corner. If Loom knows
 something, you could have known it by looking.
+
+**That holds for the whole match, without exception.** The only thing on the
+panel that was not already on your screen is the build order itself — your own
+notes, which you brought with you, and which you could just as well have had on
+a second monitor or a printed sheet.
+
+**The post-game summary is a different thing, and after the game is a different
+place.** Once a match ends, Loom reads the recorded game it wrote, so the
+statistics can be checked against what the game was actually told to do rather
+than only against what Loom managed to see. That summary can therefore show you
+things you did not see during the match, your opponent included — because it is
+reading a replay, and watching a replay after a game is something the game
+itself offers you.
+
+The line between the two is the whole point, and it is enforced rather than
+promised. A recorded game holds every command *both* players issued, fog
+included, so reading a live one would not be a better reader — it would be a
+different program. **Loom refuses to open a recorded game the match is still
+writing**, and refuses it where the file is actually opened, so every route
+inherits the rule: the automatic finder, the *Add recorded game* picker, and
+anything added later.
+
+There are two refusals, because they mean different things. `rec.aoe2record` is
+the game being played right now, and Loom says so. A record whose file has not
+settled yet is one the game is still finishing, and Loom says *try again in a
+few seconds*, which is a wait rather than a wall. Both are distinct from "this
+file is broken" — declining to look is not the same as failing to read, and a
+player deserves to be told which one happened.
 
 So what it gives you is **attention, not information** — it notices the thing
 you could see and did not, because you were watching your scout. That is the
@@ -688,6 +736,27 @@ affiliated with Microsoft.
 ---
 
 
+
+## Licence
+
+Loom is released under the **[GNU General Public License v3](LICENSE)**.
+
+That is not a preference, and it is worth saying why so nobody has to work it
+out again. Loom draws its window with PyQt6, which is licensed GPL-3.0-only. A
+distributed binary bundling PyQt6 is a combined work, and GPL v3 is what that
+combination requires — picking a permissive licence while shipping PyQt6 inside
+the `.exe` would be a violation rather than a choice. The only route to a
+permissive licence runs through replacing PyQt6 with PySide6, which is LGPL, and
+that migration has not been done.
+
+Two things GPL v3 does *not* prevent, since both get assumed: donations are
+entirely unaffected, and selling copies is expressly permitted. What it requires
+is that whoever receives the program can also receive its source and the same
+rights.
+
+Every bundled dependency and its licence is listed in [NOTICE](NOTICE). One
+detail there is easy to lose: OpenCV is Apache 2.0, which is compatible with GPL
+**v3** but not v2 — so this project cannot move back to v2.
 
 ## Credits
 

@@ -21,10 +21,10 @@ import math
 import time
 from pathlib import PurePosixPath
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter,
                          QPainterPath, QPixmap)
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QPushButton, QWidget
 
 from . import alerts, build_order, checklist, config, paths, steplayout
 
@@ -168,6 +168,26 @@ ALERT_BAND_HEIGHT = 26
 ALERT_GAP = 4
 MAX_ALERT_BANDS = 2
 
+# Placement mode's own button, hanging below the alert bands. It is chrome
+# rather than panel: it exists only while the player is choosing a spot, and
+# what gets SAVED is the panel's top-left corner, which nothing down here can
+# move. Sized in designed pixels like everything else, so it grows with the
+# two size knobs instead of becoming a postage stamp on a scaled-up panel.
+PLACE_BUTTON_HEIGHT = 34
+PLACE_BUTTON_GAP = 8
+
+# Deliberately solid, and deliberately NOT faded by the transparency
+# sliders - the same reasoning as the alert bands. The player may well drag
+# the background down to nothing to see what that looks like, and the one
+# control that ends the exercise has to survive it. Green because it commits.
+PLACE_BUTTON_STYLE = (
+    "QPushButton {"
+    " background-color: #2e7d32; color: white; border: none;"
+    " border-radius: 6px; font-weight: bold; }"
+    "QPushButton:hover { background-color: #388e3c; }"
+    "QPushButton:pressed { background-color: #1b5e20; }"
+)
+
 # A full alert flashes between these two reds; the flashing is the point -
 # an idle TC early is the most expensive routine mistake in the game.
 ALERT_FULL_BRIGHT = QColor(200, 40, 30, 235)
@@ -308,6 +328,15 @@ class OverlayLayout:
     def band_gap(self):
         return self.x(ALERT_GAP)
 
+    @property
+    def place_button_height(self):
+        # It holds a word, so it follows the text axis like the bands do.
+        return self.y(PLACE_BUTTON_HEIGHT)
+
+    @property
+    def place_button_gap(self):
+        return self.x(PLACE_BUTTON_GAP)
+
 
 # The overlay's window flags, up here as a constant so the test suite can check
 # the composition with no display and no QApplication - window flags are just
@@ -351,12 +380,32 @@ OVERLAY_WINDOW_FLAGS = (
 # Placement mode is the deliberate opposite: an ordinary window the window
 # manager can pick up. It must NEVER be transparent for input, or there would
 # be nothing left to grab hold of.
+# Placement mode. Frameless like the overlay proper, because the whole point
+# of looking at it is judging how the translucent card sits over the game -
+# a title bar and a border are opaque chrome the real panel does not have,
+# and they make the one thing being judged impossible to see.
+#
+# What it must NOT borrow from OVERLAY_WINDOW_FLAGS is WindowTransparentForInput:
+# a window with an empty X11 input region cannot be picked up at all. And the
+# type stays Window rather than ToolTip - a ToolTip is not something the
+# window manager or Qt will hand keyboard focus, and this one needs both the
+# mouse (to be dragged) and Escape (to be abandoned).
+#
+# Frameless means the window manager will not move it, so the panel moves
+# itself - see mousePressEvent below.
 PLACING_WINDOW_FLAGS = (Qt.WindowType.Window
+                        | Qt.WindowType.FramelessWindowHint
                         | Qt.WindowType.WindowStaysOnTopHint)
 
 
 class Overlay(QWidget):
     """The panel itself. Told what to show; never reads the game directly."""
+
+    # Placement mode only: the player pressed "Set Overlay Position". The
+    # panel does not save anything itself - it does not know what corner the
+    # offset is measured from - so it announces the press and the entry
+    # point, which does know, writes it down. See loom_overlay.remember_position.
+    position_accepted = pyqtSignal()
 
     def __init__(self, placing=False, layout=None):
         """placing=True gives an ordinary movable window instead of an
@@ -384,7 +433,9 @@ class Overlay(QWidget):
         self._layout_from_config = layout is None
 
         if placing:
-            self.setWindowTitle("Loom — drag me where you want the overlay, then close")
+            # Frameless, so this is never drawn - it is what the taskbar
+            # and alt-tab call the window, which is the only place it shows.
+            self.setWindowTitle("Loom — place the overlay")
             self.setWindowFlags(PLACING_WINDOW_FLAGS)
         else:
             self.setWindowFlags(OVERLAY_WINDOW_FLAGS)
@@ -421,10 +472,28 @@ class Overlay(QWidget):
         self._extra = 0
         self._plan = steplayout.plan_items(0)
 
-        # Tall enough for the content plus the alert bands below it.
-        L = self._layout
-        self.resize(L.panel_width, self.panel_height()
-                    + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
+        # Placement mode's commit button. Built BEFORE the first resize
+        # below, because resizeEvent lays it out and would otherwise be
+        # laying out a widget that does not exist yet.
+        self.place_button = None
+        # Where in the window a drag was picked up, while one is in progress.
+        self._drag_from = None
+        if placing:
+            self.place_button = QPushButton("Set Overlay Position", self)
+            self.place_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.place_button.setStyleSheet(PLACE_BUTTON_STYLE)
+            self.place_button.clicked.connect(self.position_accepted.emit)
+            # The panel keeps the keyboard, not the button: Escape has to
+            # reach keyPressEvent below, and a focused button would eat it
+            # (and answer Space by saving, which nobody asked it to).
+            self.place_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            # Frameless, so there is no title bar to grab. Saying so with
+            # the cursor is the only affordance left.
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+
+        # Tall enough for the content plus the chrome hanging below it.
+        self._resize_to_content()
 
         # Everything the panel draws. Updated by the entry point each poll.
         self.build_name = ""
@@ -466,6 +535,104 @@ class Overlay(QWidget):
         """
         return self._layout.panel_height + self._extra
 
+    def chrome_height(self):
+        """Everything the window reserves BELOW the card.
+
+        Always the full two alert bands, whether or not any alert is up: the
+        bands hang below the panel precisely so the content never moves when
+        one appears, and a window that grew to admit them would move the
+        card's bottom edge instead. Placement mode adds its button under
+        those, so what the player is looking at while they drag is the panel
+        at its tallest - which is the question placement is answering.
+
+        One method rather than the same sum written at each of the three
+        places that resize, because they must agree: a window sized by one
+        formula and drawn by another clips whatever the difference is.
+        """
+        L = self._layout
+        height = MAX_ALERT_BANDS * (L.band_gap + L.band_height)
+        if self.place_button is not None:
+            height += L.place_button_gap + L.place_button_height
+        return height
+
+    def _resize_to_content(self):
+        """Size the window to the card plus its chrome, and lay the chrome out.
+
+        The single owner of that sum. There are three moments it has to be
+        recomputed - startup, a step with more items, a live appearance
+        change - and they must agree, because a window sized by one formula
+        and drawn by another clips whatever the difference is.
+        """
+        L = self._layout
+        self.resize(L.panel_width, self.panel_height() + self.chrome_height())
+        self._layout_place_button()
+
+    def _layout_place_button(self):
+        """Put the placement button under the alert bands, at this scale."""
+        if self.place_button is None:
+            return
+        L = self._layout
+        top = (self.panel_height()
+               + MAX_ALERT_BANDS * (L.band_gap + L.band_height)
+               + L.place_button_gap)
+        # Inset by the same L.x(1) the bands use, so the button lines up
+        # with the column of chrome above it rather than with the window.
+        self.place_button.setGeometry(L.x(1), top, self.width() - L.x(2),
+                                      L.place_button_height)
+        # The label follows the size knobs like every other word on the
+        # panel; a stylesheet alone would leave it at Qt's default and the
+        # button would read as a different size at every scale.
+        self.place_button.setFont(QFont("sans", L.pt(11), QFont.Weight.Bold))
+
+    def mousePressEvent(self, event):
+        """Start a drag. Placement mode only; the real overlay never sees one.
+
+        Frameless windows get no help from the window manager, so the panel
+        carries the pointer itself. What is remembered is the vector from
+        the window's top-left to the press, so the card does not jump under
+        the cursor on the first move.
+        """
+        if self.place_button is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_from = (event.globalPosition().toPoint()
+                               - self.frameGeometry().topLeft())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_from is None:
+            return
+        self.move(event.globalPosition().toPoint() - self._drag_from)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_from = None
+
+    def keyPressEvent(self, event):
+        """Escape abandons placement without saving.
+
+        Frameless means there is no close button, so without this the only
+        ways out would be the launcher's Stop and saving a position the
+        player may not want. Cancelling has to stay as easy as committing,
+        or the button stops being a decision.
+        """
+        if self.place_button is not None and event.key() == Qt.Key.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        """Anything that resizes this window re-lays the chrome.
+
+        _resize_to_content already does it for the three resizes Loom asks
+        for; this catches the ones it does not - placement mode is an
+        ORDINARY window, so the player can drag its edges and the window
+        manager can resize it at map time, neither of which goes through
+        any code here.
+        """
+        super().resizeEvent(event)
+        self._layout_place_button()
+
     def fit_to_items(self):
         """Work out the item layout for what is on show, and resize to it.
 
@@ -493,8 +660,7 @@ class Overlay(QWidget):
         extra = L.y(self._plan.extra)
         if extra != self._extra:
             self._extra = extra
-            self.resize(L.panel_width, self.panel_height()
-                        + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
+            self._resize_to_content()
 
     # ---- what to show --------------------------------------------------
 
@@ -569,9 +735,14 @@ class Overlay(QWidget):
                 # built inline from L.pt() so they need nothing.
                 self._icons = load_resource_icons(
                     self._layout.icon(ICON_HEIGHT))
-                L = self._layout
-                self.resize(L.panel_width, L.panel_height
-                            + MAX_ALERT_BANDS * (L.band_gap + L.band_height))
+                # self._extra was measured through the OLD layout, so it is
+                # the wrong number of pixels the moment the knobs move.
+                # Re-measuring it here rather than waiting for the next poll
+                # to do it matters in placement mode, where there is no next
+                # poll - the panel would wear a stale height for as long as
+                # the player looked at it.
+                self.fit_to_items()
+                self._resize_to_content()
                 resized = True
 
         self.update()

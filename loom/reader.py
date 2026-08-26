@@ -16,6 +16,8 @@ copy of it.
 import os
 import time
 
+import numpy as np
+
 from . import age as age_reader
 from . import (anchor, capture, digits, filters, glyphs, hud, notifications,
                queue, resources, session)
@@ -246,6 +248,7 @@ class HudReader:
         self._text_watcher = None
 
         self.last_population_band = None
+        self.last_clock_band = None
         self._population_misses = 0
 
         self._villager_filter = filters.StableCount(required_repeats=2)
@@ -523,6 +526,20 @@ class HudReader:
             # ...and wider as it grows, or the "two characters touching" split
             # starts cutting single large digits in half.
             "max_glyph_width": max_glyph_width(found["scale"], profile),
+            # Two facts recorded for the STATISTICS file, not used to read
+            # anything. A stats file that cannot say what it was read from
+            # is an archaeology problem: working out which skin and
+            # resolution wrote a bad file has already cost a git dig
+            # through commit dates.
+            "frame": (width, height),
+            # The Transparent UI mod removes the HUD backdrop, so the clock
+            # digits sit on live terrain and the reader collapses. It shows
+            # up here and nowhere else: measured, a stock or Anne_HK
+            # backdrop reads 80-96 and the same skins with the mod read
+            # 144-146. One median at acquisition, so it costs nothing per
+            # poll.
+            "backdrop": _backdrop_luminance(
+                frame, _clamp(found["clock_band"], width, height)),
         }
 
         # A HUD small enough that the digits are getting thin. Said once, and
@@ -642,8 +659,13 @@ class HudReader:
             self._digit_templates,
             self.hud["min_glyph_width"],
         )
+        # Kept for the same reason as the population band below, and for a
+        # sharper one. A clock misread that the filter REFUSES leaves no
+        # trace anywhere: the log records the number, and a number is not
+        # enough to tell a bad threshold from a bad template. The pixels are.
+        self.last_clock_band = self._read_region(self.hud["clock"])
         raw_clock, _ = digits.read_clock_seconds(
-            self._read_region(self.hud["clock"]),
+            self.last_clock_band,
             self._digit_templates,
             self.hud["min_glyph_width"],
         )
@@ -802,6 +824,27 @@ class HudReader:
     def _read_region(self, region):
         x1, y1, x2, y2 = region
         return capture.capture_region(self.window, x1, y1, x2 - x1, y2 - y1)
+
+
+
+def _backdrop_luminance(frame, region):
+    """Median brightness of the clock band, as a plain 0-255 number.
+
+    The MEDIAN, not the mean: the band is mostly backdrop with a few bright
+    digits across it, and a median ignores them where a mean would be
+    dragged up by exactly the pixels that are not the backdrop.
+
+    Returns None rather than a number if the crop is empty - "I could not
+    measure it" and "it measured zero" are different answers, and a zero
+    here would read as a pure black backdrop nothing produces.
+    """
+    x1, y1, x2, y2 = region
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    if crop.ndim == 3:
+        crop = crop[:, :, :3].mean(axis=2)
+    return round(float(np.median(crop)), 1)
 
 
 def _clamp(region, width, height):

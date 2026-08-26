@@ -27,9 +27,20 @@ Honesty rules carried over from the rest of Loom:
 import json
 import os
 
-from . import __version__
+from . import __version__, age, paths
 
-SCHEMA = 1
+SCHEMA = 2
+
+# Every schema this reader can still open. Kept separate from SCHEMA, which
+# is what it WRITES, because the two are different questions and conflating
+# them is a one-character way to orphan every file already on disk: the
+# statistics window tested `schema != SCHEMA`, so bumping the version alone
+# would have made 265 recorded games "unreadable" in a single commit.
+#
+# 1 -> 2 added the optional "record" section. A version 1 file simply has
+# no such key, which every consumer already handles, so nothing needs
+# migrating and nothing is rewritten behind the author's back.
+READABLE_SCHEMAS = (1, 2)
 
 # Below this much observed game the file is not worth writing - a menu
 # misread or an instantly-abandoned match, not a game.
@@ -44,6 +55,25 @@ FLUSH_EVERY = 30
 VILLAGER_IDENTITIES = {"villager_male", "villager_female"}
 
 
+
+def hud_meta(hud):
+    """The reader's anchor, as the fields a stats file should carry.
+
+    `hud` is HudReader.hud: profile, scale, score, frame, backdrop.
+    """
+    meta = {
+        "profile": hud["profile"].name,
+        "reference_scale": hud["scale"],
+        "score": hud["score"],
+        "frame": list(hud["frame"]),
+    }
+
+    if hud["backdrop"] is not None:
+        meta["backdrop"] = hud["backdrop"]
+
+    return meta
+
+
 class GameRecorder:
     """Accumulates one whole game, then writes it as one JSON file."""
 
@@ -52,6 +82,14 @@ class GameRecorder:
         analysis time inside the file is game time, per the house rule."""
         self.meta = {"loom": __version__, "build": build_stem,
                      "build_name": build_name, "started": started}
+        # WHICH BUILD wrote this, which meta.loom cannot say. The version
+        # moves on releases; readers change between them, so files written
+        # on either side of a reader fix carry the same version and a
+        # corpus grouped by it silently mixes generations. Absent is a
+        # legitimate answer and means "written before this was recorded".
+        commit = paths.build_commit()
+        if commit:
+            self.meta["commit"] = commit
         self.build_section = None      # frozen BuildReport verdict
         # Timeline columns, one entry per observed whole game-second.
         self.t = []
@@ -65,14 +103,24 @@ class GameRecorder:
         self.housed_seconds = 0.0
         self.pop_capped_seconds = 0.0
         self.deaths = []               # (t, lost, raided)
+        self.army_losses = []          # (t, lost, raided) - non-villager pop
+        self.max_army = 0
         self.attacks = []
         self.events = []               # (t, event name), every feed event
-        # (t, "clicked"|"reached", age) from the HUD's own age crest. A
-        # genuinely new statistic: the production queue has always seen the
-        # CLICK, because the research sits in it, but a queue item that
-        # disappears has either finished or been cancelled and those look
-        # identical. The crest changing is the game stating what age you are
-        # in, so the finish is a fact rather than an inference.
+        # (t, "reached", age) from the HUD's own age crest. A genuinely new
+        # statistic: the production queue has always seen the CLICK, because
+        # the research sits in it, but a queue item that disappears has
+        # either finished or been cancelled and those look identical. The
+        # crest changing is the game stating what age you are in, so the
+        # finish is a fact rather than an inference.
+        #
+        # ARRIVALS ONLY. Clicks were recorded here too until the graphs drew
+        # them and showed what was really being written: the click is logged
+        # on every poll that sees the red bar, not once per transition, so
+        # one age-up left four entries and drew four rules. They are not
+        # worth keeping even deduplicated (my ruling), so the filter is
+        # here rather than a fix upstream - the overlay still needs clicks
+        # for the age tracker, and this is the one consumer that does not.
         self.ages = []
         self.queued = {}               # identity -> first seen queued, t
         self.alerts = []               # (t, text, severity) transitions only
@@ -80,8 +128,28 @@ class GameRecorder:
         self.tc_count = 1
         self._last_time = None
         self._last_villagers = None
+        self._last_army = None
         self._active_alerts = set()
         self._written_up_to = 0
+
+
+    def describe_hud(self, hud):
+        """Record what this game was READ FROM, once the anchor is found.
+
+        Every other number in this file is about the game. These are about
+        LOOM, and they are here because a stats file that cannot say what
+        produced it cannot be diagnosed later. Two separate investigations
+        have now needed exactly these fields and had to date commits
+        instead: which skin wrote a run of impossible clocks, and whether a
+        session with a twenty-minute misread was running the mod that
+        breaks the clock reader.
+
+        Called once. If the anchor is re-acquired mid-game the first answer
+        stands - it is the one the readings were taken under.
+        """
+        if "hud" in self.meta or not hud:
+            return
+        self.meta["hud"] = hud_meta(hud)
 
     # ---- feeding -------------------------------------------------------
 
@@ -126,7 +194,8 @@ class GameRecorder:
         for name in events:
             self.events.append((moment, name))
         for what, which in age_events or ():
-            self.ages.append((moment, what, which))
+            if what == age.REACHED:
+                self.ages.append((moment, what, which))
 
         # Deaths, full game. The villager stream is the filtered count, so
         # a drop that arrives here is a real death, not a misread dip.
@@ -138,6 +207,31 @@ class GameRecorder:
         if villagers is not None:
             self._last_villagers = villagers
             self.max_villagers = max(self.max_villagers, villagers)
+
+        # Army losses, by the only definition Loom can honestly compute:
+        # population minus villagers, falling. Both halves must have been
+        # read or the difference means nothing - a subtraction with one
+        # side missing is not a small army.
+        #
+        # A villager dying moves BOTH numbers, so it leaves this figure
+        # alone and cannot be double-counted here. What it does include is
+        # anything non-villager leaving the population: units killed, but
+        # also deleted, converted, or a fishing ship sunk. That is the
+        # game's own "units lost" definition and it is what the number is
+        # called.
+        #
+        # It is only ever MY losses. The opponent's population is not on
+        # my HUD and is not in the recorded game either, so kills stay
+        # unknowable - see the note on the kind tabs.
+        army = (None if population is None or villagers is None
+                else max(0, population[0] - villagers))
+        if (army is not None and self._last_army is not None
+                and army < self._last_army):
+            raided = bool(self.attacks) and moment - self.attacks[-1] <= 20
+            self.army_losses.append((moment, self._last_army - army, raided))
+        if army is not None:
+            self._last_army = army
+            self.max_army = max(self.max_army, army)
 
         # First sighting of everything the queue can name, villagers aside.
         for slot in slots or []:
@@ -228,6 +322,8 @@ class GameRecorder:
                 "housed_seconds": round(self.housed_seconds, 1),
                 "pop_capped_seconds": round(self.pop_capped_seconds, 1),
                 "deaths": [list(d) for d in self.deaths],
+                "army_losses": [list(d) for d in self.army_losses],
+                "max_army": self.max_army,
                 "attacks": list(self.attacks),
                 "events": [list(e) for e in self.events],
                 "ages": [list(a) for a in self.ages],

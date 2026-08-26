@@ -92,6 +92,17 @@ faster than a general engine trained on prose, and it needs no system packages �
 which matters on this immutable OS. The digit templates were cut from real
 screenshots.
 
+The hard case is the **Transparent UI** mod, which removes the HUD backdrop so
+the clock is drawn straight onto the map. The background is then grass, stone or
+a building, it changes every frame while the digits do not, and template matching
+against it collapsed — across four recordings of one game the clock read 284/284
+and 284/285 without the mod and 210/284 and 102/287 with it. What separates the
+digits from the map is the one property that never varies: HUD digits are pure
+white and terrain is not. Isolating on that first reads 287/287 and 284/284 on
+the same recordings. `reader.py` measures the backdrop's luminance once at HUD
+acquisition — a stock or Anne_HK backdrop reads 80–96, the same skins with the
+mod read 144–146 — so the cost is one median per session rather than per poll.
+
 ### Not trusting a single frame (`filters.py`)
 
 OCR misfires occasionally. The filters stop one bad reading from poisoning the
@@ -287,6 +298,51 @@ how the build went — completion time against a perfect run, TC idle seconds,
 villagers lost (with raid attribution from the attack notifications),
 milestone timings. The same data feeds the post-game statistics.
 
+### The one ruler that is not Loom's own (`replay.py`)
+
+Every other check in Loom scores one crop of pixels: is this the number 7, do
+these pixels spell `--Barracks Built--`. That cannot catch a reader which is
+right most of the time and wobbles the rest — a wobble is not a wrong frame, it
+is a wrong *count* across frames. The game's own `.aoe2record` is the only
+witness Loom has that is not one of Loom's readers, so after a match ends the
+statistics are checked against it.
+
+**It is read only after the game has ended, and the refusal lives at the door.**
+The file logs every command *both* players issued, fog included, so reading a
+live one would be a maphack regardless of what Loom did with it — and the game
+writes `rec.aoe2record` continuously while playing, and it parses perfectly,
+which is exactly why the rule cannot rest on nobody thinking to try. Two
+refusals, raising `GameStillRunning`: that filename is the match in progress,
+and a record whose mtime has not settled is one the game is still finishing.
+They carry different messages because they mean different things — the second is
+"try again in a few seconds", not a wall — and both are raised as their own
+exception type so a caller cannot report them as a corrupt file. Declining to
+look and failing to read need different sentences.
+
+It is enforced where the bytes are opened rather than in the finder, and that
+distinction was a real bug rather than a style preference. `is_finished` used to
+have exactly one caller — the automatic finder — while `harvest()` opened the
+file without it, so the statistics window's *Add recorded game* picker walked
+straight past the guard. A safeguard only one caller applies is a safeguard the
+next caller will not. Only `statsview.py` reaches this module at all; nothing on
+the overlay's path can.
+
+Matching a record to a session is a **containment** test, not a nearest-time
+one: the record's filename carries the game's start and its mtime the end, so
+the question is whether Loom's session falls inside that window. Measured over
+265 sessions and 315 records, nearest-start-within-ten-minutes matched 51 and
+containment matched 56 — and containment is corroborated by a quantity nothing
+in the matcher computes, the duration in the record's body, which agrees to the
+second when Loom tracked a whole game.
+
+What comes out is **orders, not events**. A foundation can be cancelled and a
+research abandoned, so a count from here is a *ceiling* — enough to convict a
+reader that over-fires, not one that under-fires. And the three sources answer
+three different questions: the record says a building was PLACED, the
+notification feed says it was BUILT, the queue says it was QUEUED. Placement is
+not a rival reading of completion; subtract it from one and you get build
+duration instead.
+
 ### Showing it (`overlay.py`) — and the tooltip discovery
 
 The overlay is a frameless, click-through, always-on-top panel. Getting it to
@@ -312,9 +368,22 @@ full panel rectangle to `[]`. `loom/passthrough.py` asks the X server that same
 question at startup and warns if the answer ever changes back.
 
 Because the overlay is click-through it can never be dragged, so repositioning it
-(`--place`) opens it briefly as a normal window; its position is saved as an
-offset from the game window's corner, not a desktop coordinate, so it survives a
-resolution change.
+(`--place`) reopens the same panel with `WindowTransparentForInput` left off and
+the frame left off too: a title bar and a border are opaque chrome the real panel
+does not have, and placement exists to judge a *translucent* card against the
+game. Frameless means the window manager will not move it either, so the panel
+carries the pointer itself (`mousePressEvent`). There is no close button either:
+setting the position ends placement, Escape abandons it, and the launcher's Place
+overlay button becomes Close placement, so there is a way out that does not
+depend on the panel holding the focus.
+Its position is saved as an offset from the game window's corner, not a desktop
+coordinate, so it survives a resolution change. The saved position is the panel's *top-left*, and the panel grows
+downward, so placement shows the build's busiest step with both alert bands up —
+the largest the panel can ever get — and hangs a **Set Overlay Position** button
+below that. Saving on a button press rather than on close makes closing a cancel,
+and keeps the one control that ends the exercise out of the region whose size the
+exercise is about. The Appearance settings reach it live over the same
+`LOOM_SETTINGS` line a running overlay gets.
 
 The same engine feeds two other front ends: `loom_coach.py`, a terminal version
 used to get the logic right before any UI existed, and `loom_read.py`, a bare

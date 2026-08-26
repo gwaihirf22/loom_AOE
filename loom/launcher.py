@@ -74,6 +74,15 @@ DEV_COMMANDS = [
     ("Grab frames", "frames",
      lambda stem, scenario: ["-m", "tools.grab_frames"],
      "Screenshot the game window on a timer, for building test data."),
+    # The build stem is BOTH the overlay's build and the capture folder's
+    # label, so the folder name says which build it was recorded against.
+    # That is not decoration: a session recorded against the wrong build is
+    # indistinguishable from a good one afterwards, and one already was.
+    ("Record session", "session",
+     lambda stem, scenario: ["-m", "tools.dev_session",
+                             "--build", stem, "--label", stem],
+     "Play a real game with the overlay AND frame capture running, then"
+     " gather the log, the stats and the frames into one folder."),
     # Needs the game running: proves the panel does not steal the pointer and
     # so does not break the game's hold on the cursor. --passthrough off
     # reproduces the old bug on purpose.
@@ -88,6 +97,15 @@ DEV_COMMANDS = [
 ]
 
 COACH_SCENARIOS = ("perfect", "behind", "stall")
+
+# Dev commands that start a REAL overlay against the REAL game, and so must
+# not run while the overlay slot already has one. Two overlays reading the
+# same HUD both write a statistics file and both count APM, and neither says
+# so - the same duplicate-counting failure apm.counted_in_the_overlay exists
+# to prevent, arriving by a different door. Held as output-pane prefixes
+# rather than a fifth field in DEV_COMMANDS so the row shape stays as it is,
+# and because the prefix is what the dev slot has in hand.
+NEEDS_THE_OVERLAY_SLOT_FREE = {"session"}
 
 # Placement is an everyday control, not a developer tool, so it lives with
 # the Start/Stop buttons - but its argv stays module data like DEV_COMMANDS,
@@ -1682,8 +1700,31 @@ class LauncherWindow(QWidget):
             " under the game's bar) - applies the next time the overlay"
             " starts")
 
+    def placing_now(self):
+        """Is the dev slot currently holding a placement panel?
+
+        The label is what identifies it. The slot is shared with the demo
+        and the capture tools, and only placement may be closed by pressing
+        its own button again - stopping a frame grab that way would throw
+        away a capture the player is in the middle of taking.
+        """
+        prefix, _build_argv = PLACE_COMMAND
+        return (self.dev_process is not None
+                and self.dev_process.is_running()
+                and self.dev_process.label == prefix)
+
     def place_overlay(self):
-        """Open the overlay's placement mode: drag it, close it to save.
+        """Open the overlay's placement mode, or close the one already open.
+
+        A toggle, because the placement panel is frameless and so has no
+        close button of its own. Its own button ends it by SAVING and Esc
+        ends it by abandoning, but both need the panel to have the focus -
+        and the player who has just clicked back to the launcher does not
+        want to hunt for the panel to dismiss it. The button that opened it
+        is the obvious thing to reach for, so it closes it too.
+
+        Closing this way saves nothing, exactly like Esc: only the panel's
+        own button writes a position down.
 
         Runs through the dev-task slot so stop/cleanup/output routing all
         come free. Disabled while the overlay runs - two panels at once
@@ -1691,8 +1732,17 @@ class LauncherWindow(QWidget):
         anyway.
         """
         prefix, build_argv = PLACE_COMMAND
+        if self.placing_now():
+            self.dev_process.stop()
+            self.output.append_line(
+                "[launcher] placement closed — nothing saved")
+            return
         self.run_dev_command(prefix,
                              lambda stem, _scenario: build_argv(stem))
+        # Asked, not assumed: run_dev_command refuses while another dev task
+        # holds the slot, and a button that said "Close placement" over a
+        # panel that never opened would be a lie about what pressing it does.
+        self._show_place_state(placing=self.placing_now())
 
     def _overlay_finished(self, label, exit_code):
         self.output.append_line(f"[{label}] exited with code {exit_code}")
@@ -1716,19 +1766,24 @@ class LauncherWindow(QWidget):
         writer touching the file."""
         if not self._apm_buckets:
             return
-        section = apm.align(self._apm_buckets, self._time_pairs)
-        self._apm_buckets = []
-        self._time_pairs = []
-        if section is None:
-            self.output.append_line(
-                "[launcher] APM was counted but no game time overlapped it")
-            return
         newest = max(paths.STATS_DIR.glob("*.json"), default=None,
                      key=lambda p: p.stat().st_mtime)
         if newest is None:
             return
         try:
             data = json.loads(newest.read_text(encoding="utf-8"))
+            # Read FIRST, so the file can say which game it is about. One
+            # overlay session can span two matches; the buckets run across
+            # both and only the timeline knows where the join is.
+            recorded = (data.get("timeline") or {}).get("t") or []
+            section = apm.align(self._apm_buckets, self._time_pairs,
+                                game_from=recorded[0] if recorded else None)
+            self._apm_buckets = []
+            self._time_pairs = []
+            if section is None:
+                self.output.append_line(
+                    "[launcher] APM was counted but no game time overlapped it")
+                return
             data["apm"] = section
             newest.write_text(json.dumps(data, indent=1) + "\n",
                               encoding="utf-8")
@@ -1736,12 +1791,27 @@ class LauncherWindow(QWidget):
         except (OSError, json.JSONDecodeError) as error:
             self.output.append_line(f"[launcher] could not add APM: {error}")
 
+    def _show_place_state(self, placing):
+        """What the Place overlay button is offering right now.
+
+        The button is the placement panel's only reliable way out - the
+        panel is frameless, so it has no close button, and its own two
+        exits both need it to hold the focus. Saying which of the two
+        things it will do is what stops a second press being a surprise.
+        """
+        self.place_button.setText(
+            "Close placement" if placing else "Place overlay")
+
     def _show_overlay_state(self, running, hidden=False):
         # Disabling the irrelevant button is the status display doing double
         # duty: it also makes double-starts impossible.
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
-        self.place_button.setEnabled(not running)
+        # Normally the placement button is for a stopped overlay only - two
+        # panels at once confuse, and a new offset applies on the next
+        # launch anyway. The exception is a placement panel that is already
+        # open: disabling its way out while it is on screen would strand it.
+        self.place_button.setEnabled(not running or self.placing_now())
         self.reset_place_button.setEnabled(not running)
         self.status.setText(overlay_status_text(running, hidden))
 
@@ -1762,6 +1832,13 @@ class LauncherWindow(QWidget):
             self.output.append_line(
                 "[launcher] a task is already running — stop it first")
             return
+        if (prefix in NEEDS_THE_OVERLAY_SLOT_FREE
+                and self.overlay_process is not None
+                and self.overlay_process.is_running()):
+            self.output.append_line(
+                "[launcher] this starts its own overlay — stop the running "
+                "one first, or you get two sets of statistics")
+            return
         argv = build_args(self.picker.selected_stem() or "fast_castle",
                           self.dev_panel.scenario.currentText())
         self.output.append_line(f"[launcher] running: {' '.join(argv)}")
@@ -1780,6 +1857,11 @@ class LauncherWindow(QWidget):
     def _dev_finished(self, label, exit_code):
         self.output.append_line(f"[{label}] exited with code {exit_code}")
         self.browser.overlay_stopped()
+        # Whatever it was doing is over, so the button goes back to
+        # offering the thing it offers when nothing is placed. Unconditional
+        # rather than checked against the label: the only state it can be in
+        # after ANY dev task ends is "not placing".
+        self._show_place_state(placing=False)
 
     # ---- shared --------------------------------------------------------
 
@@ -1893,16 +1975,22 @@ class LauncherWindow(QWidget):
             self._settings_timer.start()
 
     def _send_settings(self):
-        """One request down the pipe, if there is anyone on the end of it.
+        """One request down each pipe, to whoever is on the end of it.
+
+        BOTH slots, not just the overlay's. Place overlay and the demo run
+        in the dev slot, and they draw the same panel from the same settings
+        - so an Appearance slider that moved a running overlay but not the
+        placement panel would be at its least helpful in the one mode whose
+        entire job is deciding what the panel should look like and where it
+        should sit.
 
         The full liveness test, not just a null check: _overlay_finished
         leaves the object in place when a child exits, so `is not None`
         alone would write to a QProcess whose program is long gone.
         """
-        if (self.overlay_process is None
-                or not self.overlay_process.is_running()):
-            return
-        self.overlay_process.request_settings_changed()
+        for child in (self.overlay_process, self.dev_process):
+            if child is not None and child.is_running():
+                child.request_settings_changed()
 
     def _apply_overlay_disabled(self, disabled):
         """The preview's "No overlay" box changed. Make it so, now.

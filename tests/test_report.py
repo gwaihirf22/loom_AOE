@@ -93,7 +93,9 @@ def test_summary_reports_only_what_was_seen():
     assert rows["loom"] == ("1:10  on time", True)      # 10s slip = tolerance
     assert "feudal age" not in rows                     # never observed
     assert rows["vs perfect build"] == ("30s behind", False)
-    assert rows["TC idle time"] == ("0s", True)
+    # The unit travels with the number: idleness is counted once per idle
+    # Town Centre per second, so it is not a stopwatch reading.
+    assert rows["TC idle time"] == ("0s of TC time", True)
     assert not any(label.startswith("attacked") for label in rows)
 
 

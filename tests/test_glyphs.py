@@ -183,6 +183,87 @@ def test_watcher_counts_identical_repeats_in_a_burst(monkeypatch):
     assert watcher.watch(panel_for(["a", "b", "c"]), 109) == []
 
 
+def test_a_line_that_flickers_unreadable_does_not_refire(monkeypatch):
+    """A lingering line Loom loses and regains must not count twice.
+
+    The line's identity in the stack is the TEXT it read, so a line
+    sitting still on screen that reads, fails to read, then reads again
+    LEAVES and RE-ENTERS the stack - and its count goes 0 -> 1 each time
+    it comes back, which used to trip the burst bypass and fire past the
+    cooldown.
+
+    Measured in a real 1920x1080 game: one lingering "--Barracks Built--"
+    fired ELEVEN times across thirteen game seconds, and a session counted
+    fifteen barracks and twelve monasteries. Eleven barracks in thirteen
+    seconds is not impossible to BUILD - but the feed holds a handful of
+    lines and each lingers about ten seconds, so eleven separate arrivals
+    of one line inside its own linger window is not something the game can
+    show. That is what makes it a reader fault rather than a fast player.
+
+    It matters more than a missed read: a gap self-corrects on the next
+    poll, while an invented event ticks a checklist item and feeds the
+    Town Centre count.
+
+    The bands are supplied rather than drawn, because the fault lives in
+    how arrivals are counted and not in how pixels are cut. A neighbour
+    line that stays put is part of the reproduction though: with nothing
+    carried over between looks there is no alignment to trust and the
+    bypass never applies at all, so this only shows on a panel where
+    something else is holding still - which is every real panel.
+    """
+    watcher = TextWatcher(save_unread=False)
+    bands = [(0, 30), (30, 60)]
+    monkeypatch.setattr(glyphs, "find_lines",
+                        lambda panel, min_height=10, scale=1.0: bands)
+    # A fresh digest per band per look, so the read cache - which is keyed
+    # on the band's pixels - never answers for a band it has not been
+    # offered. In a real game the terrain behind the feed moves, which is
+    # both why the digests differ and why legibility wobbles at all.
+    ticks = {"n": 0}
+
+    def digest(line_bgr):
+        ticks["n"] += 1
+        return f"band{ticks['n']}"
+
+    monkeypatch.setattr(glyphs, "_band_digest", digest)
+
+    legible = iter([True, False, True, False, True])
+    reads = {"n": 0}
+
+    def per_band(line, font, scale=None, skin=None):
+        index = reads["n"]
+        reads["n"] += 1
+        if index % 2 == 0:                      # the top line never moves
+            return "--Monastery Built--", 1.0
+        return (("--Barracks Built--", 1.0) if next(legible)
+                else (None, 0.0))
+
+    monkeypatch.setattr(glyphs, "read_line", per_band)
+
+    panel = np.zeros((60, 400, 3), np.uint8)
+    assert "built:barracks" in watcher.watch(panel, 100)
+    for moment in (102, 104, 106, 108):
+        assert "built:barracks" not in watcher.watch(panel, moment),             "a flicker is not an arrival"
+
+
+def test_a_real_burst_still_fires_after_the_flicker_fix(monkeypatch):
+    """The bypass must keep doing the job it was added for.
+
+    Requiring the old count to be at least one is what separates a burst
+    from a flicker, and it must not cost the burst: a SECOND identical line
+    arriving beside the first is real, and that is the undercount this
+    bypass was written to fix.
+    """
+    watcher = TextWatcher(save_unread=False)
+    monkeypatch.setattr(
+        glyphs, "read_line",
+        lambda line, font, scale=None, skin=None: ("--Villager Created--", 1.0))
+    assert watcher.watch(panel_for(["a"]), 100) == ["created:villager"]
+    assert watcher.watch(panel_for(["a", "b"]), 102) == ["created:villager"]
+    assert watcher.watch(panel_for(["a", "b", "c"]), 104) == \
+        ["created:villager"]
+
+
 def test_watcher_scroll_off_does_not_refire(monkeypatch):
     # A line expiring off the TOP shrinks the stack but the bottom line is
     # the same line - that is not a new event.
@@ -478,6 +559,103 @@ def test_the_trim_leaves_an_ordinary_line_alone():
 
 # --- the font, read back to itself -----------------------------------------
 
+# ---- the structural repair (a small rendering breaks the SEGMENTATION) -----
+#
+# Every fixture here is a real 1920x1080 line, and the class of failure is
+# not the one the two letter-level repairs were built for. At that size the
+# stroke JOINING a letter's verticals falls under the ink threshold, so the
+# letter arrives as two runs and each half classifies confidently as
+# something else. No score separates that from a genuine pair of letters -
+# the rejoined H scores 0.906 against halves of 0.969 and 0.932, while a
+# real "ll" reads 1.00 and 1.00 - so the vocabulary has to be the arbiter,
+# and these tests exist to keep it an honest one. The last three are the
+# poisoning cases: this pass CAN walk a badly-read line into a
+# real-sounding sentence, and it must not.
+
+
+def test_a_letter_broken_in_half_is_put_back_together(font):
+    """The case the pass was built for. At 1080p the H of House loses its
+    crossbar entirely, so it segments as two runs that read "ll" - and the
+    same line's u reads as an n. "llouse" is not a game word; House is."""
+    line = cv2.imread(str(DATA / "house_built_1080p_broken_h.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert text == "--House Built--"
+    assert parse_event(text) == "built:house"
+
+
+def test_an_orphaned_fragment_no_longer_kills_the_line(font):
+    """A letter can break so its LEFT half still classifies confidently -
+    the C of Created reads C at 0.810 while the two halves together read C
+    at 0.910. The confident half was accepted, the other half was orphaned
+    below the floor, and the whole line died. It read as nothing at all."""
+    line = cv2.imread(str(DATA / "villager_created_1080p_split_c.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert text == "--Villager Created--"
+
+
+def test_a_real_double_letter_is_never_restructured(font):
+    """The other half of the same ruling, and why the vocabulary is the
+    right arbiter. "Villager" holds a real "ll" that scores exactly like a
+    broken H, and it must survive untouched - which it does for a reason
+    that needs no threshold at all: the word is already a real one, so
+    nothing ever asks the search about it."""
+    line = cv2.imread(str(DATA / "villager_created_1080p_split_c.png"))
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert "Villager" in text
+
+
+def test_a_clean_line_never_reaches_the_structural_pass(font):
+    """The safety property the whole design rests on: a framed line whose
+    words are all real game words is returned before the search is even
+    considered, so a right answer can never be restructured into a wrong
+    one."""
+    line = cv2.imread(str(DATA / "stable_built.png"))
+    assert line is not None
+    text, score = glyphs.read_line(line, font)
+    assert text == "--Stable Built--"
+    # A structural read reports STRUCTURAL_GLYPH_FLOOR as its confidence;
+    # a clean read reports what the glyphs actually scored.
+    assert score > glyphs.STRUCTURAL_GLYPH_FLOOR
+
+
+def test_a_badly_read_line_is_refused_rather_than_rebuilt(font):
+    """"--Spearman Created--" reads "--Siega Rane Coreated--" at 1080p:
+    not a broken letter but a wholesale misread, which happens to sit one
+    edit from three real words at once. Rebuilt, it says "--Siege Ram
+    Created--" - a unit that was never made, and the Slege Ram bug reborn.
+    Two rebuilt words is the most a line may need; three means the
+    rendering is gone."""
+    line = cv2.imread(str(DATA / "spearman_created_1080p_misread.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert text != "--Siege Ram Created--"
+    assert glyphs.parse_event(text or "") != "created:siege_ram"
+
+
+def test_a_rebuilt_word_must_keep_the_games_capital(font):
+    """"--Carvel Hull Research Complete--" reads "Hoill", whose first two
+    runs join into a lowercase "m" - giving "mill", a real word one edit
+    away with no rival to keep it honest. The game capitalises every word
+    of every notification, so a lowercase rebuild is a coincidence spelled
+    like a word, not a repair."""
+    line = cv2.imread(str(DATA / "carvel_hull_1080p_lowercase_trap.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert "mill" not in (text or "")
+    assert glyphs.parse_event(text or "") != "researched:carvel_mill"
+
+
+def test_the_capitals_rule_reads_both_halves_of_a_hyphenated_word():
+    """The game capitalises both halves of "Two-Handed" and "Double-Bit",
+    so the rule checks every alphabetic run and not merely the first."""
+    assert glyphs._keeps_the_games_capitals("Two-Handed")
+    assert glyphs._keeps_the_games_capitals("--House")
+    assert not glyphs._keeps_the_games_capitals("Two-handed")
+    assert not glyphs._keeps_the_games_capitals("mill")
+
+
 def test_no_two_labels_hold_the_same_picture(font):
     """The check test_digits.py has always made of the ten digit templates,
     finally made of the font as well - and it found the same class of fault
@@ -524,3 +702,165 @@ def test_no_two_labels_hold_the_same_picture(font):
     assert not worst, (
         "these labels hold the same picture, so one of each pair is "
         "mislabelled: " + "; ".join(sorted(set(worst))[:10]))
+
+
+# ---- deciding what a line IS, before counting it as anything ------------
+
+def test_two_spellings_of_one_line_are_one_event(monkeypatch):
+    """The counter was never wrong; it was handed five names for one thing.
+
+    Measured on a live game: one Hand Cart research produced
+
+        --Hand Can--  --Hand Cart--  --Hand Car--  --Hand Caet--
+
+    across successive looks. Keyed on the TEXT, each is a line never seen
+    before, so each was an arrival - five events, all of which resolved to
+    `researched:hand_cart` afterwards, by which point the damage was done.
+    Twelve technologies were duplicated in one game that way, and a
+    technology completes at most once.
+    """
+    watcher = TextWatcher(save_unread=False)
+    spellings = ["--Hand Can Research Complete--",
+                 "--Hand Cart Research Complete--",
+                 "--Hand Car Research Complete--",
+                 "--Hand Caet Research Complete--"]
+    spelling = {"now": spellings[0]}
+    monkeypatch.setattr(glyphs, "read_line",
+                        lambda line, font, scale=None, skin=None:
+                        (spelling["now"], 1.0))
+    fired = []
+    for moment, text in enumerate(spellings):
+        spelling["now"] = text
+        fired += watcher.watch(panel_for(["x"]), game_time=100 + moment * 4)
+    assert fired.count("researched:hand_cart") == 1, fired
+
+
+def test_the_identity_is_decided_before_the_count_not_after():
+    watcher = TextWatcher(save_unread=False)
+    key, event, repaired = watcher._identify("--Hand Can Research Complete--")
+    assert event == "researched:hand_cart"
+    # The KEY is the meaning, not the text - that is the whole fix.
+    assert key == "researched:hand_cart"
+    assert repaired == "--Hand Cart Research Complete--"
+
+
+def test_a_line_nothing_can_identify_keys_on_its_own_text():
+    # It produces no event either way, so two spellings of an unknown line
+    # cost nothing - and it still gets tracked for presence like any other.
+    watcher = TextWatcher(save_unread=False)
+    key, event, repaired = watcher._identify("--Zzzz Qqqq Wwww--")
+    assert event is None and repaired is None
+    assert key == "--Zzzz Qqqq Wwww--"
+
+
+def test_identifying_the_same_text_twice_is_free():
+    watcher = TextWatcher(save_unread=False)
+    first = watcher._identify("--Hand Can Research Complete--")
+    assert "--Hand Can Research Complete--" in watcher._identities
+    assert watcher._identify("--Hand Can Research Complete--") is first
+
+
+def test_a_new_game_keeps_what_lines_mean():
+    # Identities map a rendering to its meaning. A new game does not change
+    # what a line says, and re-deriving it would walk every sentence the
+    # game can print all over again.
+    watcher = TextWatcher(save_unread=False)
+    watcher._identify("--Hand Can Research Complete--")
+    watcher.reset()
+    assert watcher._identities
+    assert not watcher._places
+
+
+def test_a_line_absent_from_an_INCOMPLETE_look_has_not_left(monkeypatch):
+    """"Not among the texts I read" is not "not on the screen".
+
+    Only the second is evidence, and a look that left any band unread
+    cannot support it. Measured over a whole game, this branch produced
+    103 of 234 firings, its biggest single contributor being one misread
+    of Villager flickering in and out of legibility 33 times.
+    """
+    distinct_digests(monkeypatch)
+    watcher = TextWatcher(save_unread=False)
+    reads = {"text": "--Mill Built--"}
+    monkeypatch.setattr(glyphs, "read_line",
+                        lambda line, font, scale=None, skin=None:
+                        (reads["text"], 1.0))
+    assert watcher.watch(panel_for(["x"]), 100) == ["built:mill"]
+
+    # The band is still there and the reader cannot make it out. That is a
+    # statement about the READER, not about the screen.
+    reads["text"] = None
+    for moment in (110, 130, 150):
+        assert watcher.watch(panel_for(["x"]), moment) == []
+
+    # It comes back long after the cooldown. Nothing ever SAW it leave.
+    reads["text"] = "--Mill Built--"
+    assert watcher.watch(panel_for(["x"]), 200) == []
+
+
+def test_a_line_absent_from_a_COMPLETE_look_really_has_left(monkeypatch):
+    # An empty feed is proof: there is no text at all, and no amount of
+    # doubt about the reader applies to a blank picture.
+    distinct_digests(monkeypatch)
+    watcher = TextWatcher(save_unread=False)
+    monkeypatch.setattr(glyphs, "read_line",
+                        lambda line, font, scale=None, skin=None:
+                        ("--Mill Built--", 1.0))
+    assert watcher.watch(panel_for(["x"]), 100) == ["built:mill"]
+
+    for moment in (110, 130, 150):
+        assert watcher.watch(panel_for([]), moment) == []
+    assert watcher.watch(panel_for(["x"]), 200) == ["built:mill"]
+
+
+def test_a_line_coming_back_no_lower_than_it_sat_is_the_same_line(monkeypatch):
+    """A new print enters at the BOTTOM. One that has not moved down is not new.
+
+    This is the last hole the complete-look rule left open, and it is why
+    that rule was not enough alone: a band never DETECTED is not an unread
+    band, it is simply absent from the stack - so a line fading at the top
+    edge of the panel produces a look that read everything it found and
+    does not contain the line. Absence looked proven and was not.
+
+    Every over-count left in a whole game was this: an archery range, a
+    castle and two barracks coming back 15 to 70 seconds later at the SAME
+    or a HIGHER position than they already held.
+
+    Note the direction. Not "lower, therefore a new print" - that is the
+    refuted rule, because a mid-scroll capture transposes adjacent lines.
+    This is "not lower, therefore NOT a new print": a veto, and a
+    transposition can only ever manufacture the evidence it refuses.
+    """
+    distinct_digests(monkeypatch)
+    watcher = TextWatcher(save_unread=False)
+    # Bands come top-first, so the LAST entry is the newest line.
+    panel = {"lines": ["--Castle Built--"]}
+
+    def fake_read(line_bgr, font_, scale=None, skin=None):
+        text = panel["lines"][fake_read.at % len(panel["lines"])]
+        fake_read.at += 1
+        return text, 1.0
+    fake_read.at = 0
+    monkeypatch.setattr(glyphs, "read_line", fake_read)
+
+    def look(moment):
+        fake_read.at = 0
+        return watcher.watch(panel_for(["x"] * len(panel["lines"])), moment)
+
+    # It arrives at the bottom, which is where a new print goes.
+    assert look(100) == ["built:castle"]
+
+    # A house arrives beneath it, pushing the castle up to place 1.
+    panel["lines"] = ["--Castle Built--", "--House Built--"]
+    assert look(110) == ["built:house"]
+
+    # Now the castle stops being DETECTED at all - it is fading off the top.
+    # Every band that is found reads perfectly, so the look is "complete".
+    panel["lines"] = ["--House Built--"]
+    for moment in (120, 140, 160):
+        assert look(moment) == []
+
+    # Back where it was, long after the cooldown. It never moved down, so
+    # it is the castle that was there the whole time.
+    panel["lines"] = ["--Castle Built--", "--House Built--"]
+    assert look(200) == []

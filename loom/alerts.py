@@ -116,17 +116,50 @@ def production_alerts(tracker, villagers, policy, game_time=None,
     if toggles.idle_tc and tracker.idle_tcs > 0:
         severity = policy.severity(villagers)
         if severity != OFF:
-            text = ("TC IDLE" if tracker.idle_tcs == 1
-                    else f"{tracker.idle_tcs} TCs IDLE")
-            # Only the whole-queue-empty case has a trustworthy start time;
-            # when one TC of several stops, all I know is that it stopped.
-            if tracker.idle:
-                duration = tracker.idle_duration(game_time)
-                if duration > 0:
-                    text += f" — {duration:.0f}s"
-            found.append((text, severity))
+            found.append((idle_tc_text(tracker, game_time), severity))
 
     return found
+
+
+def idle_tc_text(tracker, game_time):
+    """The idle-TC band's words: how many, and how long.
+
+    Two true things are available about idleness and they are not the
+    same one - which is what had me believing the statistics were broken:
+
+    * ``tracker.idle_tc_duration(game_time)`` - how long THIS stall has
+      run, in game seconds. A stopwatch: it does not multiply by how many
+      TCs stopped, and a second one joining does not restart it.
+    * ``tracker.idle_tc_seconds`` - the whole game's bill, counted once
+      per idle TC per second, which is the currency the report and the
+      statistics grade in.
+
+    Only the stopwatch belongs on a warning. A warning answers "what do I
+    do right now"; a cumulative total cannot be acted on and never goes
+    down, so it is a score rather than an instruction. There is a
+    mechanical tell too: this band FADES with the villager count (soft at
+    100, silent at 120), which is right for a warning and absurd for a
+    running total - it would vanish exactly when the game has run long
+    enough to have a big one. The bill's home is the panel itself, beside
+    the villager count, where it stays legible when nothing is wrong.
+
+    Returns one string. Two constraints on its shape: ``gamestats.observe``
+    splits on " — " and treats the head as the alert's identity, so
+    anything that CHANGES every second must live after that separator or
+    the file records one transition per poll; and the head must still
+    start "TC IDLE" / "N TCs IDLE", which the statefeed, the debug log
+    and the launcher's preview all read.
+    """
+    head = ("TC IDLE" if tracker.idle_tcs == 1
+            else f"{tracker.idle_tcs} TCs IDLE")
+    elapsed = tracker.idle_tc_duration(game_time)
+    # No clock, no claim. game_time is optional and idle_tc_duration
+    # returns 0 without one, so "TC IDLE — 0s" would state a measurement
+    # I never took - the never-guess rule in miniature. The band says
+    # what it knows (a TC has stopped) and nothing it does not.
+    if elapsed <= 0:
+        return head
+    return f"{head} — {elapsed:.0f}s"
 
 
 # How long the CLICK UP band defers to unfinished prerequisites before

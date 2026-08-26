@@ -88,7 +88,7 @@ def default_offset(panel, width, hud_scale=1.0):
 
 
 def place_panel(panel, origin_x, origin_y, width, hud_scale=1.0,
-                screens=None):
+                screens=None, primary=None):
     """Put the panel at the saved offset from the game window's corner.
 
     The offset is stored relative to the game rather than to the desktop, so
@@ -100,19 +100,60 @@ def place_panel(panel, origin_x, origin_y, width, hud_scale=1.0,
     the panel sat invisibly outside both displays while looking, from the
     inside, perfectly placed. An overlay nobody can see is worse than one in
     the wrong corner, and the player can always place it again.
+
+    The DEFAULT gets the same treatment, which it did not used to. The guard
+    only ever asked its question about a saved position, as though the
+    fallback were safe by construction - and it is not. The default is the
+    top-right corner of the GAME WINDOW, so a game dragged mostly off the
+    desktop, or onto a monitor that has since been unplugged, puts the
+    default off every screen too. Rescuing a bad saved position onto an
+    equally invisible default is not a rescue. When that happens the panel
+    goes to the primary screen's top-right instead, which is the one corner
+    that exists as long as the desktop does.
+
+    primary is that last-resort screen as (x, y, width, height), and passing
+    it is what ENABLES the rescue. That is the distinction, not an accident
+    of the signature: the rescue belongs to placing a panel for the first
+    time - startup, placement mode - where an invisible panel looks like
+    Loom failing to start. It must NOT belong to a live re-place. A player
+    who nudges a slider mid-match while the game sits on a monitor Loom
+    cannot enumerate would otherwise have the panel torn off to another
+    screen, which is the same "yanked out from under a player mid-match"
+    failure the launcher's Reset button is careful to avoid.
     """
     offset = config.overlay_offset()
     fallback = default_offset(panel, width, hud_scale)
+
+    def on_screen(candidate):
+        """Would this offset put a meaningful part of the panel on a screen?
+
+        True when there is no screen list: a caller that cannot enumerate
+        screens has no evidence, and "I could not check" must never become
+        "it is not visible" - the same rule as everywhere else here.
+        """
+        if not screens:
+            return True
+        return visible_on(screens, origin_x + candidate[0],
+                          origin_y + candidate[1],
+                          panel.width(), panel.height())
+
     chosen = offset or fallback
-    x, y = origin_x + chosen[0], origin_y + chosen[1]
-    if (offset is not None and screens
-            and not visible_on(screens, x, y, panel.width(), panel.height())):
+    if offset is not None and not on_screen(offset):
         print(f"The saved overlay position {offset} is off every screen - "
               f"using the default instead. Place overlay again to choose a "
               f"new spot.")
         chosen = fallback
-        x, y = origin_x + chosen[0], origin_y + chosen[1]
-    panel.move(x, y)
+
+    if primary is not None and not on_screen(chosen):
+        screen_x, screen_y, screen_w, _screen_h = primary
+        chosen = (screen_x + max(0, screen_w - panel.width()
+                                 - PANEL_RIGHT_MARGIN) - origin_x,
+                  screen_y + round(PANEL_TOP_MARGIN * hud_scale) - origin_y)
+        print("The default overlay position is off every screen too - "
+              "the game window is not somewhere the panel can follow. "
+              "Putting it on the primary screen instead.")
+
+    panel.move(origin_x + chosen[0], origin_y + chosen[1])
     return chosen
 
 
@@ -603,7 +644,18 @@ class LiveController(Hideable):
                 f"hud {profile.name if profile else '?'}"
                 f" scale {found.get('scale', 0):.2f}"
                 f" score {found.get('score', 0):.3f}")
+            # The same three facts the log gets, kept in the stats file too.
+            # The log is forensic and short-lived; the stats file is the
+            # thing anyone looks at months later, and it is the one that
+            # could not say which skin wrote it.
+            self.recorder.describe_hud(found)
         self.debuglog.poll(reading)
+        # A clock the filter refuses is the one worth keeping pixels for:
+        # the reader was confident and wrong, and the number alone cannot
+        # say why. getattr because the end-to-end tests' fake reader has no
+        # bands to hand.
+        self.debuglog.keep_disputed_clock(
+            reading, getattr(self.hud, "last_clock_band", None))
 
         # The session saying it has LOST SIGHT of the game is the one event
         # nothing used to consume - the filters keep holding their beliefs,
@@ -1135,6 +1187,18 @@ def screen_origin(app):
     return geometry.x(), geometry.y(), geometry.width()
 
 
+def primary_rect(app):
+    """The primary screen as (x, y, width, height), for place_panel's rescue.
+
+    Qt's screen ORDER is not a promise about which one is primary, so this
+    asks rather than taking screens[0] - the difference only shows on the
+    desktops this exists to protect, where the primary is not the first.
+    """
+    geometry = app.primaryScreen().geometry()
+    return (geometry.x(), geometry.y(),
+            geometry.width(), geometry.height())
+
+
 def placement_origin(app):
     """Where placement mode measures the panel's offset from.
 
@@ -1198,6 +1262,130 @@ def remember_position(panel, origin_x, origin_y):
     dy = panel.y() - origin_y
     config.set_overlay_offset(dx, dy)
     print(f"Saved overlay offset ({dx}, {dy}) to {config.CONFIG_PATH}")
+    return dx, dy
+
+
+# Placement mode has no game to poll, so nothing else would ever ask the
+# panel to repaint - and a FULL alert band is drawn by strobing between two
+# reds on successive repaints. Without this the band would be frozen on
+# whichever phase it happened to be painted in, which is the one thing the
+# player is here to look at. FLASH_SECONDS is the phase length; repainting
+# rather faster than that keeps the strobe even.
+PLACE_REPAINT_MS = 120
+
+
+class PlacementSession(Hideable):
+    """Placement mode's stand-in for a controller.
+
+    Placement has no game, no recorder and no step to advance, so none of
+    Hideable's lifecycle half applies - but its appearance half applies
+    exactly: apply_appearance re-reads the settings and then puts the panel
+    back against the corner it was measured from, which is precisely what a
+    live slider drag needs. Subclassing rather than copying that method
+    means the sliders behave identically in placement and in a real game,
+    and cannot drift apart later.
+
+    following_yet is False so a stray step hotkey finds nothing to move -
+    there is no build being followed here, only a picture of one.
+    """
+
+    def __init__(self, panel, placed_against):
+        self.panel = panel
+        self.placed_against = placed_against
+
+    def following_yet(self):
+        return False
+
+
+def busiest_step(build):
+    """The step with the most items, the one after it, and its numbers.
+
+    Returns (step, following, villagers, game_time), with step and following
+    both None for a build with no steps at all - which buildcheck would have
+    refused, but which nothing here should crash on.
+
+    Placement is a question about SPACE - "will this cover my minimap" - and
+    the panel grows downward from the top-left corner the saved position
+    actually pins. So the honest thing to show while choosing that corner is
+    the build at its tallest, not a typical step that hides how far down it
+    can reach on the busiest one.
+
+    The STEP is returned, not just its numbers, and that is the whole point
+    of the signature. Handing (villagers, game_time) to build.active_step to
+    get the step back does not round-trip: that method answers "which step
+    should be in progress at this moment", which for the busiest step's own
+    numbers is generally the step AFTER it - by the time the count and the
+    clock read that, its work is done. Placement measured the tallest step
+    and then drew a different, shorter one, and the panel it invited the
+    player to place around was never the panel it had chosen. Choosing a
+    step to display is not the same operation as looking one up, and the
+    design rule against identifying a step by count alone is a warning
+    about exactly this direction of confusion.
+    """
+    if not build.steps:
+        return None, None, 13, 250
+    index = max(range(len(build.steps)),
+                key=lambda i: len(build.steps[i].items_segments))
+    step = build.steps[index]
+    following = build.steps[index + 1] if index + 1 < len(build.steps) else None
+    return step, following, step.villager_count, int(step.time or 0)
+
+
+class SampleIdleTCs:
+    """Just enough of production.Tracker for alerts to describe an idle TC.
+
+    Two attributes and one method, which is the whole of what idle_tc_text
+    reads. A real tracker would need a game to fill it.
+    """
+
+    def __init__(self, count, seconds):
+        self.idle_tcs = count
+        self._seconds = seconds
+
+    def idle_tc_duration(self, game_time):
+        return self._seconds
+
+
+# What the sample bands describe. Chosen to be the WIDEST true thing each
+# band can say rather than the most likely one: "2 TCs IDLE" is longer than
+# "TC IDLE", and a two-digit stall longer than a one-digit one. Placement is
+# a question about size, so a sample that happened to be short would answer
+# it optimistically.
+SAMPLE_IDLE_TCS = 2
+SAMPLE_IDLE_SECONDS = 12
+SAMPLE_VILLAGERS = 40          # below alerts.SOFTEN_AT, so the band is FULL
+SAMPLE_POP_CAP = 190           # below the standard 200, so "housed" applies
+SAMPLE_POP_HEADROOM = 2        # inside HOUSE_WARNING_HEADROOM, so HOUSE SOON
+
+
+def placement_alerts():
+    """The sample alert bands placement mode shows under the panel.
+
+    Returns a list of (text, severity) in the same shape as
+    alerts.production_alerts, which is what the panel already knows how to
+    draw. Nothing here is read from a game - it is a picture of the panel at
+    its noisiest, so the player can see the whole footprint before they
+    commit to a corner.
+
+    The words are not written here. They are asked of alerts.production_alerts
+    with made-up inputs, so a sample band cannot drift from what the game
+    actually draws - the same discipline as the How-to-use page reading
+    hud.PROFILES rather than naming the skins in prose. A hand-typed
+    "TC IDLE - 12s" would still say that years after the real band had been
+    reworded, and it would be a placement guide to a panel that no longer
+    exists.
+
+    Both bands come out FULL, which is the honest worst case: FULL is the
+    treatment that flashes, and a player choosing a corner should see the
+    loudest thing that corner will ever hold.
+    """
+    inputs_are_invented = SampleIdleTCs(SAMPLE_IDLE_TCS, SAMPLE_IDLE_SECONDS)
+    return alerts.production_alerts(
+        inputs_are_invented,
+        SAMPLE_VILLAGERS,
+        alerts.IdleTcPolicy(),
+        game_time=SAMPLE_IDLE_SECONDS,
+        population=(SAMPLE_POP_CAP - SAMPLE_POP_HEADROOM, SAMPLE_POP_CAP))
 
 
 class LiveSession(Hideable):
@@ -1459,23 +1647,75 @@ def main():
     if args.place:
         origin_x, origin_y, area_width, source = placement_origin(app)
         offset = place_panel(panel, origin_x, origin_y, area_width,
-                             screens=screen_rects(app))
-        panel.show_step(build, 13, 250,
-                        build.active_step(13, 250),
-                        build.following_step(13, 250),
-                        0)
+                             screens=screen_rects(app),
+                             primary=primary_rect(app))
+
+        # The build at its tallest, with both alert bands up: what the
+        # player is choosing a corner for is the panel's WORST case, not its
+        # usual one. See busiest_step and placement_alerts.
+        step, following, villagers, game_time = busiest_step(build)
+        panel.show_step(build, villagers, game_time, step, following, 0)
+        panel.show_alerts(placement_alerts())
+
+        # A live appearance change has to land here exactly as it lands on a
+        # running overlay - re-read the settings, then put the panel back
+        # against the corner it was measured from. PlacementSession is
+        # Hideable's appearance half with the game removed, so the two paths
+        # cannot drift; requests.controller is what the stdin reader already
+        # routes LOOM_SETTINGS to.
+        placer = PlacementSession(panel, (origin_x, origin_y, area_width, 1.0))
+        requests.controller = placer
+
+        # Saving is an explicit press rather than a side effect of closing,
+        # which makes Esc a CANCEL - a thing a player could not do before,
+        # when every drag was committed whether they had settled on it or
+        # not. Pressing the button ENDS placement: the panel is frameless
+        # and has no close button of its own, and a window that stayed open
+        # after the one action it offers had been taken would leave the
+        # player hunting for the way out. remember_position prints the
+        # offset on the way, which the launcher shows in its output pane -
+        # so the confirmation outlives the window rather than flashing on a
+        # button that is about to vanish.
+        def accept_position():
+            remember_position(panel, origin_x, origin_y)
+            panel.close()
+
+        panel.position_accepted.connect(accept_position)
+
+        # Nothing else repaints in placement mode, and a FULL band is drawn
+        # by strobing across repaints - see PLACE_REPAINT_MS.
+        flash = QTimer()
+        flash.timeout.connect(panel.update)
+        flash.start(PLACE_REPAINT_MS)
+
         print(f"Placement mode, measured from {source}. "
               f"Current offset: {offset}")
-        print("Drag the window where you want it, then close it to save.")
-        app.aboutToQuit.connect(
-            lambda: remember_position(panel, origin_x, origin_y))
+        print("Drag the panel where you want it, then press Set Overlay "
+              "Position. Esc abandons it - nothing is saved unless you "
+              "press the button.")
         panel.show()
         app.exec()
         return
 
-    # Where the panel's offset is measured from: the game window if there is
-    # one, otherwise the primary screen.
-    origin_x, origin_y, area_width = screen_origin(app)
+    # Where the panel's offset is APPLIED from, and it has to be the same
+    # rule placement MEASURED it from or the offset means nothing.
+    #
+    # This was the bug. Placement asks placement_origin, which prefers the
+    # game window; startup asked screen_origin, which is always the primary
+    # screen. Those are the same corner for a full-screen game on the
+    # primary monitor - the case this was written and tested in - so the
+    # mismatch cancelled and nothing showed. Measured with the game
+    # WINDOWED at (2042, 108): a position placed at (1296, 550), plainly on
+    # screen, came back as (-746, 442) at startup, off every screen, and
+    # the visibility guard replaced it with the default. From the outside
+    # that looks exactly like placement failing to save - the offset was
+    # saved perfectly and applied to the wrong corner.
+    #
+    # A general form worth keeping: a saved coordinate is meaningless
+    # without the origin it was measured from, and two functions that
+    # choose an origin by different rules are two origins however similar
+    # they look on the machine they were written on.
+    origin_x, origin_y, area_width, origin_source = placement_origin(app)
 
     # One cursor, shared by whichever controller runs and by the hotkeys, so
     # a keypress and the next poll can never disagree about where the panel
@@ -1500,10 +1740,13 @@ def main():
                                  build_stem=args.build)
 
     # Demo mode assumes a 1.0 HUD; live mode has not measured one yet and
-    # starts from the same guess against the primary screen, then places
-    # itself properly against the game window once a match is found.
+    # starts from the same guess, then places itself properly against the
+    # game window once a match is found. Saying which corner this landed
+    # against costs one line and is what makes the next mismatch findable
+    # rather than mysterious - placement prints the same phrase.
+    print(f"Panel placed against {origin_source}.")
     place_panel(panel, origin_x, origin_y, area_width, hud_scale=1.0,
-                screens=screen_rects(app))
+                screens=screen_rects(app), primary=primary_rect(app))
     # Kept so a live size change can put the panel back against the same
     # corner it was measured from - see Hideable.apply_appearance.
     controller.placed_against = (origin_x, origin_y, area_width, 1.0)

@@ -1,0 +1,15 @@
+run_20260824_124218_annehk: 285 scored | anchored 285 | clock 284/285 | villagers 246/285 | population 255/285 | impossible 1 | new games 0
+    frame_0847.png: villagers SWUNG 99 -> 112
+run_20260824_131553_stock: 284 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 278/284 | impossible 0 | new games 0
+run_20260824_140510_unknown: 287 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 274/284 | impossible 0 | new games 0
+run_20260824_144115_annehk: 287 scored | anchored 287 | clock 287/287 | villagers 249/287 | population 253/287 | impossible 1 | new games 0
+    frame_0853.png: villagers SWUNG 99 -> 112
+run_20260825_010702_unknown: 232 scored | anchored 231 | clock 230/231 | villagers 231/231 | population 209/231 | impossible 5 | new games 0
+    frame_0130.png: population OVER CAP 18/5
+    frame_0133.png: population OVER CAP 19/5
+    frame_0136.png: population OVER CAP 19/5
+    frame_0139.png: population OVER CAP 19/5
+    frame_0142.png: population OVER CAP 19/5
+run_20260825_134104_annehk_bul20popmanatarms: 273 scored | anchored 273 | clock 273/273 | villagers 273/273 | population 273/273 | impossible 0 | new games 0
+run_20260825_151416_stock_bul20popmanatarms: 25 scored | anchored 25 | clock 25/25 | villagers 25/25 | population 25/25 | impossible 0 | new games 0
+run_20260825_155404_stock_bul20popmanatarms: 273 scored | anchored 273 | clock 272/273 | villagers 271/273 | population 264/273 | impossible 0 | new games 0

@@ -158,3 +158,35 @@ def test_the_command_passes_a_good_one(tmp_path):
     archive = package_windows.build(source, tmp_path / "out.zip")
 
     assert package_windows.main(["--check", str(archive)]) == 0
+
+
+def test_a_release_without_its_licence_is_refused(tmp_path):
+    """GPL v3 is not satisfied by a licence that stayed on my disk.
+
+    Whoever receives the binary has to receive the licence with it, and
+    nothing else in the release process would notice it missing - the zip
+    would be well formed, unpack correctly, and run. A compliance failure
+    ships quietly, which is why it is checked here rather than remembered.
+    """
+    archive = tmp_path / "Loom.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("Loom/loom.exe", b"not really an exe")
+
+    problems = package_windows.check(archive)
+    assert any("LICENSE" in problem for problem in problems), problems
+    assert any("NOTICE" in problem for problem in problems), problems
+
+
+def test_building_a_release_puts_the_licence_beside_the_program(tmp_path):
+    folder = tmp_path / "Loom"
+    folder.mkdir()
+    (folder / "loom.exe").write_bytes(b"not really an exe")
+
+    archive = tmp_path / "Loom.zip"
+    package_windows.build(folder, archive)
+
+    names = zipfile.ZipFile(archive).namelist()
+    for required in package_windows.LICENCE_FILES:
+        assert f"Loom/{required}" in names, names
+    # And the whole check passes, so the two guards agree.
+    assert package_windows.check(archive) == []

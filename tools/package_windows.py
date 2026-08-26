@@ -29,6 +29,7 @@ this reads.
 # debugging and review. The design and code are my own work.
 
 import argparse
+import shutil
 import struct
 import sys
 import zipfile
@@ -38,6 +39,13 @@ from loom import __version__, paths
 
 # The one character that must never appear in a stored name.
 BACKSLASH = chr(92)
+
+# Files that must reach the user beside the program, copied in from the
+# project root rather than left to PyInstaller. GPL v3 is not satisfied by a
+# licence that stayed on my disk: whoever receives the binary has to receive
+# these with it. The check below refuses a zip missing either, because a
+# compliance failure is exactly the kind that ships quietly.
+LICENCE_FILES = ("LICENSE", "NOTICE")
 
 # Local file header: "PK\x03\x04", then a fixed 30-byte head whose last two
 # shorts are the name and extra-field lengths, then the name itself.
@@ -82,6 +90,14 @@ def check(path):
                 "directories in a zip; anything else unpacks as one flat "
                 "heap of oddly named files on Linux and macOS.")
 
+    root = central[0].split("/")[0] if central else ""
+    for required in LICENCE_FILES:
+        if f"{root}/{required}" not in central:
+            problems.append(
+                f"the archive has no {required}. GPL v3 requires it travel "
+                "with the program, and nothing else in the release process "
+                "would notice it missing.")
+
     # The two halves disagreeing is the exact shape of the original bug, and
     # it hides from every tool that reads only one of them.
     if len(central) != len(local):
@@ -107,6 +123,11 @@ def build(source, destination):
     """
     source = Path(source)
     root = source.name
+    project = Path(__file__).resolve().parent.parent
+    for required in LICENCE_FILES:
+        origin = project / required
+        if origin.exists():
+            shutil.copy2(origin, source / required)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(source.rglob("*")):
             relative = path.relative_to(source)

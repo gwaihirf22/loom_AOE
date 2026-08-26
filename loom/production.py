@@ -135,6 +135,19 @@ class ProductionTracker:
         self.tc_busy = 0              # TCs working right now (or blocked)
         self.idle_tcs = 0             # believed idle TCs, debounced
 
+        # Two different true things about idleness, and I kept confusing
+        # them for each other. idle_tcs_since dates the CURRENT episode -
+        # elapsed game seconds since the first TC stopped, a stopwatch.
+        # idle_tc_seconds is the whole game's bill: every idle second
+        # counted once PER IDLE TC, so three stopped TCs bank three
+        # seconds a second, because that is three villagers' worth of
+        # time not spent. The band shows the stopwatch and the report
+        # shows the bill, and until now neither said which it was.
+        self.idle_tcs_since = None
+        self.idle_tc_seconds = 0.0
+        self._last_poll_time = None
+        self._tc_streak_since = None
+
         # Streaks of polls that disagree with the current belief.
         self._idle_streak = 0
         self._busy_streak = 0
@@ -148,6 +161,7 @@ class ProductionTracker:
             return []
 
         self.slots = slots
+        self._bank_idle_time(game_time)
         events = []
         events += self._track_idleness(game_time, slots)
         events += self._track_blockage(slots)
@@ -157,6 +171,24 @@ class ProductionTracker:
     def reset(self):
         """Forget everything. Call when a new game starts."""
         self.__init__(self.polls_to_believe)
+
+    def _bank_idle_time(self, game_time):
+        """Charge the interval that just ended to the idleness I believed
+        THROUGH it - before this poll is allowed to change that belief.
+
+        Same sane-interval guard BuildReport uses: a backwards or absurd
+        jump is a misread or a new game, not eleven minutes of idleness.
+        This is deliberately the same integral report.py and gamestats.py
+        keep; they cannot share this one because their windows differ (the
+        build closes its book at the last step, and the recorder only
+        counts polls it actually observed).
+        """
+        if game_time is not None and self._last_poll_time is not None:
+            elapsed = game_time - self._last_poll_time
+            if 0 < elapsed <= 30 and self.idle_tcs > 0:
+                self.idle_tc_seconds += self.idle_tcs * elapsed
+        if game_time is not None:
+            self._last_poll_time = game_time
 
     def _track_idleness(self, game_time, slots):
         empty = len(slots) == 0
@@ -307,9 +339,12 @@ class ProductionTracker:
 
         if idle_now == self.idle_tcs:
             self._tc_streaks.clear()
+            self._tc_streak_since = None
             return []
 
         streak = self._tc_streaks.get(idle_now, 0) + 1
+        if streak == 1:
+            self._tc_streak_since = game_time
         self._tc_streaks = {idle_now: streak}
         if streak < self.polls_to_believe:
             return []
@@ -317,9 +352,17 @@ class ProductionTracker:
         was_idle = self.idle_tcs > 0
         self.idle_tcs = idle_now
         self._tc_streaks.clear()
+        started = self._tc_streak_since
+        self._tc_streak_since = None
         if idle_now > 0 and not was_idle:
+            # Date the episode from the FIRST glance that saw it rather
+            # than the confirming one - the TC has already been stopped
+            # that long - exactly as _track_idleness dates an empty queue.
+            self.idle_tcs_since = (started if started is not None
+                                   else game_time)
             return [TC_IDLE]
         if idle_now == 0 and was_idle:
+            self.idle_tcs_since = None
             return [TC_RECOVERED]
         return []   # 1 idle became 2 idle: still idle, no fresh event
 
@@ -328,3 +371,16 @@ class ProductionTracker:
         if not self.idle or self.idle_since is None or game_time is None:
             return 0
         return max(0, game_time - self.idle_since)
+
+    def idle_tc_duration(self, game_time):
+        """How long THIS idle-TC episode has run, in game seconds.
+
+        The stopwatch, not the bill: it does not multiply by how many TCs
+        stopped, and it does not restart when a second one joins them -
+        the episode began when the first went quiet. 0 when every known
+        TC is working.
+        """
+        if (not self.idle_tcs or self.idle_tcs_since is None
+                or game_time is None):
+            return 0
+        return max(0, game_time - self.idle_tcs_since)

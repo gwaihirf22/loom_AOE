@@ -73,8 +73,25 @@ class NullLog:
     def poll(self, reading, alerts_list=None):
         pass
 
+    def keep_disputed_clock(self, reading, band):
+        pass
+
     def close(self):
         pass
+
+
+# How far a raw reading may differ from the believed time before the pixels
+# behind it are worth keeping. The clock only ever advances a few seconds
+# between polls, so anything at this distance is either the reader inventing
+# a number or a genuinely new game - and both are worth the pixels.
+DISPUTED_CLOCK_SECONDS = 120
+
+# At most this many crops per session. A reader that has gone properly wrong
+# would otherwise fill the disk while the player is trying to play.
+MAX_DISPUTED_CROPS = 40
+
+# And no more than one a second, for the same reason.
+DISPUTED_CROP_GAP = 1.0
 
 
 class SessionLog:
@@ -97,6 +114,8 @@ class SessionLog:
             self._file = open(self.path, "a", encoding="utf-8")
         except OSError:
             self.path = None
+        self._crops = 0
+        self._last_crop = 0.0
 
     @staticmethod
     def _prune(directory, stem, keep):
@@ -126,6 +145,54 @@ class SessionLog:
 
     def poll(self, reading, alerts_list=None):
         self.line(describe_reading(reading, alerts_list))
+
+    def keep_disputed_clock(self, reading, band):
+        """Save the pixels when the reader and the filter disagree.
+
+        This exists because of a misread nobody could reproduce. The clock's
+        tens-of-minutes digit read 3 as 5 nine times in one game, four of
+        them inside a single second - enough agreement to out-vote the
+        filter, which then believed 55:42 and declared a new game. The log
+        recorded every one of those numbers and the pixels behind them were
+        gone, so the only evidence was the digit that came out, which cannot
+        distinguish a bad threshold from a bad template from terrain leaking
+        in. Replaying the capture proved nothing either: the overlay polls
+        about four times a second and the capture runs at one frame per two,
+        so the offending frames were never on disk at all.
+
+        A DISPUTE is the signal, not a failure. A read that simply fails is
+        already visible as a gap; a read that succeeds and is refused is the
+        dangerous one, because the reader was confident and wrong. Saving on
+        agreement would be saving every frame.
+
+        Never raises, and never grows without bound - the overlay matters
+        more than its diary.
+        """
+        if (self.path is None or band is None
+                or reading.raw_clock is None or reading.game_time is None):
+            return
+        if abs(reading.raw_clock - reading.game_time) < DISPUTED_CLOCK_SECONDS:
+            return
+        if self._crops >= MAX_DISPUTED_CROPS:
+            return
+        now = time.monotonic()
+        if now - self._last_crop < DISPUTED_CROP_GAP:
+            return
+        try:
+            import cv2                      # only when something went wrong
+            folder = self.path.parent / f"{self.path.stem}_disputed"
+            folder.mkdir(parents=True, exist_ok=True)
+            name = (f"raw{int(reading.raw_clock)}"
+                    f"_believed{int(reading.game_time)}.png")
+            cv2.imwrite(str(folder / name), band)
+            self._crops += 1
+            self._last_crop = now
+            self.line(f"kept the pixels behind a disputed clock: "
+                      f"read {int(reading.raw_clock)}s while believing "
+                      f"{int(reading.game_time)}s -> {folder.name}/{name}")
+        except Exception:
+            # Diagnostics must never be able to stop a game being played.
+            self._crops = MAX_DISPUTED_CROPS
 
     def close(self):
         if self._file is not None:

@@ -1,0 +1,70 @@
+Loom
+Copyright (C) 2026 Paul Blake
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. See LICENSE for the full text.
+
+
+WHY GPL v3, AND WHY IT IS NOT A PREFERENCE
+------------------------------------------
+
+Loom draws its window with PyQt6, which is licensed GPL-3.0-only. A
+distributed binary that bundles PyQt6 is a combined work, and GPL v3 is
+what that combination requires. This is not a position taken on software
+freedom - it is the licence the dependency already imposes, and choosing a
+permissive licence for Loom while shipping PyQt6 inside the .exe would be a
+violation rather than a choice.
+
+Two things GPL v3 does NOT prevent, since both are commonly assumed:
+donations are entirely unaffected, and selling copies is expressly
+permitted. What it requires is that whoever receives the program can also
+receive its source and the same rights.
+
+The only route to a permissive licence would be replacing PyQt6 with
+PySide6, which is LGPL. That is a real migration across every Qt file plus
+a re-verification of the overlay's X11 passthrough, and it has not been
+done. Anyone tempted to "simplify" this to MIT should start there.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+Bundled in the distributed application:
+
+  PyQt6                    GPL-3.0-only          <- the binding constraint
+  PyQt6-Qt6                LGPL v3
+  NumPy                    BSD-3-Clause (and 0BSD, MIT, Zlib, CC0-1.0)
+  OpenCV (headless)        Apache License 2.0
+  mss                      MIT
+
+Per platform:
+
+  windows-capture          MIT                   Windows only
+  pywin32                  PSF                   Windows only
+  python-xlib              LGPL v2.1 or later    Linux only
+  pyobjc                   MIT                   macOS only
+
+Development only, not distributed:
+
+  mgz                      MIT                   reads recorded games
+  construct                MIT                   a dependency of mgz
+  pytest, PyInstaller, Pillow
+
+A note for anyone auditing this: Apache License 2.0 is compatible with GPL
+version 3 but NOT with version 2, which is one of the reasons this project
+is on v3 specifically and must not be moved back.
+
+
+AGE OF EMPIRES II
+-----------------
+
+Loom is an unofficial third-party tool. It is not affiliated with,
+endorsed by, or connected to Microsoft, Xbox Game Studios, Forgotten
+Empires or World's Edge. Age of Empires is a trademark of Microsoft
+Corporation.
+
+Loom reads the game's screen and never touches the game process. The one
+thing it takes FROM the game is a registered keyboard shortcut, which is
+why every binding is editable and every one can be emptied.

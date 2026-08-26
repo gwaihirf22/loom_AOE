@@ -94,3 +94,61 @@ def test_the_null_log_is_inert(tmp_path):
     log.close()
     assert log.path is None
     assert list(tmp_path.iterdir()) == []
+
+
+# ---- keeping the pixels behind a disputed clock -------------------------
+
+class FakeReading:
+    def __init__(self, raw_clock, game_time):
+        self.raw_clock = raw_clock
+        self.game_time = game_time
+
+
+def a_band():
+    import numpy as np
+    return np.zeros((10, 40, 3), dtype=np.uint8)
+
+
+def test_a_disputed_clock_keeps_its_pixels(tmp_path):
+    """The read that SUCCEEDS and is refused is the dangerous one.
+
+    A failed read is already visible as a gap in the log. A read that came
+    back confident and wrong leaves only the number behind it, and a number
+    cannot distinguish a bad threshold from a bad template from terrain
+    leaking into the mask. Nine misreads in one game were diagnosed to
+    exactly nothing for want of these pixels.
+    """
+    log = debuglog.SessionLog(stem="t", directory=tmp_path)
+    log.keep_disputed_clock(FakeReading(3342, 2141), a_band())
+
+    saved = list(tmp_path.glob("*_disputed/*.png"))
+    assert len(saved) == 1
+    assert "raw3342" in saved[0].name and "believed2141" in saved[0].name
+
+
+def test_an_agreeing_clock_keeps_nothing(tmp_path):
+    # Saving on agreement is saving every frame.
+    log = debuglog.SessionLog(stem="t", directory=tmp_path)
+    log.keep_disputed_clock(FakeReading(2142, 2141), a_band())
+    assert list(tmp_path.glob("*_disputed/*.png")) == []
+
+
+def test_a_reader_gone_wrong_cannot_fill_the_disk(tmp_path):
+    # The overlay matters more than its diary.
+    log = debuglog.SessionLog(stem="t", directory=tmp_path)
+    for _ in range(debuglog.MAX_DISPUTED_CROPS * 3):
+        log._last_crop = 0.0          # ignore the one-a-second rule here
+        log.keep_disputed_clock(FakeReading(3342, 2141), a_band())
+    assert len(list(tmp_path.glob("*_disputed/*.png"))) <= debuglog.MAX_DISPUTED_CROPS
+
+
+def test_a_missing_band_is_not_an_error(tmp_path):
+    log = debuglog.SessionLog(stem="t", directory=tmp_path)
+    log.keep_disputed_clock(FakeReading(3342, 2141), None)
+    log.keep_disputed_clock(FakeReading(None, 2141), a_band())
+    assert list(tmp_path.glob("*_disputed/*.png")) == []
+
+
+def test_the_null_log_answers_the_same_call():
+    # Hundreds of controllers get a NullLog; the interfaces must not drift.
+    debuglog.NullLog().keep_disputed_clock(FakeReading(3342, 2141), a_band())

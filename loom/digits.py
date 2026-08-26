@@ -29,6 +29,60 @@ GLYPH_HEIGHT = 20
 # Below this correlation I refuse to guess.
 MIN_MATCH_SCORE = 0.55
 
+# A "1" is the one digit narrow enough that nothing else can be mistaken
+# for it, and at a small rendering it is also the one digit the templates
+# struggle with. Both halves of that are measured, on 500 clock glyphs from
+# a 1920x1080 capture:
+#
+#     digit   samples   width      median score
+#     0         189     7-8 px       1.00
+#     1         171       3 px       0.39
+#     2-9       129     6-8 px       1.00
+#
+# Every digit but the "1" matches perfectly. The "1" sits at 0.39, under
+# the 0.55 gate, and the reason is visible in the pixels: at some sub-pixel
+# positions the anti-aliasing fills its stem out to the full width of its
+# serif, so the letter loses the waist that every template has. The clock
+# then reads correctly and is thrown away - "00:10:01" classifies as
+# 0,0,1,0,0,1 and dies because one of those "1"s scored 0.37.
+#
+# What it costs: the clock reads 100% for game minutes 0 to 9, collapses
+# to 8-33% for minutes 10 to 19, and returns to 100% from minute 20 on.
+# Ten minutes of every game, at exactly the moment the minutes-tens digit
+# is a "1".
+#
+# So a narrow run is believed on TWO independent agreements: the template
+# match says "1", and the geometry says nothing else could be. As a
+# fraction of the band's own glyph height a "1" measures 0.27 and every
+# other digit 0.55 or more, so the threshold sits in open water and is
+# derived from the band rather than being a pixel constant. Anything wider
+# than this, or that the ink does not call a "1", faces the full gate.
+ONE_WIDTH_FRACTION = 0.40
+
+# The floor a narrow "1" must still clear. Below this the run is not a
+# soft "1", it is noise that happens to be thin - a stray mark, or half of
+# something the merge failed to put back together.
+NARROW_ONE_FLOOR = 0.30
+
+
+def _is_unmistakably_narrow(start, end, tallest):
+    """Is this run too narrow to be any digit except a "1"?"""
+    return tallest > 0 and (end - start) <= tallest * ONE_WIDTH_FRACTION
+
+
+def believable(label, score, start, end, tallest, gate=MIN_MATCH_SCORE):
+    """Is this glyph believed, given how narrow it is?
+
+    The ordinary gate, plus the one exception the measurements earn: a run
+    too narrow to be any digit but a "1", which the ink also calls a "1",
+    is believed down to NARROW_ONE_FLOOR. See ONE_WIDTH_FRACTION.
+    """
+    if score >= gate:
+        return True
+    return (label == 1 and score >= NARROW_ONE_FLOOR
+            and _is_unmistakably_narrow(start, end, tallest))
+
+
 # The population band asks for more confidence than the rest, because its
 # failure mode is worse. Everywhere else a doubtful glyph costs a reading
 # and the next poll tries again; here a "1" where the screen says "4" is a
@@ -109,8 +163,59 @@ WHITE_FAINT = 170
 WHITE_PASSES = (WHITE_STRICT, WHITE_SOFT, WHITE_FAINT)
 WHITE_MAX_SPREAD = 45
 
+# How colorless the CLOCK's ink has to be, which is a far harder test than
+# the one above. Those 45 were measured against the civ's border artwork,
+# where warm stone had to be excluded and 45 was enough. Terrain is a
+# different adversary: the Transparent UI mod removes the HUD backdrop
+# entirely, so the digits sit on whatever the map happens to show - grass,
+# stone, units, anything - and it moves every frame while the glyphs do not.
+#
+# Measured over the four matched 1080p runs, on the pixels each side owns:
+#
+#     clock digits      colour spread median 0, p90 0, MAX 1
+#     bright terrain    colour spread median 10, p75 19, p90 57
+#
+# The clock is drawn in pure white and never wavers, so the headroom here is
+# enormous and nobody had ever asked for it. At 45 the faint passes admit
+# terrain as ink and glue runs 26 and 38 pixels wide together; at 3 they do
+# not, and not one digit pixel is lost - digit-edge retention is identical
+# at 45 and at 3, because the game outlines the clock in BLACK rather than
+# fading it out, so there are no dim grey edge pixels to protect.
+#
+# This is deliberately NOT a change to WHITE_MAX_SPREAD, which is shared.
+# Tightening that one globally fixed the clock and destroyed the population
+# badge on the same frames - 253/287 down to 21/287 - because those digits
+# are tinted and are not white at all. One constant was answering for four
+# different bands.
+CLOCK_TIGHT_SPREAD = 3
 
-def _white_pixels(band_bgr, min_channel=WHITE_STRICT):
+# The clock's passes, tried in order: three colorless ones, then the three
+# the rest of the reader uses. Brightness alone was the ladder before, and
+# it could not answer both corpora at once - the live Transparent UI runs
+# need 3 or terrain gets in, and the theme fixtures need 10 or more because
+# they came through screenshot scaling, which adds chroma noise the game
+# window never has. Neither is wrong about its own band.
+#
+# So spread joins brightness in the ladder instead of replacing it, on the
+# same principle the brightness passes already use: the strict pass answers
+# first and the loose one only fills a gap it left. A terrain-contaminated
+# band is answered by a tight pass before a loose one ever sees it, and a
+# compressed fixture falls through to the pass that suits it. Every
+# validation rule applies on every pass, so a fallback can recover a
+# reading but never invent one.
+# Derived when asked rather than frozen at import, so WHITE_PASSES stays the
+# single place the brightness ladder is written down - test_clock_themes
+# removes a gate from it to prove that gate is load-bearing, and a snapshot
+# taken at import would make that test quietly vacuous instead of failing.
+def clock_passes():
+    """Every (brightness gate, colour spread) the clock tries, in order."""
+    return tuple((gate, spread)
+                 for spread in (CLOCK_TIGHT_SPREAD, WHITE_MAX_SPREAD)
+                 for gate in WHITE_PASSES)
+
+
+def _white_pixels(band_bgr, min_channel=WHITE_STRICT,
+                  max_spread=WHITE_MAX_SPREAD):
     """The raw white test alone: which pixels are bright AND colorless.
 
     Split from white_mask so a caller can see the ink BEFORE the shape
@@ -123,10 +228,11 @@ def _white_pixels(band_bgr, min_channel=WHITE_STRICT):
 
     lowest = np.minimum(np.minimum(blue, green), red)
     spread = np.maximum(np.maximum(blue, green), red) - lowest
-    return (lowest >= min_channel) & (spread <= WHITE_MAX_SPREAD)
+    return (lowest >= min_channel) & (spread <= max_spread)
 
 
-def white_mask(band_bgr, min_channel=WHITE_STRICT):
+def white_mask(band_bgr, min_channel=WHITE_STRICT,
+               max_spread=WHITE_MAX_SPREAD):
     """White-on-black image of just the WHITE pixels in a crop.
 
     A plain brightness threshold only ever worked by luck: the clock band
@@ -138,7 +244,7 @@ def white_mask(band_bgr, min_channel=WHITE_STRICT):
     bright AND colorless, and the stone is bright but warm - so test both,
     the same move the per-resource reader makes for its yellow digits.
     """
-    is_white = _white_pixels(band_bgr, min_channel)
+    is_white = _white_pixels(band_bgr, min_channel, max_spread)
     return _keep_text_shapes((is_white * 255).astype(np.uint8))
 
 
@@ -312,7 +418,7 @@ def read_binary(binary, templates, min_glyph_width, max_runs=None):
 
         label, score = classify_glyph(glyph, templates,
                                       trimmed_glyph(binary, start, end))
-        if score < MIN_MATCH_SCORE:
+        if not believable(label, score, start, end, tallest):
             return None, 0.0
 
         digits.append(label)
@@ -778,9 +884,10 @@ def read_clock_seconds(band_bgr, templates, min_glyph_width):
     but warm.
     """
     band_bgr = _fit_clock_rows(band_bgr)
-    for min_channel in WHITE_PASSES:
-        value, score = _parse_clock(white_mask(band_bgr, min_channel),
-                                    templates, min_glyph_width)
+    for min_channel, max_spread in clock_passes():
+        value, score = _parse_clock(
+            white_mask(band_bgr, min_channel, max_spread),
+            templates, min_glyph_width)
         if value is not None:
             return value, score
     return None, 0.0
@@ -819,7 +926,7 @@ def _parse_clock(binary, templates, min_glyph_width):
             continue
         label, score = classify_glyph(glyph, templates,
                                       trimmed_glyph(binary, start, end))
-        if score < MIN_MATCH_SCORE:
+        if not believable(label, score, start, end, tallest):
             return None, 0.0
         digits.append(label)
         weakest = min(weakest, score)

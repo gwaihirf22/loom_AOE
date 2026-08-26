@@ -1,5 +1,5 @@
 """
-Loom — reading the notification font, one character at a time.
+Loom â€” reading the notification font, one character at a time.
 
 The game states events as text lines ("--Mill Built--", "--Knight
 Created--") in one fixed font. Ten digit templates already read every
@@ -745,6 +745,406 @@ def trim_to_message(runs, height):
     return runs
 
 
+# ---- structural repair -----------------------------------------------------
+#
+# The two repairs below substitute LETTERS. This one changes how many
+# letters there are, and it exists because a small rendering breaks the
+# segmentation itself rather than the classification.
+#
+# At 1920x1080 a capital H loses its crossbar entirely - absent from the
+# mask, not faint - so its two verticals segment as separate runs, each a
+# confident "l". "--House Built--" reads "--llouse Built--" and the
+# commonest event in any build order is lost. The same thing happens to C,
+# L, r, m and u, and at 2560x1440 it happens in reverse: "ll" welds into a
+# single run that classifies as "B", so "Villager" reads "ViBager".
+#
+# Scores cannot arbitrate this, and it is worth being precise about why
+# before anyone tries: the rejoined H scores 0.906, LOWER than either of
+# the halves it is made of (0.969 and 0.932), because a clean fragment is
+# a simpler shape than the letter it came from. Meanwhile a real "ll" in
+# "Villager" reads 1.00 and 1.00. There is no threshold anywhere that
+# separates those two cases, and three attempts to find one all failed.
+#
+# The vocabulary separates them without looking at a score at all.
+# "llouse" is not a game word; "Villager" is. So the repair fires only on
+# a token the vocabulary does not recognise, tries the structural edits
+# the ink actually supports, and accepts only if exactly one of them
+# yields a real word.
+#
+# The safety property that makes this affordable: it runs ONLY on a line
+# read_line has already thrown away - no text, or text whose words are not
+# game words. A line Loom already understood is never restructured, so
+# this cannot change a right answer into a wrong one. It can only turn a
+# discarded line into a read one, or leave it discarded.
+#
+# The residual risk is the allowlist failure mode wearing a new hat: if a
+# REAL word were missing from KNOWN_WORDS, a correctly-read token would
+# look unknown here and might be "repaired" into a word that is in the
+# list. That is why every repair is logged, and why the edit must be
+# something the ink supports rather than the nearest dictionary word.
+
+# A join or split only enters the search if the new shape classifies at
+# least this well. Deliberately BELOW MIN_GLYPH_SCORE: the whole premise
+# is that a broken letter's rejoined shape scores worse than its own clean
+# fragments, so a gate tuned for confident single glyphs would refuse the
+# very cases this exists for. The vocabulary is what decides; this only
+# keeps shapes the ink does not support at all out of the search.
+STRUCTURAL_GLYPH_FLOOR = 0.70
+
+# How many edits one token may be repaired by, and how far past that the
+# search still looks. Measured on the 1080p corpus: real repairs need one
+# or two - "Created" needs two, a rejoined C and a rejoined r - and the
+# extra tier exists only so a rival can VETO, never so it can win.
+MAX_STRUCTURAL_EDITS = 2
+STRUCTURAL_RIVAL_REACH = 1
+
+# How many of a line's words this pass may rebuild, and it is a safety
+# bound rather than a tuning choice.
+#
+# A broken letter damages one word; a broken RENDERING damages the line.
+# The search is powerful enough to walk a badly-read line into a
+# real-sounding sentence, and the corpus caught it doing exactly that:
+#
+#   "--Spearman Created--" read as "--Siega Rane Coreated--" and rebuilt,
+#   three words at once, into "--Siege Ram Created--" - the Slege Ram bug
+#   reborn through a new door.
+#
+# That is repair_unknown_word's "two unknown words means the line is badly
+# read" ruling, at the granularity that actually holds at 1920x1080:
+# counting the words REBUILT rather than the words unrecognised, because
+# at that size an ordinary line has several of the latter and only one of
+# the former.
+#
+# Two, not one, and the difference was measured on the 924-line corpus
+# rather than reasoned about. Both are honest - neither produces a single
+# wrong event - but one costs 41 correct ones, because a real line
+# routinely needs its subject AND its "Created--" put back together:
+#
+#     cap 1   791 events   0 wrong
+#     cap 2   832 events   0 wrong
+#     cap 3   844 events   2 wrong      <- fabrications start here
+#
+# The cap does not stand alone. At cap 2 without the capitalisation rule
+# below the corpus still held one fabricated event, and at cap 3 with it
+# there are two; each rule refuses cases the other admits, so neither is
+# redundant and neither is sufficient.
+MAX_REPAIRED_TOKENS = 2
+
+
+def _alternatives_from(top):
+    """[(cost, text)] for one already-classified shape: its best reading,
+    and its runner-up when the ink genuinely nearly said that instead.
+
+    `top` is a _classify_top2 result, passed in rather than recomputed -
+    the same pixels were classified for the plain reading already, and
+    that multiply is the expensive part of reading a line.
+
+    The runner-up matters here for a reason particular to a small
+    rendering. When a letter breaks, what breaks is the stroke JOINING its
+    verticals - so a split "u" and a split "n" are the same two bare
+    verticals, and rejoining them gives a shape no classifier can assign.
+    Measured: the rejoined u of "Built" reads n at 0.901 with u second at
+    0.893, eight thousandths behind. That is not a classifier failure to
+    be tuned away, it is genuine ambiguity in the ink, and the vocabulary
+    is the only thing that can settle it.
+    """
+    if top is None:
+        return []
+    char, score, char2, score2 = top
+    if char is None or score < STRUCTURAL_GLYPH_FLOOR:
+        return []
+    options = [(0, char)]
+    # The same evidence rule repair_unknown_word applies: a runner-up must
+    # be what the ink nearly said, not merely the next name on the list.
+    if (char2 is not None and score2 >= REPAIR_FLOOR
+            and score - score2 <= REPAIR_MARGIN):
+        options.append((1, char2))
+    return options
+
+
+def _frame_words():
+    """The event phrasings, which the vocabulary deliberately never holds.
+
+    parse_event strips the suffix before the KNOWN_WORDS gate runs, so
+    "built" and "created" are not in it. A token check that did not know
+    them would call every second token of every line unknown.
+    """
+    return {kind for _suffix, kind in EVENT_SUFFIXES} | {
+        'built', 'created', 'found', 'research', 'complete',
+        'destroyed', 'lost'}
+
+
+def _token_is_known(spelling):
+    """Is every alphabetic word in this token a real game word?
+
+    Non-alphabetic characters are separators, exactly as slugify treats
+    them, so the framing "--" and the hyphen inside "Two-Handed" both fall
+    out rather than needing a case. A token with no letters at all - the
+    framing dashes on their own - is known by default: there is nothing in
+    it to be wrong about.
+    """
+    words = "".join(c if c.isalpha() else " " for c in spelling).split()
+    if not words:
+        return True
+    vocabulary = KNOWN_WORDS | _frame_words()
+    return all(word.lower() in vocabulary for word in words)
+
+
+def _keeps_the_games_capitals(spelling):
+    """Does this candidate still look like something the game would draw?
+
+    The game capitalises EVERY word of a notification - checked across all
+    924 labelled corpus lines, there is not one lowercase-initial word
+    among them - so a rebuilt token that comes out lowercase is not a
+    repair, it is a coincidence that happens to be spelled like a real
+    word.
+
+    This is what refuses the last fabricated event the corpus held.
+    "--Carvel Hull Research Complete--" reads "Hoill" at 1080p, whose
+    first two runs join into a lowercase "m", giving "mill" - a real word,
+    one edit away, with no rival to keep it honest, and Loom minted a
+    "Carvel Mill" technology that does not exist. The game would have
+    drawn a capital there. Every legitimate repair keeps its capital:
+    House, Built, Created, Complete.
+
+    Each alphabetic run is checked, not just the first, because the game
+    capitalises both halves of "Two-Handed" and "Double-Bit" too.
+    """
+    for word in "".join(c if c.isalpha() else " "
+                        for c in spelling).split():
+        if not word[0].isupper():
+            return False
+    return True
+
+
+def _token_spans(runs, space_gap):
+    """The runs grouped into tokens: [[run index, ...], ...].
+
+    Tokens - what sits between two spaces - rather than alphabetic words,
+    because the failure this serves BREAKS letters, and a half-read "r"
+    classifies as a hyphen. Splitting into words first would cut "Created"
+    in two before the repair ever saw it.
+    """
+    tokens = []
+    current = []
+    for index, (start, _end) in enumerate(runs):
+        if current and start - runs[index - 1][1] >= space_gap:
+            tokens.append(current)
+            current = []
+        current.append(index)
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+def _plain_reading(mask, runs, token, font, scale, skin):
+    """Each run of the token classified on its own: (chars, scores, tops).
+
+    The cheap pass, and it is kept separate from the expensive one on
+    purpose. Classifying is a matrix multiply against the whole packed
+    font and it dominates the cost of reading a line, so a token that
+    already spells a real game word must not pay for joins, splits and
+    runner-ups it will never use. On "--Villager Created--" only one of
+    the three tokens is broken.
+
+    `tops` carries the top-two result per position so the search below can
+    reuse it rather than classifying the same pixels a second time.
+    """
+    chars, scores, tops = {}, {}, {}
+    for position, index in enumerate(token):
+        start, end = runs[index]
+        glyph, aspect = extract(mask, start, end)
+        if glyph is None:
+            continue
+        top = _classify_top2(glyph, aspect, font, scale, skin)
+        if top[0] is None:
+            continue
+        chars[position] = top[0]
+        scores[position] = top[1]
+        tops[position] = top
+    return chars, scores, tops
+
+
+def _structural_options(mask, runs, token, tops, font, scale, skin):
+    """What the ink supports at each position of one token.
+
+    Returns (ones, twos): `ones` are the readings that consume one run -
+    the run alone, its runner-up, or the run split at its pinch - and
+    `twos` those that consume this run and the next, which is a broken
+    letter put back together. Each carries the cost of claiming it.
+
+    Everything is classified ONCE here so the search below runs over
+    strings rather than pixels: a token of eleven runs costs thirty-odd
+    classifies in total, not thirty per candidate spelling.
+    """
+    ones, twos = {}, {}
+    height = mask.shape[0]
+    for position, index in enumerate(token):
+        start, end = runs[index]
+        choices = list(_alternatives_from(tops.get(position)))
+        pieces = _pinch_split(mask, start, end, height)
+        if len(pieces) > 1:
+            chars = []
+            for piece_start, piece_end in pieces:
+                piece, piece_aspect = extract(mask, piece_start, piece_end)
+                if piece is None:
+                    chars = None
+                    break
+                char, score = classify(piece, piece_aspect, font, scale, skin)
+                if char is None or score < STRUCTURAL_GLYPH_FLOOR:
+                    chars = None
+                    break
+                chars.append(char)
+            if chars:
+                choices.append((1, "".join(chars)))
+        if choices:
+            ones[position] = choices
+        if position + 1 < len(token):
+            following = token[position + 1]
+            glyph, aspect = extract(mask, start, runs[following][1])
+            if glyph is not None:
+                joined = _alternatives_from(
+                    _classify_top2(glyph, aspect, font, scale, skin))
+                # A join is itself a claim about the ink, so it costs one
+                # whichever reading of the joined shape is taken.
+                joined = [(1 + extra, text) for extra, text in joined]
+                if joined:
+                    twos[position] = joined
+    return ones, twos
+
+
+def _spellings(length, ones, twos, budget):
+    """Every spelling the token can take within `budget` edits.
+
+    Yields (edits, spelling). Positions are consumed strictly left to
+    right, so two edits can never overlap by construction - a run is read
+    alone, altered, split, or swallowed by a join, never two of those. The
+    budget prunes as it descends rather than after the fact, which is what
+    keeps an eleven-run token to a couple of thousand candidates instead
+    of an exponential sweep.
+    """
+    if length <= 0:
+        yield 0, ""
+        return
+
+    def walk(position, remaining):
+        if position >= length:
+            yield 0, ""
+            return
+        for cost, text in ones.get(position, ()):
+            if cost > remaining:
+                continue
+            for edits, rest in walk(position + 1, remaining - cost):
+                yield edits + cost, text + rest
+        for cost, text in twos.get(position, ()):
+            if cost > remaining:
+                continue
+            for edits, rest in walk(position + 2, remaining - cost):
+                yield edits + cost, text + rest
+
+    yield from walk(0, budget)
+
+
+def _repair_token(length, ones, twos):
+    """One token's repaired spelling, or None to leave it as it reads.
+
+    The acceptance rule is nearest_event_repair's, for the same reason it
+    has one. Of the edit sets that yield a real game word only the
+    SMALLEST count, there must be exactly one distinct word among them,
+    AND it must beat every other real word by a clear edit. A winner that
+    merely came first is a winner on points, and the corpus has already
+    shown what that costs: "Hoill" - a broken "Hull" - reaches "mill" in
+    one join and "Hull" in a join plus the joined shape's runner-up. Take
+    the nearest and Loom mints "Carvel Mill Research Complete", a
+    technology that does not exist. See the rival and it refuses, which is
+    the right answer.
+    """
+    by_edits = {}
+    for edits, candidate in _spellings(
+            length, ones, twos,
+            MAX_STRUCTURAL_EDITS + STRUCTURAL_RIVAL_REACH):
+        if (edits and _token_is_known(candidate)
+                and _keeps_the_games_capitals(candidate)):
+            by_edits.setdefault(edits, set()).add(candidate)
+    if not by_edits:
+        return None
+    fewest = min(by_edits)
+    if fewest > MAX_STRUCTURAL_EDITS:
+        return None                 # only a vetoing tier was reached
+    winners = by_edits[fewest]
+    if len(winners) != 1:
+        return None                 # two real words equally close: refuse
+    winner = next(iter(winners))
+    rivals = {other for edits, words in by_edits.items()
+              if edits <= fewest + STRUCTURAL_RIVAL_REACH
+              for other in words if other != winner}
+    if rivals:
+        return None                 # won on points, not outright
+    return winner
+
+
+def _structural_read(mask, runs, font, scale, skin, space_gap):
+    """The line re-read with the segmentation allowed to be wrong.
+
+    Returns (text, weakest) or (None, 0.0). The line must carry its "--"
+    framing, because a fragment must never become an event.
+
+    ONE token may survive unrecognised, and only if every run in it
+    classified confidently on its own. That is the hand-off to the two
+    letter-level repairs downstream, and it is what the real 1080p line
+    needs: "--llouse Bnilt--" holds two independent faults, a broken H
+    that only a join can fix and an n-for-u that only a substitution can.
+    Demanding that this pass finish the job alone refused the line for the
+    half of it this pass cannot do, while leaving exactly one unknown word
+    is precisely the shape repair_unknown_word and nearest_event_repair
+    are built to take. More than one, and the rendering is too far gone to
+    reason about - the same judgement those two already make.
+    """
+    tokens = _token_spans(runs, space_gap)
+    if not tokens:
+        return None, 0.0
+    spellings = []
+    repaired = 0
+    left_unknown = 0
+    for token in tokens:
+        singles, scores, tops = _plain_reading(mask, runs, token, font,
+                                               scale, skin)
+        plain = "".join(singles.get(position, "")
+                        for position in range(len(token)))
+        whole = len(singles) == len(token)
+        # A token that already spells a real game word is done, and pays
+        # for none of the search below.
+        if whole and _token_is_known(plain):
+            spellings.append(plain)
+            continue
+        ones, twos = _structural_options(mask, runs, token, tops, font,
+                                         scale, skin)
+        fixed = _repair_token(len(token), ones, twos)
+        if fixed is not None:
+            repaired += 1
+            if repaired > MAX_REPAIRED_TOKENS:
+                return None, 0.0
+            spellings.append(fixed)
+            continue
+        # Nothing structural explains this token. It may still be one
+        # confident letter misread, which is somebody else's job - but
+        # only if the ink was confident about all of it. A token holding a
+        # run nobody could classify is not a misread word, it is an
+        # unreadable one.
+        confident = whole and all(score >= MIN_GLYPH_SCORE
+                                  for score in scores.values())
+        if not confident or left_unknown:
+            return None, 0.0
+        left_unknown += 1
+        spellings.append(plain)
+    if not repaired:
+        return None, 0.0
+    text = " ".join(spellings).strip()
+    if not (text.startswith("--") and text.endswith("--")):
+        return None, 0.0
+    return text, STRUCTURAL_GLYPH_FLOOR
+
+
 # How close a glyph's runner-up must be for a repair to consider it, and
 # the floor it must clear. Measured on the case this exists for: at one
 # 2560x1440 rendering the "b" of "Stable" scores lower_h 0.929 against
@@ -1014,6 +1414,12 @@ def read_line(line_bgr, font, scale=None, skin=None):
     weak_used = False
     previous_end = None
     index = 0
+    # A glyph nobody believes used to return here and now falls through, so
+    # the structural pass below still gets to see the runs. The refusal is
+    # unchanged - `refused` is checked before any text is returned - but a
+    # line that dies at one orphaned fragment is exactly the line worth
+    # re-reading with the segmentation in question.
+    refused = False
     while index < len(runs):
         start, end = runs[index]
         index += 1
@@ -1062,7 +1468,8 @@ def read_line(line_bgr, font, scale=None, skin=None):
                 alternatives.append((char2, score2, score - score2))
                 weakest = min(weakest, score)
                 continue
-            return None, 0.0
+            refused = True
+            break
         # Merged pairs read back as several characters; a repair cannot
         # substitute inside them, so they carry no alternative.
         for extra_char in char:
@@ -1071,12 +1478,29 @@ def read_line(line_bgr, font, scale=None, skin=None):
                                 if len(char) == 1 else None)
         weakest = min(weakest, score)
 
-    text = "".join(characters)
-    if not text.strip():
+    text = "" if refused else "".join(characters)
+    if text.strip():
+        repaired = repair_unknown_word(text, alternatives)
+        if repaired is not None:
+            text = repaired
+        # A framed line whose every token is a real game word is a clean
+        # read and is returned untouched. Anything else - no text at all,
+        # or text the vocabulary does not recognise - is a line Loom would
+        # otherwise discard, so the segmentation gets questioned before it
+        # is thrown away. Ordering this test BEFORE the structural pass is
+        # what guarantees a right answer can never be restructured into a
+        # wrong one.
+        stripped = text.strip()
+        framed = stripped.startswith("--") and stripped.endswith("--")
+        if framed and all(_token_is_known(token)
+                          for token in stripped.split()):
+            return stripped, weakest
+    structural, structural_score = _structural_read(mask, runs, font, scale,
+                                                    skin, space_gap)
+    if structural is not None:
+        return structural, structural_score
+    if refused or not text.strip():
         return None, 0.0
-    repaired = repair_unknown_word(text, alternatives)
-    if repaired is not None:
-        text = repaired
     return text.strip(), weakest
 
 
@@ -1110,58 +1534,60 @@ def read_line(line_bgr, font, scale=None, skin=None):
 # one word.
 KNOWN_WORDS = set("""
 acropolis age arambai arbalest arbalester archaic archer archery
-architecture armor armored arms arrow arrows arrowslits arson artemisias
-artisan assassination at atonement axe axeman ballista ballistaelephant
-ballistics banking barding barracks battering battle berries berserk
-bireme bit blacksmith blackwood blast block bloodlines boar bodkin bolas
-bombard bow bowman boyar bracer buffalo camel camelrider camp cannon
-cannoneer capped capybara caravan caravanserai caravel careening carrack
-cart cartography carvel casting castle cataphract catapult cavalier
-cavalry cavalryarcher ceasefire center centurion chain chakram champi
-champion chariot chemistry chicken chu chuko church civic classical
-clinker cog coinage collar colonization complete composite condottiero
-conquistador conscription construction coustillier cow crane crop
-crossbowman cults dark dedication deer defensive democracy demolition
-demoraft demoship devotion diplomatic dock dolphin domestication donjon
-dorado double dragon dragonship drills dromon druzhina dry eagle
-eaglescout eaglewarrior economic elephant elite elitesteppelancer
-emergency emplacement emplacements engineers ephorate exorcism faith
-farm fast fastfireship feather feitoria fervor festival feudal fire
-fireship fish fishing flaming flemish fletching folwark forging
-fortification fortified furnace galleon galley gambesons garden gate
-gbeto gendarme genitour genoese ghulam gift gillnets goat gold goose
-grenadier guang guard guardsman guecha guilds halberdier hand handcart
-handed harbor haruspicy heated heavy heavycamelrider heavycavalryarcher
-heavydemoship heavyscorpion hemlock herbal heresy hippagretai hire
-hoardings holes hoplite horse houfnice house howdah hulk hull husbandry
-huskarl hussar hussite huszar hypozomata ibex ibirapema illumination
-imperial imperialskirmisher incendiaries incendiary infantry iron jaguar
+architecture armor armored arms arrow arrows arrowslits arson
+artemisias artisan assassination at atonement axe axeman ballista
+ballistaelephant ballistics banking barding barracks battering battle
+berries berserk bireme bit blacksmith blackwood blast block bloodlines
+boar bodkin bolas bombard bow bowman boyar bracer buffalo camel
+camelrider camp cannon cannoneer capped capybara caravan caravanserai
+caravel careening carrack cart cartography carvel casting castle
+cataphract catapult cavalier cavalry cavalryarcher ceasefire center
+centurion chain chakram champi champion chariot chemistry chicken chu
+chuko church civic classical clinker cog coinage collar colonization
+complete composite condottiero conquistador conscription construction
+coustillier cow crane crop crossbowman cults dao dark dedication deer
+defensive democracy demolition demoraft demoship devotion diplomatic
+dock dolphin domestication donjon dorado double dragon dragonship
+drills dromon druzhina dry eagle eaglescout eaglewarrior economic
+elephant elite elitesteppelancer emergency emplacement emplacements
+engineers ephorate exorcism faith farm fast fastfireship feather
+feitoria fervor festival feudal fire fireship fish fishing flaming
+flemish fletching folwark forging fortification fortified furnace
+galleon galley gambesons garden gate gbeto gendarme genitour genoese
+ghulam gift gillnets goat gold goose grenadier guang guard guardsman
+guecha guilds gun halberdier hand handcart handed harbor haruspicy
+heated heavy heavycamelrider heavycavalryarcher heavydemoship
+heavyscorpion hei hemlock herbal heresy hippagretai hire hoardings
+holes hoplite horse houfnice house howdah hulk hull husbandry huskarl
+hussar hussite huszar hypozomata ibex ibirapema illumination imperial
+imperialskirmisher incendiaries incendiary infantry iron jaguar
 janissary jian kamayuk karambit karambitwarrior keep keshik kipchak
 knight ko kona konnik kopis kotthybos krepost laminated lancer lancers
 leather legionary leitis lembos leviathan liao light lightcavalry
 lighthouse lines llama long longboat longbowman longswordsman loom
 lumber lysanders maceman magyar mail mameluke man manatarms mangonel
 mangudai market marlin masonry medicine mercenaries military militia
-mill mining missionary monaspa monastery monk morai mounted mule murder
-mystery nu obuch offensive oligarchs oligarchy onager oracle organ
-ostrich outpost packed padded pagoda paladin palintonon palisade paragon
-parthian pastoralism pasture patrol perch petard phalangites picked pig
-pikeman plate plow plumed pontoon practice priest printing purification
-quell raft raid raider ram ramming range ranged ratha rattan
-rattanarcher recurve redemption redeploy relic repair requisition
-rhinoceros rider ring riot rocket rotation runner sacrificial sail
-salmon samurai sanctity sapper sappers satrapy savar saw scale scorpion
-scout scoutcavalry serjeant settlement shaft sheep ship shipwright shock
-shore shot shotelwarrior shrivamsha siege siegetower siphons skeuophoroi
-skirmisher slinger slits snapper spearman spies squires stable steppe
-steppelancer stone supllies supplies swordman swordsman syncretism
-tactics target tarkan telamon temple teutonic theatre theocracy
-thirisadai throwing thumb tiger tower town tracking traction trade
-tradecart train transhumance transport transportship trap treadmill
-treason trebuchet tribute trireme troops tuna tunnel turkey turtle
-turtles two twohanded tyranny university up upgrade urumi villager wagon
-wall war warrior warships watch water wheelbarrow winged woad wonder
-wood workshop wounded xianbei xyston yak zebra
+mill mining missionary monaspa monastery monk morai mounted mule
+murder mystery nu obuch offensive oligarchs oligarchy onager oracle
+organ ostrich outpost packed padded pagoda paladin palintonon palisade
+paragon parthian pastoralism pasture patrol perch petard phalangites
+picked pig pikeman plate plow plumed pontoon practice priest printing
+purification quell raft raid raider ram ramming range ranged ratha
+rattan rattanarcher recurve redemption redeploy relic repair
+requisition rhinoceros rider ring riot rocket rotation runner
+sacrificial sail salmon samurai sanctity sapper sappers satrapy savar
+saw scale scorpion scout scoutcavalry serjeant settlement shaft sheep
+ship shipwright shock shore shot shotel shotelwarrior shrivamsha siege
+siegetower siphons skeuophoroi skirmisher slinger slits snapper
+spearman spies squires stable steppe steppelancer stone supllies
+supplies swordman swordsman syncretism tactics target tarkan telamon
+temple teutonic theatre theocracy thirisadai thrower throwing thumb
+tiger tower town tracking traction trade tradecart train transhumance
+transport transportship trap treadmill treason trebuchet tribute
+trireme troops tuna tunnel turkey turtle turtles two twohanded tyranny
+university up upgrade urumi villager wagon wall war warrior warships
+watch water wheelbarrow white winged woad wonder wood workshop wounded
+xianbei xyston yak zebra
 """.split())
 
 # The event phrasings the game uses, learned from real lines. Longest
@@ -1284,7 +1710,31 @@ def join_wrapped(stack):
 # the bottom-most line of the stack; redisplayed history sits above newer
 # lines. So only the bottom line may fire, and every visible line
 # refreshes its cooldown so history cannot re-fire by scrolling back down.
+# How many raw spellings to remember the meaning of. Identifying a line
+# walks every sentence the game can print, and it now runs for every line
+# on every look rather than only when something arrives - so the same
+# misreads, which recur constantly, must not pay for it twice.
+IDENTITY_CACHE = 512
+
 TEXT_COOLDOWN_SECONDS = 15
+
+# The longest a single printed line can hold one place in the feed before
+# the only honest reading is that the game printed it again. This is the
+# ONE thing position cannot decide - a second print landing where the
+# first sat, with nothing arriving to push the first up - so it is a
+# tiebreaker rather than the mechanism.
+#
+# It is also the one number here that moves with the game's notification
+# duration setting (Options -> Interface), which is why it must be a
+# ceiling rather than a measurement: too low and a lingering line is
+# counted twice, too high and a genuine quiet-game repeat is missed. 90
+# seconds is far above the longest single appearance measured on the
+# NORMAL setting (p75 42 game seconds over four recordings of one game),
+# so it never fires on a line that is merely lingering. The blind spot it
+# leaves - two of the same thing inside one window with nothing else
+# arriving - is real, and for units the production queue closes it from
+# the other side.
+LINE_LIFETIME_SECONDS = 90
 
 # At most one unreadable-line crop is saved per this many game seconds -
 # enough to harvest from, not enough to flood the disk.
@@ -1343,6 +1793,17 @@ class TextWatcher:
     def __init__(self, save_unread=True):
         self.font = load_font()
         self._last_fired = {}
+        # value -> (place, since, last): where this line sat, when it
+        # first held that place, and when I last saw it. The whole
+        # counting mechanism - see _decide_arrival.
+        self._places = {}
+        self._identities = {}
+        # What was on screen last look, so an absence can be OBSERVED
+        # rather than inferred from elapsed time.
+        self._last_texts = set()
+        # Did the last look read the WHOLE feed? Only then is a line's
+        # absence from it evidence that the line has gone.
+        self._read_everything_last = False
         self._last_signature = None
         self._last_unread_save = None
         self.save_unread = save_unread
@@ -1424,57 +1885,63 @@ class TextWatcher:
         signature = tuple(stack)
 
         events = []
-        if stack and signature != self._last_signature:
-            previous = list(self._last_signature or ())
-            matched = _lcs_matched(previous, stack)
-            if matched:
-                shallowest = min(matched)
-                fresh = [stack[j]
-                         for j in range(shallowest + 1, len(stack))
-                         if j not in matched]
-            elif not previous or previous[-1] != stack[-1]:
-                fresh = stack[-1:]
-            else:
-                fresh = []
-            old_counts = _entry_counts(previous)
-            new_counts = _entry_counts(stack)
-            for entry in fresh:
-                kind, value = entry
-                if kind != "text":
-                    continue
-                # An arrival that grew its text's count is structurally
-                # new - a repeat in a burst - and outranks the cooldown;
-                # anything count-neutral is a flicker until the cooldown
-                # says otherwise. Only a real alignment earns the bypass:
-                # with nothing carried over there is no structure to
-                # trust.
-                grew = (bool(matched)
-                        and new_counts.get(entry, 0)
-                        > old_counts.get(entry, 0))
-                fired = self._last_fired.get(value)
-                if (grew or fired is None
-                        or game_time - fired >= TEXT_COOLDOWN_SECONDS):
-                    event = parse_event(value)
-                    if event is None:
-                        # The line read but no event came of it - one word
-                        # may be a confident misread the vocabulary-nearest
-                        # repair can place. Flagged on the way through: a
-                        # repaired event is evidence-backed but not a
-                        # letter-perfect read, and the log is what lets a
-                        # wrong repair be caught rather than trusted.
-                        repair = nearest_event_repair(value)
-                        if repair is not None:
-                            event, repaired_text = repair
-                            self._log_repair(value, repaired_text,
-                                             game_time)
-                    if event is not None:
-                        events.append(event)
-                self._last_fired[value] = game_time
+        # WHERE each line sits, counted from the newest upward: 0 is the
+        # bottom line, 1 is one above it, and so on. This is the whole
+        # counting mechanism - see _decide_arrival for why position can
+        # answer what a timer cannot.
+        places = {}
+        resolved = {}
+        for index, (kind, value) in enumerate(stack):
+            if kind != "text":
+                continue
+            place = len(stack) - 1 - index
+            # Identity FIRST. Two spellings of one line are one thing here,
+            # where before they were two - see _identify.
+            key, event, repaired = self._identify(value)
+            resolved[key] = (value, event, repaired)
+            lowest, copies = places.get(key, (place, 0))
+            places[key] = (min(lowest, place), copies + 1)
+
+        # With no prior knowledge of the feed there is no evidence that
+        # anything ARRIVED - a full panel on the first look is just as
+        # likely to be history I have never seen. Only the bottom line may
+        # speak then. This is the guard that stopped one Town Centre
+        # firing three times when the feed faded and redisplayed itself.
+        blind = not self._places
+        seen_now = set(places)
+        for key, (place, copies) in places.items():
+            if blind and place != 0:
+                self._places[key] = (place, copies, game_time)
+                continue
+            if self._decide_arrival(key, place, copies, game_time):
+                read, event, repaired = resolved[key]
+                # Logged on ARRIVAL rather than on identification, or a
+                # line lingering for twenty looks would file twenty
+                # identical repairs. A repaired event is evidence-backed
+                # but not a letter-perfect read, and this trail is what
+                # lets a wrong repair be caught rather than trusted.
+                if repaired is not None:
+                    self._log_repair(read, repaired, game_time)
+                if event is not None:
+                    events.append(event)
+
+        self._last_texts = seen_now
+        self._read_everything_last = not any(kind == "pixels"
+                                             for kind, _v in stack)
+
+        # Lines I have not seen for longer than one can possibly live are
+        # forgotten, so the next print of that text starts clean.
+        for value in [v for v, seen in self._places.items()
+                      if v not in places
+                      and game_time - seen[2] > LINE_LIFETIME_SECONDS]:
+            del self._places[value]
+
+        if stack:
             # The unread-save hook keeps its original trigger: a new
-            # unreadable band at the BOTTOM. Fresh entries cannot be
-            # mapped back to bands once join_wrapped has merged pairs,
-            # and the bottom is where a new line is sharpest.
+            # unreadable band at the BOTTOM. The bottom is where a new
+            # line is sharpest.
             kind, _bottom = stack[-1]
+            previous = list(self._last_signature or ())
             depth_grew = len(stack) > len(previous)
             bottom_changed = not previous or previous[-1] != stack[-1]
             if kind == "pixels" and (depth_grew or bottom_changed):
@@ -1483,9 +1950,169 @@ class TextWatcher:
         self._last_signature = signature
         return events
 
+    def _identify(self, value):
+        """What a read line IS, before anything is counted about it.
+
+        The counting mechanism keys on this rather than on the text, and
+        that ordering is the whole point. Every misread spelling of one
+        line is a text never seen before, so keying on the text made five
+        readings of one technology into five arrivals:
+
+            --Hand Can--  --Hand Cart--  --Hand Car--  --Hand Caet--
+
+        all of which resolved to `researched:hand_cart` AFTERWARDS, by
+        which point five events had already been emitted. The counter was
+        never wrong; it was handed five names for one thing. Decide what a
+        line is before counting it as anything.
+
+        Returns (key, event, repaired text or None). A line nothing can
+        identify keys on its own text: it produces no event either way, so
+        two spellings of an unknown line cost nothing, and it still gets
+        tracked for presence like any other.
+
+        Cached on the raw text because the same misreads recur constantly -
+        `nearest_line` walks every sentence the game can print, and this
+        now runs for every line on every look rather than only on arrival.
+        """
+        if value in self._identities:
+            return self._identities[value]
+
+        event, repaired = parse_event(value), None
+        if event is None:
+            fix = nearest_event_repair(value)
+            if fix is not None:
+                event, repaired = fix
+        if event is None:
+            # Imported here rather than at module scope: lines imports
+            # glyphs for the vocabulary, and this is the one direction
+            # that would close the loop.
+            from . import lines as line_reader
+            matched = line_reader.nearest_line(value)
+            if matched is not None:
+                repaired, event = matched
+
+        answer = (event if event is not None else value, event, repaired)
+        if len(self._identities) >= IDENTITY_CACHE:
+            self._identities.clear()
+        self._identities[value] = answer
+        return answer
+
+    def _decide_arrival(self, value, place, copies, game_time):
+        """Is this sighting a NEW print of the line, or one I already counted?
+
+        Position answers it, and a timer cannot. The feed puts a new line
+        at the BOTTOM and everything already there is pushed UPWARD; a
+        line has no mechanism to travel down. So, for the NEWEST copy of
+        this text on screen:
+
+          * never seen -> a new print. That covers a line appearing at the
+            bottom AND the burst case, where several arrived between looks
+            and this one was already pushed up before I first saw it.
+            Firing only on the bottom line silently dropped those -
+            measured, a five-line chunk arrived at once and the Mill and
+            Lumber Camp in its middle never fired.
+          * MORE COPIES than last look -> at least one more was printed.
+            This is the real burst: a second identical line arriving
+            beneath the first, which is how a 145-villager game was once
+            counted as eight.
+          * HIGHER, or unmoved -> the same print, drifting up or sitting.
+
+        A rule that BELONGS here by the invariant and is deliberately NOT
+        implemented: "lower than I last saw it, so the game printed
+        another". It follows from lines only ever moving up, and it is
+        still wrong - a capture taken mid-scroll transposes two adjacent
+        lines, and Loom sees a drop the game never made. Position is
+        stored and reported because it is the right thing to reason with;
+        it is not on its own allowed to convict.
+
+        Why this replaces the cooldown it grew out of. The old rule fired
+        on a 15-second timer measured with the game's notification
+        duration at its SHORTEST. On the normal setting - the default, and
+        what most players will have - a line outlives that cooldown 43% of
+        the time, so it re-fired: one lingering "--Barracks Built--" was
+        counted ELEVEN times across thirteen game seconds. Position does
+        not move when a player changes that setting, so the count stops
+        depending on a setting nothing enforces.
+
+        It disposes of the flicker for free, too. A line Loom loses sight
+        of and finds again has not moved, so it reads as the same print -
+        where the old rule watched it leave the stack and come back, and
+        counted it twice.
+
+        WHAT IT STILL CANNOT SEE: a second print landing in the same place
+        with nothing arriving to push the first one up. Position cannot
+        separate that from a line simply sitting there, and duration is
+        the only other evidence - but a lingering line must never refire,
+        so that door stays shut here. For units the production queue
+        closes it from the other side; for buildings it stays open.
+        """
+        seen = self._places.get(value)
+        if seen is None:
+            self._places[value] = (place, copies, game_time)
+            return True
+        was_at, before, last = seen
+        # More copies on screen than last look: a second identical line
+        # arrived beneath the first. That is the real burst, and the
+        # undercount it fixes is a 145-villager game once counted as eight.
+        more = copies > before
+        # Or it was gone long enough to have PROVABLY left and come back.
+        # This is the cooldown doing the job it is actually good at -
+        # judging an absence - rather than rate-limiting a line that never
+        # went anywhere. A gap shorter than this is a read that wobbled,
+        # not a line that left; a gap longer is a departure.
+        # Absence has to be OBSERVED, not inferred from the clock. A line
+        # I saw last look never went anywhere however long ago that look
+        # was - the poll rate is not a clock, and reading a gap between
+        # two distant polls as a departure refired a line that had sat
+        # there the whole time.
+        #
+        # And not inferred from a FAILED READ either, which is the same
+        # mistake one step further in. "It is not among the texts I read"
+        # and "it is not on the screen" are different claims, and only the
+        # second is evidence. A look that left any band unread cannot
+        # support the second, so it is no longer allowed to: measured over
+        # a whole game this branch produced 103 of 234 firings, and its
+        # biggest single contributor was `--ViBager Created--`, one misread
+        # of Villager flickering in and out of legibility 33 times.
+        #
+        # A complete look is still not enough on its own, because a band
+        # that was never DETECTED is not an unread band - it is simply not
+        # in the stack, so a line fading at the top edge of the panel
+        # produces a look that reads everything it found and does not
+        # contain the line. Every remaining over-count in a whole game was
+        # that: an archery range, a castle and two barracks coming back at
+        # the same or a HIGHER position, 15 to 70 seconds later.
+        # And it has to have come back LOWER than it sat before. A new
+        # print enters at the bottom, so a line that has not moved DOWN
+        # cannot be one - it is the line that was already there. Coming
+        # back AT the bottom counts on its own: place 0 is where a new
+        # print goes, and a lone line on an empty feed never has anywhere
+        # lower to return to. Note the
+        # direction this is used in: not "lower, therefore a new print",
+        # which is the refuted rule above, but "not lower, therefore not a
+        # new print". A veto rather than a conviction, and it does not
+        # care whether a mid-scroll capture transposed two lines, because
+        # a transposition can only ever manufacture the evidence this
+        # refuses to accept.
+        came_back_lower = place == 0 or place < was_at
+        returned = (self._read_everything_last
+                    and came_back_lower
+                    and value not in self._last_texts
+                    and game_time - last >= TEXT_COOLDOWN_SECONDS)
+        self._places[value] = (place, copies, game_time)
+        return more or returned
+
     def reset(self):
-        """Forget sightings. Call when a new game starts."""
+        """Forget sightings. Call when a new game starts.
+
+        `_identities` is deliberately NOT cleared. It maps a rendering to
+        its meaning, and a new game does not change what a line says - the
+        same reasoning `_read_cache` is kept on.
+        """
         self._last_fired.clear()
+        self._places.clear()
+        self._last_texts = set()
+        self._read_everything_last = False
         self._last_signature = None
 
     def _log_repair(self, read, repaired, game_time):

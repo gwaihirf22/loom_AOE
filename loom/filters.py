@@ -88,11 +88,19 @@ class StableClock:
         self._candidate = None
         self._seen_count = 0
 
+        # Did I lose sight of the clock since the value I believe now?
+        # This is the ONLY thing that licenses believing a big forward
+        # leap, so it is observed - unreadable polls - and never counted
+        # off a wall clock. It starts True because the first reading has
+        # no history behind it and must be free to be anything.
+        self._lost_sight = True
+
     def update(self, reading):
         """Feed in one reading, in seconds. Returns the believed game time."""
         if reading is None:
             self._candidate = None
             self._seen_count = 0
+            self._lost_sight = True
             return self.value
 
         # The very first reading has nothing to be compared against, so it
@@ -107,10 +115,31 @@ class StableClock:
             self.value = reading
             self._candidate = None
             self._seen_count = 0
+            self._lost_sight = False
             return self.value
 
-        # Backwards, or a big leap. Could be a new game, could be a misread.
+        if step > self.max_step and not self._leap_is_believable():
+            # Refused outright rather than put to a vote, because the
+            # only witness the vote can call is the reader that just
+            # made the mistake. Nothing is remembered about it either -
+            # a refused reading must leave no trace that could help the
+            # next copy of it get in.
+            self._candidate = None
+            self._seen_count = 0
+            return self.value
+
+        # Backwards, or a leap I cannot rule out. Could be a new game,
+        # could be a misread - so it still has to be confirmed.
         return self._confirm(reading)
+
+    def _leap_is_believable(self):
+        """Could the game clock really have jumped this far forward?
+
+        The clock is read off the screen, so the only honest evidence
+        about a gap is whether I stopped being able to read it. See
+        `self._lost_sight`.
+        """
+        return self._lost_sight
 
     def _confirm(self, reading):
         """Only accept a surprising reading if a later one backs it up.

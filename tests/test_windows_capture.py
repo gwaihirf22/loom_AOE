@@ -153,23 +153,49 @@ def test_the_largest_wins_among_the_game_s_own_windows():
     assert windows.choose_window([small, main]) is main
 
 
-def test_corroboration_narrows_but_never_empties():
-    """If no candidate looks like the game by executable, the title matches
-    still stand. A renamed binary or an unexpected launcher must not make the
-    game unfindable - narrowing the field is worth having, refusing to answer
-    is not."""
-    only = window(1, 1920 * 1080, "something_unexpected.exe")
+def test_an_uncorroborated_title_is_refused():
+    """This used to return the impostor, and it cost a whole evening.
 
-    assert windows.choose_window([only]) is only
+    With AoE2 closed and a browser open on the aoc-mgz README, the only
+    title match was Vivaldi. The old rule said corroboration "narrows the
+    field and never empties it" and handed the browser back as the game
+    window. Loom then measured the overlay's saved position against a
+    browser tab on another monitor: a panel placed at the main display's
+    top-right reopened somewhere else, and Reset put the "default" corner
+    over the second screen. No error, no warning - just coordinates that
+    were quietly about the wrong window.
+
+    "I could not corroborate this" is not "believe it anyway". The same
+    rule as everywhere else in Loom: an admitted gap beats a wrong reading.
+    """
+    browser = window(1, 3840 * 2160, "vivaldi.exe")
+
+    assert windows.choose_window([browser]) is None
 
 
-def test_an_unreadable_executable_does_not_disqualify():
+def test_an_unreadable_executable_is_refused_too():
     """_process_name returns "" when Windows refuses to say - a process at a
-    higher integrity level, say. Not knowing costs the corroboration and must
-    not cost the match."""
+    higher integrity level, say.
+
+    Tempting to let this one through, since not knowing is not the same as
+    knowing it is wrong. But "" corroborates nothing, and a rule that
+    accepts an unknown executable is exactly the rule that accepted the
+    browser: it cannot tell the game it failed to identify from the impostor
+    it never checked. Loom says it is still waiting for the game instead,
+    which is true.
+    """
     unknown = window(1, 1920 * 1080, "")
 
-    assert windows.choose_window([unknown]) is unknown
+    assert windows.choose_window([unknown]) is None
+
+
+def test_the_game_is_still_found_beside_an_impostor_it_cannot_outsize():
+    """Refusing must not have cost the ordinary case."""
+    browser = window(1, 3840 * 2160, "vivaldi.exe")
+    unknown = window(2, 3840 * 2160, "")
+    game = window(3, 800 * 600, "aoe2de_s.exe")
+
+    assert windows.choose_window([browser, unknown, game]) is game
 
 
 # ---- the seam -------------------------------------------------------------

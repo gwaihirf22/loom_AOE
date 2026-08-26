@@ -60,7 +60,23 @@ def test_the_overlay_is_frameless_and_stays_on_top():
 
 def test_placement_mode_still_takes_mouse_input():
     # --place exists precisely so the panel CAN be dragged. A window with an
-    # empty input region cannot be picked up by the window manager at all, so
-    # the passthrough flag must never leak into this branch.
+    # empty input region cannot be picked up at all, so the passthrough flag
+    # must never leak into this branch.
     assert not (int(PLACING_WINDOW_FLAGS) & TRANSPARENT)
     assert window_type(PLACING_WINDOW_FLAGS) == int(Qt.WindowType.Window)
+
+
+def test_placement_mode_is_frameless_like_the_real_panel():
+    # The point of placement is judging a TRANSLUCENT card against the game.
+    # A title bar and a border are opaque chrome the overlay proper does not
+    # have, so a framed placement window shows the player a panel that is
+    # not the one they will play with - which is the whole question it was
+    # opened to answer.
+    assert int(PLACING_WINDOW_FLAGS) & int(Qt.WindowType.FramelessWindowHint)
+
+
+def test_placement_mode_is_not_a_tooltip():
+    # ToolTip is what lifts the real overlay above a full-screen game, but
+    # it is not a type Qt hands keyboard focus - and placement needs Escape
+    # to abandon a position as much as it needs the mouse to choose one.
+    assert window_type(PLACING_WINDOW_FLAGS) != int(Qt.WindowType.ToolTip)

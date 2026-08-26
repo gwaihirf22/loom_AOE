@@ -411,27 +411,47 @@ def _candidate_windows(fragment):
 
 
 def choose_window(candidates):
-    """Which of the title matches is actually the game? None if there are none.
+    """Which of the title matches is actually the game? None if none is.
 
     A title fragment on its own is a guess: "Age of Empires II" matches a
     browser tab reading the wiki just as happily as the game. The executable
     name is the corroboration - the same move identify_hud makes when it
     refuses to name a HUD skin on the evidence of a single icon.
 
-    If nothing matches by executable the title matches still stand, so an
-    unexpected launcher or a renamed binary cannot make the game unfindable;
-    the corroboration narrows the field when it can and never empties it.
+    An uncorroborated title match is REFUSED, and that is the whole point of
+    this function. It used to fall back to the title matches when no
+    executable matched, reasoning that a renamed binary should not make the
+    game unfindable - so the corroboration "narrowed the field when it could
+    and never emptied it". What that actually did was promote "I could not
+    corroborate this" to "believe it anyway", which is the never-guess rule
+    broken in the place it is least visible.
 
-    Largest wins within whichever pool survives: the game's main window dwarfs
-    any tool window it owns.
+    Measured, with the game not running: Loom picked a Vivaldi window titled
+    "happyleavesaoc/aoc-mgz: Age of Empires II recorded game parsing ..." and
+    reported it as the game window at (2042, 108). Every consumer believed
+    it. The overlay measured its saved position against a browser tab on
+    another monitor, so a panel placed at the main display's top-right came
+    back somewhere else entirely, and Reset put the "default" corner over the
+    second screen. Nothing failed and nothing warned; from the outside it
+    looked like the overlay had simply stopped remembering where it was put.
+
+    The cost of refusing is the case the fallback was written for - a game
+    binary named something with no "aoe" in it is now invisible to Loom. That
+    is the right way round: a game Loom cannot find says "waiting for the Age
+    of Empires II window", which is true and actionable, where a browser tab
+    accepted as the game is a wrong reading that silently poisons every
+    coordinate downstream.
+
+    Largest wins among the corroborated: the game's main window dwarfs any
+    tool window it owns.
 
     A pure function of a list of dicts, so the rule is testable without a
     desktop full of windows to arrange.
     """
-    if not candidates:
-        return None
     by_exe = [w for w in candidates if GAME_EXE_FRAGMENT in w.get("exe", "")]
-    return max(by_exe or candidates, key=lambda w: w["area"])
+    if not by_exe:
+        return None
+    return max(by_exe, key=lambda w: w["area"])
 
 
 @_translates_errors

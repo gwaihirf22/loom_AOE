@@ -32,3 +32,19 @@ pyobjc-core==11.1 ; sys_platform == "darwin"
 pyobjc-framework-Cocoa==11.1 ; sys_platform == "darwin"
 pyobjc-framework-Quartz==11.1 ; sys_platform == "darwin"
 pyobjc-framework-ScreenCaptureKit==11.1 ; sys_platform == "darwin"
+
+# Reading a recorded game after a match ends: loom/replay.py. This is the
+# only ruler Loom has that is not one of Loom's own readers, and it has
+# already earned its place - it is what proved a stats file claiming 55:45
+# was a clock misread of a 36:00 game.
+#
+# Imported LAZILY, inside the function that parses. Most runs never open a
+# record and a frozen build should not pay for the import.
+#
+# Only mgz.fast is used, which pulls `construct` and nothing else; aocref
+# and tabulate belong to the header path, which Loom never reads.
+#
+# Pinned to a fork, and that is TEMPORARY - save version 67.2 moved two
+# header fields and nothing on PyPI reads them. The fix is upstream as
+# happyleavesaoc/aoc-mgz#147; when it lands this goes back to `mgz==x.y.z`.
+mgz @ git+https://github.com/gwaihirf22/aoc-mgz.git@support-save-version-67-2

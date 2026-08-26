@@ -319,7 +319,55 @@ def migrate_legacy_writables():
 # overlay falls back to words when an icon is missing.
 ICONS_DIR = PROJECT_ROOT / "icons"
 
-# The personal icon library (gitignored, ~400 game images keyed by the same
-# relative paths the build orders' @icon@ tokens use). Everything that draws
-# from it degrades to words when it is absent, so a fresh clone still works.
+# The build-step icon library: ~400 game images keyed by the same relative
+# paths the build orders' @icon@ tokens use. It SHIPS - it was excluded once
+# and the builds that predate it are still written in words because of it -
+# and README.md carries the game-art position. Everything that draws from it
+# still degrades gracefully when a file is missing, because the player can
+# add their own and a half-built bundle is a real thing.
 ICON_LIBRARY_DIR = PROJECT_ROOT / "master_aoe2_images"
+
+
+# Which BUILD produced a file, finer than any version number can be.
+#
+# meta.loom has always been recorded, and it cannot answer the question it
+# looks like it answers: __version__ moves on releases, not on commits, so
+# every file written on a day when three reader fixes landed carries the
+# same 1.0.5 on both sides of them. Grouping a corpus by version therefore
+# mixes reader generations and manufactures the archaeology it was meant
+# to prevent.
+#
+# Bumping __version__ by hand on "material" reader changes was the
+# alternative and was rejected: it makes a machine-checkable fact depend
+# on discipline, its failure mode is SILENT, and it overloads a number the
+# launcher shows to players. This asks the machine instead.
+#
+# It is allowed to be ABSENT, and absence means something - "this file
+# predates commit stamping" is a real answer, and a better one than a
+# guess.
+BUILD_STAMP = PROJECT_ROOT / "BUILD_COMMIT"
+
+
+def build_commit():
+    """The commit this Loom was built or is running from, or None.
+
+    From source, git is asked. Frozen, git is not there and the source
+    tree may not be either, so the packaging step writes BUILD_COMMIT into
+    the bundle and this reads it back.
+    """
+    if getattr(sys, "frozen", False) or BUILD_STAMP.exists():
+        try:
+            stamped = BUILD_STAMP.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return stamped or None
+    try:
+        import subprocess
+        found = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, ValueError):
+        return None
+    if found.returncode != 0:
+        return None
+    return found.stdout.strip() or None

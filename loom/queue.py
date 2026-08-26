@@ -175,6 +175,59 @@ TECH_IDENTITIES = frozenset({
     "ballistics", "hoardings", "pikeman_upgrade",
 })
 
+# Every template's kind, as data: templates/queue/KINDS.tsv, written by
+# tools/classify_queue_icons.py. TECH_IDENTITIES above is the subset this
+# module's count reconciliation has always trusted; the file is the whole
+# picture, and it says "unknown" where nobody has checked rather than
+# defaulting to unit - which is what the old drift guard let happen
+# silently, being a tautology that could not fail.
+#
+# Kept SEPARATE from TECH_IDENTITIES on purpose, for now: widening the
+# reconciliation to 400 identities changes what the live reader believes
+# about counts, and that belongs behind the author's own testing rather
+# than arriving as a side effect of a statistics feature.
+KINDS_PATH = paths.TEMPLATES_DIR / "queue" / "KINDS.tsv"
+
+UNIT, TECHNOLOGY = "unit", "technology"
+# Buildings never appear in the global queue - only units and techs do -
+# so a building template is pure confusion surface, and naming which
+# ones they are beats calling them technologies nobody can research.
+# Herdables and huntables the feed names. Not produced, not
+# researched: a kind of their own so that UNKNOWN keeps meaning
+# "nobody has looked" rather than "my two boxes did not fit".
+ANIMAL = "animal"
+BUILDING, UNKNOWN = "building", "unknown"
+
+_kinds = None
+
+
+def identity_kinds():
+    """{identity: "unit" | "technology" | "unknown"}, read once.
+
+    A missing file is not fatal - everything simply reads as unknown,
+    which is the honest answer when the classification is absent.
+    """
+    global _kinds
+    if _kinds is None:
+        found = {}
+        try:
+            text = KINDS_PATH.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        for line in text.splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            identity, _, kind = line.partition("\t")
+            if kind.strip() in (UNIT, TECHNOLOGY, BUILDING, ANIMAL, UNKNOWN):
+                found[identity.strip()] = kind.strip()
+        _kinds = found
+    return _kinds
+
+
+def kind_of(identity):
+    """Is this a unit, a technology, or has nobody said? Never guesses."""
+    return identity_kinds().get(identity, UNKNOWN)
+
 # The occupancy content gate needs a STRONGER identity than the matcher's
 # floor: a flat panel with a bright frame - which is what per-civ corner
 # decor looks like - reaches 0.30 against the dark-silhouette tech icons
