@@ -739,3 +739,22 @@ def set_preview_text_scale(value):
     save(settings)
     return settings
 
+
+# Attach the match's own recorded game when a game ends.
+#
+# On by default, because a stats file is worth much more with one and the
+# boundary is enforced in loom/replay.py regardless. Off is a real choice:
+# it means Loom opens files in the player's savegame folder, and some
+# people will not want that whatever the safeguards say.
+ATTACH_RECORDED_GAME = "attach_recorded_game"
+
+
+def attach_recorded_game():
+    return bool(load().get(ATTACH_RECORDED_GAME, True))
+
+
+def set_attach_recorded_game(enabled):
+    settings = load()
+    settings[ATTACH_RECORDED_GAME] = bool(enabled)
+    save(settings)
+

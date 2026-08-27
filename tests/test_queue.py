@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from loom import hud, queue
+from loom import anchor, hud, queue
 from loom.production import (ProductionTracker, PRODUCTION_IDLE,
                              PRODUCTION_RESUMED, HOUSED, POP_CAPPED, UNBLOCKED)
 
@@ -922,3 +922,96 @@ def test_an_emptied_slot_stops_vouching_for_what_follows():
     identity, _, _ = reader._identify_cached(0, gray, has_content=False)
 
     assert identity != "galley" or identity is None
+
+
+# ---- a wash is judged against the icon, not against the cell -------------
+#
+# Every threshold over the cell's own pixels failed here, and the reason is
+# one measurement: across four capture runs the busiest warm ARTWORK the game
+# draws in a queue cell (a flame icon) reaches 0.245 on the most selective
+# red mask I could build, and the faintest real wash starts at 0.248. Three
+# thousandths apart, so there is no bar to find. These tests are written
+# against that fact rather than against the numbers that came out of the fix,
+# so a future "simplification" back to a threshold fails here rather than in
+# a game.
+
+def _icon(colour, size=40):
+    """A flat icon with a dark border, so some of it counts as background."""
+    icon = np.zeros((size, size, 3), np.uint8)
+    icon[4:-4, 4:-4] = colour
+    return icon
+
+
+def _washed(icon, blue=0.03, green=0.03, red=0.72):
+    """The same icon under a multiplicative wash, as the game draws one."""
+    out = icon.astype(float)
+    out[:, :, 0] *= blue
+    out[:, :, 1] *= green
+    out[:, :, 2] *= red
+    return out.astype(np.uint8)
+
+
+def test_a_wash_is_seen_on_a_cool_icon():
+    icon = _icon((200, 170, 90))          # a blue-and-brown villager
+    assert queue.wash_against_icon(_washed(icon), [icon]) == "red"
+
+
+def test_a_wash_is_seen_on_a_warm_icon_too():
+    # The case the thresholds could not reach. A red-and-gold icon under a
+    # red wash is barely redder than it already was in absolute terms; it is
+    # its RATIO to its own picture that gives the wash away.
+    icon = _icon((40, 90, 210))           # the Loom tartan, roughly
+    assert queue.wash_against_icon(_washed(icon), [icon]) == "red"
+
+
+def test_warm_artwork_with_no_wash_is_not_a_wash():
+    # The flame icon at 0.245. Unwashed it IS its own template, so every
+    # channel ratio is 1 and there is nothing to report - however red it is.
+    icon = _icon((20, 120, 240))
+    assert queue.wash_against_icon(icon, [icon]) is None
+
+
+def test_an_unknown_icon_yields_no_verdict():
+    # "I cannot name this picture" must not become "this picture is not
+    # washed" - the cell simply keeps whatever classify_tint said.
+    assert queue.wash_against_icon(_icon((200, 170, 90)), []) is None
+    assert queue.wash_against_icon(_icon((200, 170, 90)), None) is None
+
+
+def test_a_dark_cell_is_not_a_wash():
+    # Nothing to be a fraction of. Without the floor, noise in a black cell
+    # divides into a ratio that looks exactly like a wash.
+    icon = _icon((200, 170, 90))
+    assert queue.wash_against_icon(np.zeros_like(icon), [icon]) is None
+
+
+def test_the_right_variant_is_chosen():
+    # The age shields differ per architecture region. Comparing a washed
+    # Middle Eastern crest against a European one measures the difference
+    # between two civs, not the presence of a wash.
+    mine = _icon((60, 60, 200))
+    other = _icon((200, 60, 60))
+    assert queue.wash_against_icon(_washed(mine), [other, mine]) == "red"
+    assert queue.wash_against_icon(mine, [other, mine]) is None
+
+
+def test_the_reader_upgrades_an_unnamed_wash_to_red():
+    # End to end on the frame this investigation started from: a red-washed
+    # villager sitting behind a Feudal Age research, in a housed game. The
+    # villager must read red; the crest, whose own art is red and grey, must
+    # keep reading untinted - it was genuinely in progress.
+    run = paths.PROJECT_ROOT / "captures" / "run_20260826_142630_annehk"
+    frame_path = run / "frame_0143.png"
+    if not frame_path.exists():
+        pytest.skip("capture run not present")
+    frame = cv2.imread(str(frame_path))
+    found = anchor.identify_hud(
+        frame, {p: anchor.load_template(p) for p in hud.PROFILES},
+        wood_templates={p: queue.load_wood_template(p) for p in hud.PROFILES})
+    assert found is not None
+    slots = queue.QueueReader(found["profile"]).read(frame, found["scale"])
+    by_index = {slot.index: slot for slot in slots}
+    assert by_index[1].identity == "villager_female"
+    assert by_index[1].tint == "red"        # was None, and minted a phantom TC
+    assert by_index[0].identity == "feudal_age"
+    assert by_index[0].tint is None         # its own heraldry, not a wash

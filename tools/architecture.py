@@ -30,6 +30,12 @@ The three rules, and the asymmetry that matters:
    a module added next month is invisible on the map until someone draws it,
    and rule 3 is what makes that a failing test rather than a silent gap.
 
+A block may opt down to FUNCTION granularity by naming the file its boxes
+live in (`%% functions: loom/queue.py`). Not every story is module-shaped -
+`production` never imports `queue`, it is handed slot readings as data - and
+such a block is checked against that file's own definitions instead of
+against the import graph. Different oracle, same promise.
+
     python -m tools.architecture            # the real graph, as text
     python -m tools.architecture --check    # gate the drawing against it
 """
@@ -122,24 +128,126 @@ def _node_id(text):
     return match.group(1) if match else None
 
 
-def diagram_edges(markdown):
-    """Every (feeds, fed) pair drawn in the mermaid blocks of a document."""
-    edges = []
-    inside = False
+# A block may say it is drawn at function granularity instead of module
+# granularity, by naming the file its boxes live in:
+#
+#     ```mermaid
+#     %% functions: loom/queue.py
+#     flowchart LR
+#         classify_tint --> wash_against_icon
+#     ```
+#
+# Some stories are not module-shaped. `production` never imports `queue` -
+# it is handed slot readings as plain data - so the most useful picture of
+# how a queue cell becomes a belief cannot be drawn with module boxes at
+# all, and before this it could not be drawn here at all.
+#
+# The escape hatch keeps the promise rather than spending it. A declared
+# block is not exempt from checking, it is checked against a DIFFERENT
+# oracle: every box must be a function or constant that really is defined
+# in the named file. So the rule is the same one the module blocks live by
+# - a map may simplify, it may not invent - applied one level down. What a
+# declared block does NOT do is satisfy rule 3: drawing a function is not
+# drawing its module, and a module still has to appear somewhere.
+FUNCTION_BLOCK = re.compile(r"^%%\s*functions:\s*(\S+)")
+
+
+def _blocks(markdown):
+    """Every mermaid block, as (declared source file or None, lines)."""
+    blocks = []
+    inside, source, lines = False, None, []
     for line in markdown.splitlines():
         stripped = line.strip()
         if stripped.startswith("```"):
+            if inside:
+                blocks.append((source, lines))
             inside = stripped.startswith("```mermaid")
+            source, lines = None, []
             continue
-        if not inside or stripped.startswith("%%"):
+        if not inside:
             continue
-        match = ARROW.match(stripped)
+        declared = FUNCTION_BLOCK.match(stripped)
+        if declared:
+            source = declared.group(1)
+            continue
+        if not stripped.startswith("%%"):
+            lines.append(stripped)
+    if inside:
+        blocks.append((source, lines))
+    return blocks
+
+
+def _edges_in(lines):
+    edges = []
+    for line in lines:
+        match = ARROW.match(line)
         if not match:
             continue
-        source, target = _node_id(match.group(1)), _node_id(match.group(2))
-        if source and target:
-            edges.append((source, target))
+        feeds, fed = _node_id(match.group(1)), _node_id(match.group(2))
+        if feeds and fed:
+            edges.append((feeds, fed))
     return edges
+
+
+def diagram_edges(markdown):
+    """Every (feeds, fed) pair drawn at MODULE granularity in a document.
+
+    Function-level blocks are deliberately absent: their boxes are not
+    modules, so measuring them against the import graph would report a
+    dozen phantom modules. They get their own check in function_complaints.
+    """
+    edges = []
+    for source, lines in _blocks(markdown):
+        if source is None:
+            edges.extend(_edges_in(lines))
+    return edges
+
+
+def defined_names(source):
+    """Every function, class and module-level constant defined in a file."""
+    path = paths.PROJECT_ROOT / source
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            names.add(node.name)
+            if isinstance(node, ast.ClassDef):
+                names.update(child.name for child in node.body
+                             if isinstance(child, (ast.FunctionDef,
+                                                   ast.AsyncFunctionDef)))
+        elif isinstance(node, ast.Assign):
+            names.update(target.id for target in node.targets
+                         if isinstance(target, ast.Name))
+    return names
+
+
+def function_complaints(markdown=None):
+    """Every box in a function-level block that names nothing real."""
+    if markdown is None:
+        with open(DIAGRAM_DOC, encoding="utf-8") as handle:
+            markdown = handle.read()
+    problems = []
+    for source, lines in _blocks(markdown):
+        if source is None:
+            continue
+        try:
+            names = defined_names(source)
+        except (OSError, SyntaxError):
+            problems.append(
+                f"a diagram declares '%% functions: {source}' but that file "
+                f"cannot be read - the declaration is what makes the block "
+                f"checkable, so a wrong path turns the check off silently")
+            continue
+        drawn = {name for edge in _edges_in(lines) for name in edge}
+        for name in sorted(drawn):
+            if name not in names and name not in EXTERNAL:
+                problems.append(
+                    f"box {name!r} is not defined in {source} - a function "
+                    f"box that names nothing real is the same phantom a "
+                    f"module box would be, one level down")
+    return problems
 
 
 LAYOUT_DOC = paths.PROJECT_ROOT / "CLAUDE.md"
@@ -211,6 +319,8 @@ def complaints(markdown=None, imports=None):
             problems.append(
                 f"module {name!r} appears in no diagram - a part of the "
                 f"system the map does not admit exists")
+
+    problems.extend(function_complaints(markdown))
     return problems
 
 

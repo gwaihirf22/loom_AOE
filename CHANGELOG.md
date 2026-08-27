@@ -6,6 +6,60 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.7 — 2026-08-26
+
+### Fixed
+
+- **Loom could invent a Town Centre and then bill you for it being idle.**
+  When production is blocked — housed, most often — the game washes the
+  queued item red. Loom could not reliably see that wash, and a wash it
+  could not name looked exactly like a freshly-placed item, which is
+  evidence that *another* Town Centre is working. The believed count only
+  ever grows, so one such frame stuck for the rest of the game: a 47-minute
+  game with a single Town Centre reported **1907 seconds of idle Town
+  Centre time**, 517 of them unbroken, and TC IDLE sat on screen through an
+  age-up. Older versions were worse, not better — one 1.0.4 game believed
+  in **thirteen** Town Centres.
+
+  No threshold could fix it, and four were measured: the busiest artwork
+  the game draws in a queue cell reaches 0.245 on the most selective test,
+  and the faintest real wash begins at 0.248. A wash *multiplies* the icon
+  underneath it, so the wash is now judged against that icon — Loom already
+  had the picture on disk and was throwing the colour away. Across four
+  recordings on two HUD skins at two resolutions it now finds nearly twice
+  as many washes and gets zero wrong on cells that were already read
+  correctly.
+- **The launcher's output pane was never fixed-width on Windows.** It asked
+  for a font called "Monospace", which does not exist there; Qt satisfied
+  the family lookup with the UI font and then had no reason to consult the
+  Monospace style hint, so the pane resolved to Tahoma and every column of
+  pytest's aligned output has been out of line for every Windows user. The
+  same wrong font is what printed those intermittent
+  `DirectWrite: CreateFontFaceFromHDC() failed` lines in the terminal:
+  Windows offers `8514oem`, a legacy raster face, as the Monospace
+  substitute and DirectWrite cannot load it. It resolves to Consolas now.
+- **"What you ordered (recorded game)" on the build chart drew nothing.**
+  The checkbox had been offering the recorded game and plotting no line at
+  all for several versions. It draws now.
+- **The recorded game and APM were the same colour.** Two violets a single
+  digit apart, which is one colour to anyone looking at a chart, and they
+  landed on the same axes the moment replay-derived APM arrived. Loom's own
+  readings are green throughout and the recorded game is violet, on every
+  chart and in the tables.
+- **Hovering the Society chart quoted one line out of the four drawn.**
+  Population and house room had no entry in the readout at all, so two
+  series were silently dropped, and the recorded game's line was never
+  wired to it.
+
+### Changed
+
+- **The statistics window says which numbers came from the recorded game**,
+  per row rather than per heading. A violet heading over a mixed table told
+  you the section involved the record without telling you which figures did.
+- Villagers, population and house room now sit **nested under "Loom read"**
+  rather than beside it, because they are subdivisions of that witness and
+  not peers of it.
+
 ## 1.0.6 — 2026-08-26
 
 ### Fixed

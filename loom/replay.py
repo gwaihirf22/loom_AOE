@@ -382,3 +382,171 @@ def harvest(path, player=1):
         elif kind in ("DE_QUEUE", "MAKE"):
             truth.queued[data["unit_id"]] += data.get("amount", 1)
     return truth
+
+
+# Commands the game acted on, bucketed the same way the keystroke counter
+# buckets keystrokes, so the two series are directly comparable rather
+# than merely adjacent.
+COMMAND_BUCKET_SECONDS = 5
+
+# Actions that are the AI thinking rather than a person acting. A skirmish
+# opponent issues WORK and AI_ORDER by the tens of thousands - measured,
+# 32993 and 8477 in one game against a human's 2477 commands total - and
+# counting those as "actions per minute" would put the AI at 925 and
+# invite a comparison that means nothing.
+#
+# Only ever applied to a player the header says is an AI. A human's WORK
+# commands are real work.
+AI_ONLY_ACTIONS = {"AI_ORDER", "WORK", "GAME"}
+
+
+def command_rate(path, player=1, drop_ai_noise=False):
+    """Actions per minute from the game's own log, on the game clock.
+
+    A DIFFERENT QUANTITY from apmwin.py's, and the difference is the
+    point. That counts keystrokes and clicks at the keyboard - every
+    repeat, every hotkey mashed twice, every misclick. This counts what
+    the game actually ACTED on. Neither is wrong and neither is the other,
+    so they are never blended and never share a name: the gap between them
+    is wasted input, which is a thing worth showing a player about
+    themselves and which nothing else can show, because no replay tool
+    sees the keyboard and nothing at the keyboard sees the game.
+
+    Returns the same shape apm.align does, so the chart draws both series
+    the same way.
+    """
+    counted = collections.Counter()
+    total = 0
+    for second, kind, data in operations(path):
+        if data.get("player_id") != player:
+            continue
+        if drop_ai_noise and kind in AI_ONLY_ACTIONS:
+            continue
+        counted[second // COMMAND_BUCKET_SECONDS] += 1
+        total += 1
+    if not counted:
+        return None
+    buckets = sorted(counted)
+    return {
+        "t": [b * COMMAND_BUCKET_SECONDS for b in buckets],
+        "apm": [counted[b] * (60 / COMMAND_BUCKET_SECONDS) for b in buckets],
+        "commands_total": total,
+        "bucket_seconds": COMMAND_BUCKET_SECONDS,
+    }
+
+
+# What a player is called when the game did not record a name. Skirmish
+# opponents arrive with an empty string, which must not print as a blank
+# row - "" is the absence of a name, not a name.
+UNNAMED = "an unnamed opponent"
+
+
+def civilisation_name(ident, dataset=100):
+    """"Ethiopians" for 25. None when nothing knows.
+
+    Read from aocref's shipped dataset rather than hand-listed here. A
+    hand table of 59 civilisations would drift the moment an expansion
+    lands and would fail the way every hand-curated list in this project
+    has failed - silently, on the entry nobody checked.
+    """
+    try:
+        import json
+        import aocref
+        path = (Path(aocref.__file__).parent / "data" / "datasets"
+                / f"{dataset}.json")
+        civs = json.loads(path.read_text(encoding="utf-8"))["civilizations"]
+    except Exception:
+        return None
+    found = civs.get(str(ident))
+    return found.get("name") if found else None
+
+
+def summary(path):
+    """The header: who played, as what, on which map, and who won.
+
+    NONE OF THIS IS ON THE HUD. A stats file has never been able to say
+    whether the game was won, because winning is not drawn anywhere Loom
+    reads. It is the cheapest large thing the recorded game offers.
+
+    Refused by the same rule as the body - a match still being played is
+    not readable, whichever end of the file is being asked - and the
+    header is only reachable at all through the fork pinned in
+    requirements.txt; the released mgz cannot parse save version 68.0.
+
+    Returns None rather than raising on a header that will not parse, so
+    a game still enriches with its body when its header is beyond us.
+    """
+    refused = refusal_reason(path)
+    if refused:
+        raise GameStillRunning(refused)
+    try:
+        from mgz.summary import Summary          # lazy: see module notes
+        with open(path, "rb") as handle:
+            found = Summary(handle)
+        dataset = (found.get_dataset() or {}).get("id", 100)
+        players = []
+        for player in found.get_players():
+            name = (player.get("name") or "").strip()
+            players.append({
+                "name": name or UNNAMED,
+                "named": bool(name),
+                "civilisation": civilisation_name(
+                    player.get("civilization"), dataset),
+                "civilisation_id": player.get("civilization"),
+                "winner": player.get("winner"),
+                # mgz's own single-figure eAPM. Kept beside Loom's series
+                # rather than instead of it: this is one number for the
+                # whole game, and it agrees - 37 against 37 measured
+                # independently - which is worth having as a check.
+                "eapm": player.get("eapm"),
+                "rating": player.get("rate_snapshot"),
+                # NOT trusted to mean anything. A skirmish AI comes back
+                # human=True with no name and 798 eAPM, so this is
+                # recorded as read and never used to decide who is a
+                # person.
+                "flagged_human": player.get("human"),
+            })
+        return {
+            "map": (found.get_map() or {}).get("name"),
+            "diplomacy": (found.get_diplomacy() or {}).get("type"),
+            "difficulty": (found.get_settings() or {}).get("difficulty",
+                                                           (None, None))[1],
+            "completed": found.get_completed(),
+            "players": players,
+        }
+    except GameStillRunning:
+        raise
+    except Exception:
+        # A header this mgz cannot read is not a reason to lose the body.
+        return None
+
+
+# The villager, as the record numbers it. One id, because the record
+# records the ORDER and the game decides the villager's sex afterwards.
+VILLAGER_UNIT_ID = 83
+
+
+def trained_times(path, player=1, unit_id=VILLAGER_UNIT_ID):
+    """When each of one unit type was ORDERED, in game seconds.
+
+    A queue of five is five entries at the same second, because five were
+    asked for - the record says `amount`, and collapsing that to one would
+    undercount every batch.
+
+    Note what this is NOT. It is orders, so it counts a villager the
+    moment the player clicked, not when it walked out; it keeps ones that
+    were cancelled or died in the Town Centre when it fell; and it says
+    nothing about any of them dying afterwards. Against the villager count
+    Loom reads off the HUD - which is who is ALIVE - the gap is losses
+    plus whatever is still in a queue. That gap is the interesting part
+    and it is why the two are drawn as two lines rather than reconciled.
+    """
+    found = []
+    for second, kind, data in operations(path):
+        if data.get("player_id") != player or kind not in ("DE_QUEUE", "MAKE"):
+            continue
+        if data.get("unit_id") != unit_id:
+            continue
+        found.extend([second] * max(1, int(data.get("amount", 1))))
+    return sorted(found)
+

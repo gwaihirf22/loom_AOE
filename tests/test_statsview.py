@@ -878,3 +878,562 @@ def test_choosing_the_game_you_are_playing_explains_why_not(stats_dir):
     assert "record" not in statsview.load_stats(
         stats_dir / "2026-08-25_010714_g.json")
 
+
+# ---- two witnesses on one chart ------------------------------------------
+
+def test_a_chart_the_record_cannot_answer_offers_no_control_for_it(app):
+    """The rule that matters more than the colours. The recorded game is a
+    command log - it has no villager count, no pace and no idle Town
+    Centres and never will. A checkbox that draws nothing is worse than
+    none: the reader ticks it, sees no line, and concludes the record says
+    zero rather than that it was never asked."""
+    assert statsview.ChartTab(("idle_tcs",)).witness_boxes == {}
+    assert statsview.ChartTab(("pace",)).witness_boxes == {}
+    for chart in ("apm", "plan"):
+        offered = set(statsview.ChartTab((chart,)).witness_boxes)
+        assert offered == {statsview.SCREEN, statsview.FROM_RECORD}, chart
+    # villagers serves both too, but its screen witness is a group label
+    # over three part boxes rather than a checkbox of its own.
+    society = statsview.ChartTab(("villagers",))
+    assert set(society.witness_boxes) == {statsview.FROM_RECORD}
+    assert set(society.part_boxes) == {"villagers", "population", "cap"}
+
+
+def test_the_witnesses_a_chart_can_serve_are_declared_not_guessed():
+    """Anything not declared is screen-only, which is the truthful
+    default rather than a convenient one."""
+    assert statsview.ChartView.witnesses_for("apm") == (
+        statsview.SCREEN, statsview.FROM_RECORD)
+    # An idle Town Centre is a thing Loom INFERS from the queue. The
+    # record has no idea a Town Centre was idle and never will.
+    assert statsview.ChartView.witnesses_for("idle_tcs") == (
+        statsview.SCREEN,)
+    assert statsview.ChartView.witnesses_for("nothing_like_this") == (
+        statsview.SCREEN,)
+
+
+def test_every_mix_of_witnesses_paints(app, stats_dir):
+    """Including none at all, which is a reachable state - both boxes
+    unticked - and must be an empty frame rather than a crash."""
+    from PyQt6.QtGui import QPixmap
+    data = game_with_ages()
+    data["apm"] = {"t": [0, 5, 10], "apm": [60, 120, 90],
+                   "keys_total": 10, "clicks_total": 5, "bucket_seconds": 5}
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "apm": {"t": [0, 5, 10], "apm": [24, 36, 24],
+                              "commands_total": 7, "bucket_seconds": 5}}
+    view = statsview.ChartView(("apm",))
+    view.show_game(data)
+    view.resize(700, 400)
+    for mix in ([statsview.SCREEN, statsview.FROM_RECORD], [statsview.SCREEN],
+                [statsview.FROM_RECORD], []):
+        view.witnesses = mix
+        canvas = QPixmap(view.size())
+        view.render(canvas)
+
+
+def test_no_record_means_no_record_line_rather_than_a_line_at_zero(app):
+    """Absent and zero must not look alike: a game nobody commanded and a
+    game nobody asked about are different answers."""
+    data = game_with_ages()
+    data["apm"] = {"t": [0, 5], "apm": [60, 60], "keys_total": 5,
+                   "clicks_total": 0, "bucket_seconds": 5}
+    view = statsview.ChartView(("apm",))
+    view.show_game(data)
+    assert view._record_apm() is None
+    # ...and an attached record whose body stopped early is also None.
+    data["record"] = {"path": "r.aoe2record", "duration": 900, "apm": None}
+    view.show_game(data)
+    assert view._record_apm() is None
+
+
+# ---- what the record says about the match itself -------------------------
+
+def a_header(**over):
+    header = {"map": "Arabia", "diplomacy": "1v1", "difficulty": "Hardest",
+              "completed": True,
+              "players": [{"name": "TheFlyinGoaT", "named": True,
+                           "civilisation": "Ethiopians", "winner": True,
+                           "eapm": 37, "rating": 1018},
+                          {"name": "an unnamed opponent", "named": False,
+                           "civilisation": "Mongols", "winner": False,
+                           "eapm": 798, "rating": None}]}
+    header.update(over)
+    return {"path": "r.aoe2record", "header": header}
+
+
+def test_the_record_can_say_who_won_and_nothing_else_can():
+    """Winning is not drawn anywhere Loom reads, so this is not a better
+    reading of something it saw - it is the only reading there is."""
+    rows = statsview.record_rows(a_header())
+    flat = {label: (value, good) for label, value, good in rows}
+    assert flat["map"][0] == "Arabia"
+    assert any("won" in label for label in flat)
+    assert any(good is True for _, good in flat.values())
+    assert "Ethiopians" in flat["TheFlyinGoaT — won"][0]
+    assert "1018 rating" in flat["TheFlyinGoaT — won"][0]
+
+
+def test_an_abandoned_game_makes_nobody_the_loser():
+    """A match nobody won - quit at 2:54, measured - must not paint every
+    player red. "Not known" and "lost" are different answers."""
+    header = a_header()
+    for player in header["header"]["players"]:
+        player["winner"] = False
+    rows = statsview.record_rows(header)
+    assert all(good is None for _, _, good in rows), "an abandoned game had losers"
+    assert statsview.game_outcome({"record": header}) is None
+
+
+def test_the_list_says_won_only_when_the_record_says_so():
+    assert statsview.game_outcome({"record": a_header()}) == "won"
+    # Losing needs someone to have WON. Flipping the first player alone
+    # is the abandoned case, not a defeat - which is the distinction the
+    # test above pins and this one nearly lost.
+    lost = a_header()
+    lost["header"]["players"][0]["winner"] = False
+    lost["header"]["players"][1]["winner"] = True
+    assert statsview.game_outcome({"record": lost}) == "lost"
+    # No record attached is not a loss.
+    assert statsview.game_outcome({"game": {}}) is None
+    # A header this mgz could not read is not a loss either.
+    assert statsview.game_outcome({"record": {"path": "r", "header": None}}) is None
+
+
+def test_a_nameless_opponent_is_not_a_blank_row():
+    """Skirmish opponents arrive with an empty string. "" is the absence
+    of a name, not a name."""
+    rows = statsview.record_rows(a_header())
+    assert all(label.strip() for label, _, _ in rows)
+    assert any("unnamed" in label for label, _, _ in rows)
+
+
+def test_a_record_attached_by_an_older_build_is_topped_up(stats_dir,
+                                                          monkeypatch):
+    """The header and the command series both arrived after the first
+    enrichments did. Filling those in is finishing an answer, not
+    re-reading a settled one."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "builds": {}, "researches": {}, "queued": {},
+                      "ages": {}}          # no header, no apm: an old one
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setattr(statsview.replay, "harvest", lambda p: StoredTruth())
+    monkeypatch.setattr(statsview.replay, "command_rate",
+                        lambda p, **k: {"t": [0], "apm": [12],
+                                        "commands_total": 1})
+    monkeypatch.setattr(statsview.replay, "summary", lambda p: a_header()["header"])
+    monkeypatch.setattr(statsview.replay, "records", lambda **k: [
+        type("R", (), {"path": pathlib.Path("r.aoe2record")})])
+
+    assert statsview.enrich_with_record(path).startswith("added")
+    after = statsview.load_stats(path)
+    assert after["record"]["header"]["map"] == "Arabia"
+    # ...and a COMPLETE record is still left alone.
+    assert "already" in statsview.enrich_with_record(path)
+
+
+def test_the_records_villager_line_is_orders_not_a_head_count(app):
+    """It counts every villager ASKED FOR, so it only ever rises. Against
+    the HUD count - who is alive - the gap is losses plus whatever is
+    still in a Town Centre, and that gap is the reason both are drawn."""
+    data = game_with_ages()
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "villagers_ordered": [5, 5, 5, 34, 93]}
+    view = statsview.ChartView(("villagers",))
+    view.show_game(data)
+    assert view._villagers_ordered() == [(5, 1), (5, 2), (5, 3),
+                                         (34, 4), (93, 5)]
+    # A batch of three queued in one second is a STEP of three, which is
+    # what the player did - smoothing it would draw a rise nobody made.
+    assert view._villagers_ordered()[2][0] == view._villagers_ordered()[0][0]
+
+
+def test_a_game_with_no_record_draws_no_ordered_line(app):
+    view = statsview.ChartView(("villagers",))
+    view.show_game(game_with_ages())
+    assert view._villagers_ordered() == []
+
+
+def test_a_record_from_an_older_build_can_be_FINISHED_from_the_window(
+        stats_dir, monkeypatch):
+    """The author hit this: games enriched before eAPM existed showed no
+    eAPM and there was no way to ask for it.
+
+    enrich_with_record knew how to top such a record up. The button was
+    disabled whenever a record existed AT ALL, so that code could never be
+    reached from the window - two separate judgements about the same
+    question, and the stricter one won silently."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "builds": {}, "researches": {}, "queued": {},
+                      "ages": {}}
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert not statsview.record_is_complete(statsview.load_stats(path))
+
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    assert window.add_record_button.isEnabled(),         "an unfinished record could not be finished"
+    assert "Finish" in window.add_record_button.text(),         "the button did not say what it would do"
+
+
+def test_a_complete_record_leaves_the_button_alone(stats_dir):
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "header": None, "apm": None,
+                      "villagers_ordered": None}
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Every value None and still COMPLETE: they were asked for and the
+    # answer was nothing. Absent and null are different answers.
+    assert statsview.record_is_complete(statsview.load_stats(path))
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    assert not window.add_record_button.isEnabled()
+
+
+def test_what_a_complete_record_holds_has_one_definition():
+    """The bug was two places deciding it separately. RECORD_KEYS is the
+    one list, and record_section must write every key in it - including
+    when the answer is None - or a file would be topped up forever."""
+    import inspect
+    source = inspect.getsource(statsview.record_section)
+    for key in statsview.RECORD_KEYS:
+        assert f'"{key}"' in source, f"record_section never writes {key}"
+
+
+# ---- the two witnesses, side by side -------------------------------------
+
+def a_compared_game():
+    return {
+        "game": {"duration": 2829, "max_villagers": 138, "tc_count": 3,
+                 "tc_idle_seconds": 1907.0, "deaths": [[300, 6, False]],
+                 "ages": [[700, "reached", 2]]},
+        "apm": {"t": [0], "apm": [60], "keys_total": 956, "clicks_total": 2948},
+        "record": {"path": "r.aoe2record", "duration": 2829,
+                   "villagers_ordered": [1] * 144,
+                   "ages": {"feudal_age": 508},
+                   "builds": {"town_center": [100, 200]},
+                   "apm": {"t": [0], "apm": [12], "commands_total": 1480},
+                   "header": {"players": [{"name": "me", "eapm": 31}]}},
+    }
+
+
+def test_the_starting_town_centre_is_not_a_disagreement():
+    """A player BEGINS with one and a starting Town Centre is never
+    placed, so the record's placements are always one short of the number
+    standing. Left raw the row read "3 seen / 2 placed", which looks
+    exactly like the reader over-counting and is not - and a table whose
+    whole job is surfacing disagreements must not manufacture one."""
+    rows = dict((label, (read, rec))
+                for label, read, rec in statsview.comparison_rows(
+                    a_compared_game()))
+    read, recorded = rows["town centers"]
+    assert read == "3 seen"
+    assert recorded.startswith("3"), "the starting Town Centre went missing"
+    assert "one to start" in recorded
+
+
+def test_an_age_says_which_moment_each_witness_is_naming():
+    """The crest says when an age ARRIVED, the record when it was
+    STARTED. Different moments, so neither is the other's correction."""
+    rows = dict((label, (read, rec))
+                for label, read, rec in statsview.comparison_rows(
+                    a_compared_game()))
+    read, recorded = rows["feudal age"]
+    assert "reached" in read and "started" in recorded
+
+
+def test_a_row_only_one_witness_can_answer_leaves_the_other_blank():
+    """The record has no idea a Town Centre was idle. Writing 0 there
+    would be a claim it never made."""
+    rows = dict((label, (read, rec))
+                for label, read, rec in statsview.comparison_rows(
+                    a_compared_game()))
+    assert rows["TC idle time"][1] is None
+    assert rows["eAPM"][0] is None, "Loom cannot compute eAPM and said it did"
+    html = statsview.two_column_html(statsview.comparison_rows(
+        a_compared_game()))
+    assert "None" not in html, "a blank cell rendered the word None"
+
+
+def test_no_record_means_no_comparison_at_all():
+    """Half a comparison is not a comparison."""
+    assert statsview.comparison_rows({"game": {"duration": 600}}) == []
+
+
+def test_a_tab_with_one_chart_does_not_offer_to_switch_it_off(app):
+    """"APM" on the APM tab switches off the only thing there is to look
+    at. Not a choice worth offering."""
+    apm = statsview.ChartTab(("apm",))
+    assert "apm" in apm.boxes, "the chart is still there to be drawn"
+    assert not apm.boxes["apm"].isVisible() or apm.boxes["apm"].parent() is None
+    labels = [b.text() for b in apm.witness_boxes.values()]
+    assert labels == ["APM (Loom read)", "eAPM (recorded game)"]
+
+
+def test_each_chart_names_its_own_witnesses():
+    """A generic "Loom read / recorded game" pair on every chart invites
+    the gap between two lines to be read as a fault. They are measuring
+    different quantities and the label has to say which."""
+    assert statsview.ChartView.witness_label("apm", statsview.FROM_RECORD)[0]         == "eAPM (recorded game)"
+    assert statsview.ChartView.witness_label(
+        "villagers", statsview.FROM_RECORD)[0] ==         "villagers queued (recorded game)"
+    # ...and every one explains how the number arrived.
+    for chart, witnesses in statsview.ChartView.WITNESSES.items():
+        for witness in witnesses:
+            label, tip = statsview.ChartView.witness_label(chart, witness)
+            assert tip and len(tip) > 40, f"{chart}/{witness} has no tooltip"
+
+
+def test_the_record_villager_line_is_called_QUEUED_not_a_count():
+    """The author's own diagnosis and he is right: the record counts the
+    click, Loom counts the villager. Naming both "villagers" made the gap
+    look like a reading fault."""
+    label, tip = statsview.ChartView.witness_label(
+        "villagers", statsview.FROM_RECORD)
+    assert "queued" in label
+    assert "ORDERED" in tip and "alive" not in label
+
+
+def test_villagers_and_population_switch_separately(app):
+    """They share one value axis, so they cannot be separate charts - two
+    charts on one frame would each draw an axis and put the lines on
+    different scales while looking comparable."""
+    tab = statsview.ChartTab(("villagers",))
+    assert set(tab.part_boxes) == {"villagers", "population", "cap"}
+    tab.part_boxes["population"].setChecked(False)
+    assert tab.view.parts == ["villagers", "cap"]
+
+
+def test_a_witness_with_parts_becomes_their_LABEL_not_a_third_box(app):
+    """Unticking every part already draws nothing, which is exactly what
+    a witness checkbox would have done. Two controls for one outcome is a
+    control that lies about what it does, so the witness becomes the
+    heading its parts sit inside:
+
+        Loom read { [ ] villagers  [ ] population }   [ ] villagers queued
+    """
+    from PyQt6.QtWidgets import QCheckBox, QLabel
+    tab = statsview.ChartTab(("villagers",))
+    assert statsview.SCREEN not in tab.witness_boxes,         "the screen witness kept a checkbox its parts had replaced"
+    assert set(tab.part_boxes) == {"villagers", "population", "cap"}
+
+    row = tab.layout().itemAt(0).layout()
+    group = next(row.itemAt(i).widget() for i in range(row.count())
+                 if row.itemAt(i).widget() is not None
+                 and row.itemAt(i).widget().layout() is not None)
+    inside = group.layout()
+    heading = inside.itemAt(0).widget()
+    assert isinstance(heading, QLabel) and heading.text() == "Loom read"
+    assert [inside.itemAt(i).widget().text() for i in range(1, inside.count())
+            if isinstance(inside.itemAt(i).widget(), QCheckBox)] == [
+        "villagers", "population", "house room"]
+
+
+def test_the_screen_witness_stays_on_when_its_parts_speak_for_it(app):
+    """With no box of its own it must never be dropped from the witness
+    list - the parts decide what is drawn, and all of them off already
+    draws nothing."""
+    tab = statsview.ChartTab(("villagers",))
+    assert statsview.SCREEN in tab.view.witnesses
+    tab.part_boxes["population"].setChecked(False)
+    assert tab.view.parts == ["villagers", "cap"]
+    assert statsview.SCREEN in tab.view.witnesses,         "turning off one line turned off the whole witness"
+    tab.part_boxes["villagers"].setChecked(False)
+    tab.part_boxes["cap"].setChecked(False)
+    assert tab.view.parts == []
+    assert statsview.SCREEN in tab.view.witnesses
+
+
+def test_a_witness_with_no_parts_keeps_its_own_box(app):
+    """APM has one series per witness, so there is nothing to delegate
+    to and the checkbox is the only control there could be."""
+    tab = statsview.ChartTab(("apm",))
+    assert set(tab.witness_boxes) == {statsview.SCREEN, statsview.FROM_RECORD}
+    assert tab.part_boxes == {}
+
+
+def test_the_record_witness_has_no_parts_to_nest(app):
+    """It is one series. Only the screen witness subdivides."""
+    tab = statsview.ChartTab(("apm",))
+    assert tab.part_boxes == {}
+
+
+def test_the_axis_follows_only_what_is_drawn(app):
+    """Hiding the population must rescale to the villager line, not leave
+    it squashed against the floor by a cap it can no longer be compared
+    to."""
+    from PyQt6.QtGui import QPixmap
+    data = game_with_ages()
+    data["timeline"]["pop"] = [200] * len(data["timeline"]["t"])
+    data["timeline"]["pop_cap"] = [200] * len(data["timeline"]["t"])
+    view = statsview.ChartView(("villagers",))
+    view.show_game(data)
+    view.resize(700, 400)
+    view.parts = ["villagers"]
+    view.render(QPixmap(view.size()))       # a paint that raises aborts
+    view.parts = []
+    view.render(QPixmap(view.size()))
+
+
+def test_the_readout_says_every_line_that_is_switched_on(app):
+    """It reported the villager count and nothing else, whatever else was
+    drawn - so three of the four lines on Society had a number nobody
+    could read off the chart."""
+    data = game_with_ages()
+    data["timeline"]["pop"] = [122] * len(data["timeline"]["t"])
+    data["timeline"]["pop_cap"] = [130] * len(data["timeline"]["t"])
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "villagers_ordered": list(range(0, 300, 3))}
+    view = statsview.ChartView(("villagers",))
+    view.show_game(data)
+
+    def said():
+        keys = tuple(k for name in view.charts if name in view.enabled
+                     for k in view._readout_keys(name))
+        return statsview.hover_summary(view.values_at(300), keys)
+
+    everything = said()
+    for expected in ("villagers", "population", "house room", "queued"):
+        assert expected in everything, expected
+
+
+def test_a_line_switched_off_is_not_quoted_at_it(app):
+    """A number for a line that is not on screen invites the reader to
+    hunt for it - the same fault as a tab quoting a series from another
+    tab's chart."""
+    data = game_with_ages()
+    data["timeline"]["pop"] = [122] * len(data["timeline"]["t"])
+    data["timeline"]["pop_cap"] = [130] * len(data["timeline"]["t"])
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "villagers_ordered": [1, 2, 3]}
+    view = statsview.ChartView(("villagers",))
+    view.show_game(data)
+
+    def said():
+        keys = tuple(k for name in view.charts if name in view.enabled
+                     for k in view._readout_keys(name))
+        return statsview.hover_summary(view.values_at(300), keys)
+
+    view.parts = ["villagers"]
+    view.witnesses = [statsview.SCREEN]
+    only = said()
+    assert "villagers" in only
+    for gone in ("population", "house room", "queued"):
+        assert gone not in only, gone
+
+    # Nothing on at all leaves the time and no claims.
+    view.parts = []
+    assert said() == statsview.format_time(300)
+
+
+def test_the_records_number_is_called_queued_in_the_readout_too(app):
+    """"112 villagers - 118 villagers" would undo on hover all the
+    labelling the key and the checkbox got right."""
+    values = {"t": 300, "villagers": 112, "queued": 118}
+    said = statsview.hover_summary(values, ("villagers", "queued"))
+    assert "112 villagers" in said and "118 queued" in said
+    assert said.count("villagers") == 1
+
+
+def test_the_two_witnesses_never_wear_the_same_colour():
+    """Green is what Loom read, violet is the recorded game, on every
+    chart. APM broke this quietly: APM_COLOR was (200,160,235) against
+    RECORD_COLOR's (190,140,235) - fine for as long as APM had one line,
+    and indistinguishable the moment eAPM landed beside it.
+
+    Distance rather than inequality, because two colours can differ by a
+    digit and still be one colour to a person looking at a chart."""
+    def apart(one, other):
+        return (abs(one.red() - other.red()) + abs(one.green() - other.green())
+                + abs(one.blue() - other.blue()))
+
+    screen_side = (statsview.ON_PACE_COLOR, statsview.APM_COLOR,
+                   statsview.APM_RAW_COLOR)
+    for colour in screen_side:
+        assert apart(colour, statsview.RECORD_COLOR) > 120,             "a Loom line is the same colour as the recorded game's"
+    # ...and the APM pair is the screen colour rather than its own hue,
+    # so the convention cannot drift one constant at a time.
+    assert apart(statsview.APM_COLOR, statsview.ON_PACE_COLOR) == 0
+
+
+def test_the_plan_chart_shows_when_you_ORDERED_each_item(monkeypatch):
+    """The checkbox for this existed for several commits and drew
+    nothing - the witness was declared and never wired, which is the
+    exact failure the declaration was written to prevent."""
+    steps = [FakeStep(100, [item("building_economy/mill")])]
+    game = {"events": [[300, "built:mill"]]}
+    record = {"builds": {"mill": [180]}, "researches": {}, "ages": {}}
+    from loom import build_order
+    fake = type("B", (), {"steps": steps})()
+    monkeypatch.setattr(build_order.BuildOrder, "load_by_name",
+                        classmethod(lambda cls, name: fake))
+    rows = statsview.plan_versus_actual("whatever", game, record)
+    assert rows[0].ordered == 180
+    assert rows[0].observed == 300, "the order overwrote the completion"
+
+
+def test_an_age_order_time_survives_the_name_it_is_stored_under(monkeypatch):
+    """AGE_NAMES says "Feudal Age" and the record says "feudal_age".
+    Joining them without splitting produced "feudal age_age", which
+    matched nothing and left every age silently without an order time."""
+    steps = [FakeStep(300, [item("age/feudal_age", "Research ")])]
+    game = {"ages": [[700, "reached", 2]]}
+    record = {"builds": {}, "researches": {}, "ages": {"feudal_age": 508}}
+    from loom import build_order
+    fake = type("B", (), {"steps": steps})()
+    monkeypatch.setattr(build_order.BuildOrder, "load_by_name",
+                        classmethod(lambda cls, name: fake))
+    rows = statsview.plan_versus_actual("whatever", game, record)
+    assert rows[0].ordered == 508
+    assert rows[0].observed == 700
+
+
+def test_an_item_the_record_never_mentions_gets_no_mark(monkeypatch):
+    """A mark at a time nobody knows would be an invention, on the one
+    chart whose whole job is keeping seen apart from assumed."""
+    steps = [FakeStep(100, [item("building_economy/mill")])]
+    from loom import build_order
+    fake = type("B", (), {"steps": steps})()
+    monkeypatch.setattr(build_order.BuildOrder, "load_by_name",
+                        classmethod(lambda cls, name: fake))
+    rows = statsview.plan_versus_actual(
+        "whatever", {"events": [[300, "built:mill"]]}, None)
+    assert rows[0].ordered is None
+
+
+def test_the_order_marks_appear_only_while_that_witness_is_on(app):
+    """Ticking a box must change the picture, which is the whole
+    complaint that started this."""
+    from PyQt6.QtGui import QPixmap
+    view = statsview.ChartView(("plan",))
+    view.show_game(game_with_ages())
+    view.plan = [statsview.PlanRow("mill", None, 100, 200, (85, 260), 150)]
+    view.resize(800, 300)
+
+    def violet():
+        canvas = QPixmap(view.size())
+        view.render(canvas)
+        image = canvas.toImage()
+        want = statsview.RECORD_COLOR
+        return sum(1 for y in range(0, image.height(), 2)
+                   for x in range(0, image.width(), 2)
+                   if abs(image.pixelColor(x, y).red() - want.red()) < 30
+                   and abs(image.pixelColor(x, y).green() - want.green()) < 30
+                   and abs(image.pixelColor(x, y).blue() - want.blue()) < 30)
+
+    view.witnesses = [statsview.SCREEN, statsview.FROM_RECORD]
+    with_it = violet()
+    view.witnesses = [statsview.SCREEN]
+    assert with_it > violet(), "the record witness drew nothing"

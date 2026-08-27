@@ -503,6 +503,27 @@ def count_occupied(frame_gray, boxes):
     return len(boxes)
 
 
+def icon_interior(cell_bgr, scale=1.0):
+    """The part of a slot crop that is the icon, and nothing else.
+
+    In reference pixels the icon occupies [4:44] of a 48px cell, and the
+    margin is in reference pixels so it must scale with the cell: a fixed
+    [4:44] read only the top-left corner of a 150%-HUD cell and clipped
+    nothing off a 75% one, quietly skewing every wash fraction.
+
+    Both readers of a cell's colour take this same crop, and that is the
+    point of the function existing rather than each doing its own slicing.
+    The icon templates are 40x40 assets cut for exactly this region, so
+    comparing one against a whole 47px cell stretches it over the border
+    and misaligns every pixel - measured on the frame that started the
+    phantom-TC investigation, that alone moved a red wash's red ratio from
+    0.37 to 0.11 and hid it under its own floor.
+    """
+    lo = int(round(4 * scale))
+    hi = int(round(44 * scale))
+    return cell_bgr[lo:hi, lo:hi]
+
+
 def classify_tint(cell_bgr, scale=1.0):
     """Return (tint, progress) for one occupied slot crop.
 
@@ -515,10 +536,7 @@ def classify_tint(cell_bgr, scale=1.0):
     a fixed [4:44] read only the top-left corner of a 150%-HUD cell and
     clipped nothing off a 75% one, quietly skewing every wash fraction.
     """
-    lo = int(round(4 * scale))
-    hi = int(round(44 * scale))
-    interior = cell_bgr[lo:hi, lo:hi]
-    hsv = cv2.cvtColor(interior, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(icon_interior(cell_bgr, scale), cv2.COLOR_BGR2HSV)
     hue = hsv[:, :, 0].astype(int)
     saturated = hsv[:, :, 1] > MIN_TINT_SATURATION
     bright = hsv[:, :, 2] > MIN_TINT_VALUE
@@ -540,6 +558,108 @@ def classify_tint(cell_bgr, scale=1.0):
         return "amber", None
 
     return None, None
+
+
+# Whether a cell is washed is a question about COLOUR; which icon it is, is a
+# question about SHAPE. classify_tint above asks the colour question of the
+# cell alone, and that is what could not be made to work: a red wash on a dark
+# villager and the Feudal Age crest's own red-and-grey heraldry are the same
+# picture to any statistic over the cell's own pixels. Measured across four
+# capture runs, two HUD skins and two resolutions - the busiest warm ARTWORK
+# (flame icons) reaches 0.245 on the most selective mask I could build, and the
+# faintest real wash starts at 0.248. Three thousandths. Coverage fails too,
+# and backwards: the flame covers 0.69 of its cell and a real wash 0.44,
+# because the wash darkens the background rather than blanketing it.
+#
+# So ask a different question. A wash MULTIPLIES the icon underneath it, and
+# the icon is a picture I already have on disk. Red crushes blue and green and
+# leaves red; amber crushes blue alone; green crushes red and blue. Against
+# its own icon, an unwashed cell is 1:1:1 whatever colour the art happens to
+# be. Measured over 5068 identified cells, as a fraction of the largest
+# channel:
+#
+#     green        B 0.57   G 1.00   R 0.38
+#     amber        B 0.01   G 0.80   R 1.00
+#     red          B 0.04   G 0.04   R 1.00
+#     no wash      B 1.00   G 0.58   R 0.59
+#
+# Only red is tested here, because only red was being missed and every new
+# gate should earn its place on evidence. On max(B,G)/R the two populations
+# are 0.089 median / 0.184 p99 for a missed wash against 0.532 p1 / 0.953 p10
+# for a genuinely untinted cell - a threefold gap, and the bar sits in the
+# middle of it rather than at the edge of one side. False positives at 0.30:
+# ZERO of 2298 green cells and ZERO of 1085 amber cells.
+ICON_WASH_RATIO = 0.30
+# A cell that is simply dark has no red to be a fraction OF, and dividing by
+# it would make noise look like a wash.
+ICON_WASH_MIN_RED = 0.15
+# How bright a template pixel must be to count as part of the icon rather
+# than its background, and how many such pixels a comparison needs at all.
+ICON_LIT_VALUE = 60
+ICON_WASH_MIN_PIXELS = 40
+
+_colour_icons = None
+
+
+def load_icon_colour_templates():
+    """The identity templates again, in colour, for judging a wash.
+
+    load_icon_templates() reads these same files as grey, because identity is
+    a question about shape. This reads them as colour, because whether a cell
+    is washed is a question about colour applied to that same shape. Two
+    readings of one asset rather than one derived from the other, so neither
+    is weakened to serve the other.
+    """
+    global _colour_icons
+    if _colour_icons is None:
+        found = {}
+        for path in sorted(glob.glob(str(paths.TEMPLATES_DIR / "queue"
+                                         / "*.png"))):
+            image = cv2.imread(path, cv2.IMREAD_COLOR)
+            if image is not None:
+                name = os.path.basename(path).split(".")[0]
+                found.setdefault(name, []).append(image)
+        _colour_icons = found
+    return _colour_icons
+
+
+def wash_against_icon(cell_bgr, variants, scale=1.0):
+    """'red' if this cell is its own icon under a red wash, else None.
+
+    Only ever ADDS a reading. It is asked after classify_tint has said None,
+    and the honest answer when the identity is unknown or the icon is mostly
+    background is still None - a cell whose picture I cannot name is a cell
+    whose wash I cannot judge, and saying so is the point.
+    """
+    if not variants:
+        return None
+    cell = icon_interior(cell_bgr, scale)
+    height, width = cell.shape[:2]
+    judged = False
+    for variant in variants:
+        icon = cv2.resize(variant, (width, height),
+                          interpolation=cv2.INTER_AREA)
+        lit = icon.max(axis=2) > ICON_LIT_VALUE
+        if int(lit.sum()) < ICON_WASH_MIN_PIXELS:
+            continue
+        # Median, not mean: the group-count numeral is drawn across the cell
+        # and belongs to neither picture, and a median steps over it.
+        blue, green, red = [
+            float(np.median(cell[:, :, channel][lit].astype(float)
+                            / (icon[:, :, channel][lit].astype(float) + 8)))
+            for channel in range(3)]
+        judged = True
+        # EVERY variant must agree. One identity's variants are the same icon
+        # in different architecture sets, so they differ mostly in colour -
+        # which makes "pick the best-matching variant" a shape question with
+        # no shape to answer it, and an arbitrary pick would decide whether a
+        # Town Centre is working. If any plausible variant explains this cell
+        # without a wash, there is no wash to report.
+        if red < ICON_WASH_MIN_RED:
+            return None
+        if max(blue, green) / red > ICON_WASH_RATIO:
+            return None
+    return "red" if judged else None
 
 
 def read_count(cell_bgr, count_templates, scale=1.0):
@@ -751,6 +871,7 @@ class QueueReader:
         self.profile = profile or hud.DEFAULT
         self.wood_template = load_wood_template(self.profile)
         self.icon_templates = load_icon_templates()
+        self.colour_icons = load_icon_colour_templates()
         self.count_templates = load_count_templates()
         self.decor_templates = load_decor_templates()
         # Icon templates resized for a non-100% HUD, built lazily the first
@@ -864,6 +985,15 @@ class QueueReader:
                 tint is not None or count is not None)
             identity, count = reconcile_identity_and_count(identity, score,
                                                            count)
+
+            # classify_tint could not name a wash here. Now that the icon is
+            # known, ask the one question it could not: is this cell that
+            # icon, multiplied by red? This only ever turns None into red,
+            # never the reverse, so a confident wash reading is never
+            # overruled by a comparison against a possibly-wrong identity.
+            if tint is None and identity is not None:
+                tint = wash_against_icon(
+                    cell_bgr, self.colour_icons.get(identity), scale)
 
             # The edge test alone is not enough to call a cell a queue item:
             # several civs hang decorative UI art exactly where slot one

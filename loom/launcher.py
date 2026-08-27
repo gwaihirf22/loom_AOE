@@ -22,7 +22,8 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFont, QPixmap
+from PyQt6.QtGui import (QDesktopServices, QFont, QFontDatabase,
+                         QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QFrame, QGridLayout, QGroupBox,
                              QHBoxLayout,
@@ -259,6 +260,40 @@ def beside(anchor, size, area):
     return x, y
 
 
+def fixed_width_font():
+    """A font that is actually fixed-pitch, on every platform.
+
+    `QFont("Monospace")` with a Monospace style hint is the obvious spelling
+    and it does not work on Windows. Measured: it resolves to **Tahoma**,
+    with `QFontInfo.fixedPitch()` False - so the pane the comment below
+    calls fixed-width has been proportional for every Windows user, and
+    pytest's aligned output has been the soup it warns about. There is no
+    family called "Monospace" there and the style hint is a preference, not
+    a requirement; Qt satisfied the family lookup with the default UI font
+    and never applied the hint.
+
+    It also produced a visible symptom nobody connected to the font. Windows
+    offers `8514oem` - a legacy OEM raster face - as a Monospace substitute,
+    DirectWrite cannot load it, and Qt printed a CreateFontFaceFromHDC error
+    to the terminal. Intermittently, because substitution is only attempted
+    when a glyph is actually wanted, which made it look like a random fault
+    rather than a font that was wrong from the first paint.
+
+    So this names real families and lets the platform's own fixed font have
+    the last word rather than a style hint nobody is obliged to honour.
+    QFontDatabase answers that per platform - Courier New on Windows, and
+    whatever the desktop is configured for elsewhere.
+    """
+    system = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    font = QFont(system)
+    # Preferred first, the platform's own answer last, so an unusual desktop
+    # still gets something fixed-pitch rather than the UI font.
+    font.setFamilies(["Consolas", "DejaVu Sans Mono", "Menlo",
+                      "Liberation Mono", system.family()])
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    return font
+
+
 class OutputPane(QPlainTextEdit):
     """Where every child process's output lands, newest at the bottom."""
 
@@ -267,12 +302,7 @@ class OutputPane(QPlainTextEdit):
         self.setReadOnly(True)
         self.setToolTip("Output from everything the launcher runs - the"
                         " overlay, the tools, the test suite.")
-        # A fixed-width font, or pytest's aligned output turns to soup.
-        font = QFont("Monospace")
-        # StyleHint tells Qt what to substitute if there is no font actually
-        # called "Monospace" on the system.
-        font.setStyleHint(QFont.StyleHint.Monospace)
-        self.setFont(font)
+        self.setFont(fixed_width_font())
         # QPlainTextEdit drops the oldest block (line) beyond this count, so
         # the pane cannot grow without bound during a long session.
         self.setMaximumBlockCount(OUTPUT_SCROLLBACK_LINES)
@@ -1353,6 +1383,15 @@ class LauncherWindow(QWidget):
             " before a match, watch it follow along during one.")
         self.browser_toggle.setChecked(config.build_browser())
         self.browser_toggle.toggled.connect(self._set_build_browser)
+
+        self.record_toggle = QCheckBox("Attach recorded game")
+        self.record_toggle.setToolTip(
+            "When a game ends, find the match's own .aoe2record and add"
+            " what it says to the statistics - who won, both civilisations,"
+            " and what the game was actually told to do. Only ever after"
+            " the match has ended.")
+        self.record_toggle.setChecked(config.attach_recorded_game())
+        self.record_toggle.toggled.connect(config.set_attach_recorded_game)
         self.browser.closed.connect(
             lambda: self.browser_toggle.setChecked(False))
 
@@ -1403,7 +1442,8 @@ class LauncherWindow(QWidget):
         self.about_button.clicked.connect(self._open_about)
 
         toggles = flow_row([self.dev_toggle, self.browser_toggle,
-                             self.apm_toggle, self.stats_button])
+                             self.apm_toggle, self.record_toggle,
+                             self.stats_button])
 
         # How to use sits alone at the TOP RIGHT, in blue - the one control
         # a lost new player needs, put where lost people look and coloured
@@ -1751,6 +1791,7 @@ class LauncherWindow(QWidget):
         if self.apm_process is not None:
             self.apm_process.stop()
         self._write_apm_section()
+        self._attach_recorded_game()
         # A finished overlay usually means a fresh stats file just landed.
         if self.stats_window.isVisible():
             self.stats_window.refresh()
@@ -1801,6 +1842,45 @@ class LauncherWindow(QWidget):
         """
         self.place_button.setText(
             "Close placement" if placing else "Place overlay")
+
+    def _attach_recorded_game(self):
+        """Attach the match's own recorded game, once the game has ended.
+
+        This is the boundary the whole feature is built around, and this
+        is the moment it is allowed: the overlay has exited, so the match
+        is over. `loom/replay.py` refuses anything still being written
+        regardless, so this is the second lock rather than the only one.
+
+        Three deliberate refusals:
+
+        * Only a CERTAIN match. An AMBIGUOUS one - two records whose
+          windows both contain the session - is left for a person, because
+          attaching the wrong game's truth to this game's readings is
+          exactly the mistake that would be hardest to notice later.
+        * Never fatal. A missing record, an unreadable one, a match that
+          was a replay being watched: all of them leave the stats file
+          exactly as it was and say so in the output pane.
+        * Off is a real setting. Some people will not want Loom opening
+          files in their savegame folder at all.
+        """
+        if not config.attach_recorded_game():
+            return
+        newest = max(paths.STATS_DIR.glob("*.json"), default=None,
+                     key=lambda p: p.stat().st_mtime)
+        if newest is None:
+            return
+        try:
+            said = statsview.enrich_with_record(newest)
+        except Exception as error:          # never worth losing a game over
+            self.output.append_line(
+                f"[launcher] could not attach the recorded game: {error}")
+            return
+        if said.startswith("added"):
+            self.output.append_line(
+                f"[launcher] recorded game attached to {newest.name} - {said}")
+        else:
+            self.output.append_line(f"[launcher] no recorded game: {said}")
+
 
     def _show_overlay_state(self, running, hidden=False):
         # Disabling the irrelevant button is the status display doing double

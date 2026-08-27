@@ -159,3 +159,62 @@ def test_the_layout_block_is_the_one_under_the_heading():
     block = architecture.layout_block(markdown)
     assert "anchor.py" in block
     assert "not the layout" not in block and "nor this" not in block
+
+
+# ---- some stories are not module-shaped ---------------------------------
+#
+# `production` never imports `queue` - it is handed slot readings as plain
+# data - so the most useful picture of how a queue cell becomes a belief
+# cannot be drawn with module boxes at all. A block may declare itself
+# drawn at function granularity, and is then checked against that file's
+# own definitions. Different oracle, same promise: a map may simplify, it
+# may not invent.
+
+FUNCTION_BLOCK = ("```mermaid\n%% functions: loom/queue.py\n"
+                  "flowchart LR\n    classify_tint --> wash_against_icon\n```")
+
+
+def test_a_function_block_is_not_measured_against_the_import_graph():
+    # Without this the boxes read as a dozen phantom modules, and the
+    # escape hatch would be unusable rather than merely unused.
+    assert architecture.diagram_edges(FUNCTION_BLOCK) == []
+
+
+def test_a_function_block_is_still_checked():
+    # Opting down a level is not opting out. These two really are defined
+    # in loom/queue.py, so this block is honest and must pass.
+    assert architecture.function_complaints(FUNCTION_BLOCK) == []
+
+
+def test_a_function_that_does_not_exist_is_caught():
+    lying = ("```mermaid\n%% functions: loom/queue.py\n"
+             "flowchart LR\n    classify_tint --> classify_taint\n```")
+    problems = architecture.function_complaints(lying)
+    assert any("classify_taint" in problem for problem in problems), problems
+
+
+def test_a_declaration_pointing_nowhere_is_caught():
+    # The declaration is what makes the block checkable, so a wrong path
+    # would otherwise turn the check off and report success.
+    lying = ("```mermaid\n%% functions: loom/no_such_file.py\n"
+             "flowchart LR\n    a --> b\n```")
+    assert architecture.function_complaints(lying) != []
+
+
+def test_constants_count_as_drawable():
+    # The tint bars ARE the subject of that part of the reader, and a
+    # picture of it that cannot name them says very little.
+    block = ("```mermaid\n%% functions: loom/queue.py\n"
+             "flowchart LR\n    ICON_WASH_RATIO --> wash_against_icon\n```")
+    assert architecture.function_complaints(block) == []
+
+
+def test_drawing_a_function_is_not_drawing_its_module():
+    # Rule 3 still wants every MODULE on the map somewhere. A function-level
+    # block must not be able to satisfy it by naming something inside one.
+    problems = architecture.complaints(markdown=FUNCTION_BLOCK)
+    assert any("queue" in p and "appears in no diagram" in p for p in problems)
+
+
+def test_the_real_document_passes_the_function_check_too():
+    assert architecture.function_complaints() == []

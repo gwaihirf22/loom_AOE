@@ -35,6 +35,7 @@ window, the same stance available_builds() takes with build files.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import bisect
 import json
 import math
 from collections import namedtuple
@@ -67,8 +68,16 @@ from .overlay import (AHEAD_COLOR, BACKGROUND, BEHIND_COLOR, BORDER,
                       DIM_TEXT, FAINT_TEXT, ON_PACE_COLOR, TEXT,
                       load_step_icon)
 
-APM_COLOR = QColor(200, 160, 235)
-APM_RAW_COLOR = QColor(200, 160, 235, 70)   # the unsmoothed buckets, faint
+# APM is a thing LOOM READ off the keyboard, so it wears the screen
+# witness's green like every other reading. It used to be violet - a
+# near-twin of RECORD_COLOR at (190,140,235) - which was harmless until
+# the recorded game's eAPM landed on the same chart and the two witnesses
+# became indistinguishable. Derived from ON_PACE_COLOR rather than
+# written out again, so the convention cannot drift apart one constant at
+# a time.
+APM_COLOR = QColor(ON_PACE_COLOR)
+APM_RAW_COLOR = QColor(ON_PACE_COLOR.red(), ON_PACE_COLOR.green(),
+                       ON_PACE_COLOR.blue(), 70)   # unsmoothed, faint
 
 # How many buckets the APM line is smoothed over. A bucket is 5 seconds
 # and apm.align multiplies by 60/5, so ONE ACTION IS 12 APM - the series
@@ -123,6 +132,13 @@ CHART_SERIES = {
     "apm": ("apm",),
 }
 
+# What the RECORD contributes to the readout, per chart. Separate from
+# CHART_SERIES because these are the record's numbers and appear only
+# while that witness is switched on.
+RECORD_SERIES = {
+    "villagers": ("queued",),
+}
+
 
 def hover_summary(values, keys=None):
     """One line describing the hovered moment.
@@ -157,6 +173,15 @@ def hover_summary(values, keys=None):
         count = values["villagers"]
         parts.append(f"{count} villagers" if count is not None
                      else "villagers —")
+    if wanted("pop") and values.get("pop") is not None:
+        parts.append(f"{values['pop']} population")
+    if wanted("pop_cap") and values.get("pop_cap") is not None:
+        parts.append(f"{values['pop_cap']} house room")
+    # Named for what it IS, here as on the chart key and the checkbox. A
+    # readout saying "112 villagers - 118 villagers" would be the one
+    # place all that careful labelling could still come undone.
+    if wanted("queued") and values.get("queued") is not None:
+        parts.append(f"{values['queued']} queued")
     if wanted("pace") and values.get("pace") is not None:
         parts.append(f"{values['pace']:.0f}s behind")
     if wanted("idle_tcs") and values.get("idle_tcs") is not None:
@@ -390,7 +415,8 @@ SEAM_TOLERANCE = 5
 
 
 
-def record_section(truth, record_path):
+def record_section(truth, record_path, commands=None, header=None,
+                   villagers=None):
     """The recorded game, as the section a stats file carries.
 
     Named `record` and kept whole, beside the read sections rather than
@@ -408,6 +434,19 @@ def record_section(truth, record_path):
         "queued": {truth.name_of_unit(i): n
                    for i, n in (truth.queued or {}).items()},
         "ages": truth.ages(),
+        # The record's own actions-per-minute. Stored beside the orders
+        # rather than merged into the file's "apm" section, which belongs
+        # to the keystroke counter - they are different quantities and the
+        # gap between them is the interesting part.
+        "apm": commands,
+        # Who played, as what, and who WON - none of which is on the HUD.
+        # None when this mgz cannot read the header, which is a different
+        # answer from an empty one and is why it is not defaulted to {}.
+        "header": header,
+        # When each villager was ORDERED. Against the count Loom reads off
+        # the HUD - who is ALIVE - the gap is losses plus whatever is
+        # still in a queue, which is the thing worth seeing.
+        "villagers_ordered": villagers,
     }
 
 
@@ -421,8 +460,22 @@ def enrich_with_record(stats_path, record_path=None):
     data = load_stats(stats_path)
     if data is None:
         return "that file cannot be read"
-    if data.get("record"):
+    # A record attached by an EARLIER build can be missing pieces this one
+    # knows how to read - the header and the command series both arrived
+    # after the first enrichments did. Topping those up is not re-reading
+    # a settled answer, it is finishing one, so a complete record is left
+    # alone and an incomplete one is filled in.
+    attached = data.get("record")
+    if record_is_complete(data):
         return "already has its recorded game"
+    if attached and record_path is None:
+        # Re-find by the name it was attached under rather than matching
+        # again: the answer was settled once and must not be allowed to
+        # drift to a different file on a later run.
+        for candidate in replay.records():
+            if candidate.path.name == attached.get("path"):
+                record_path = candidate.path
+                break
 
     if record_path is None:
         found = replay.match(stats_path)
@@ -432,6 +485,21 @@ def enrich_with_record(stats_path, record_path=None):
 
     try:
         truth = replay.harvest(record_path)
+        # Inside the same guard. harvest passing does not license these:
+        # a file can be replaced between two reads, and either raising
+        # out here would lose an enrichment that had already succeeded.
+        try:
+            commands = replay.command_rate(record_path)
+        except Exception:
+            commands = None      # a body that stopped early still enriches
+        try:
+            header = replay.summary(record_path)
+        except Exception:
+            header = None        # a header this mgz cannot read, likewise
+        try:
+            villagers = replay.trained_times(record_path)
+        except Exception:
+            villagers = None
     except replay.GameStillRunning as refused:
         # Caught before the general case on purpose. "Loom will not look
         # at this yet" and "this file is broken" are different answers
@@ -442,7 +510,8 @@ def enrich_with_record(stats_path, record_path=None):
     except Exception as problem:            # a truncated or foreign file
         return f"could not read that recorded game: {type(problem).__name__}"
 
-    data["record"] = record_section(truth, record_path)
+    data["record"] = record_section(truth, record_path, commands, header,
+                                    villagers)
     data["schema"] = gamestats.SCHEMA
     with open(stats_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=1)
@@ -633,6 +702,235 @@ def clock_warning_html(data):
 
 
 
+
+# ---- two witnesses, everywhere ------------------------------------------
+#
+# The author's rule for 1.0.7 and it is the whole design in one sentence:
+# almost every chart and every table now has two answers, what LOOM READ
+# off the screen and what the RECORDED GAME says, and each is drawn in its
+# own colour and can be turned off on its own.
+#
+# This is `events.py`'s never-blend rule made visible. The reconciler keeps
+# the witnesses apart in the data - `times` and `count` are the screen's,
+# `ordered` and `ceiling` are the record's, and nothing is ever averaged
+# across them - and until now the window quietly collapsed that back into
+# one line. Two colours is what the data structure has said all along.
+#
+# It is also the troubleshooting tool. A reader that over-fires shows up
+# as two lines diverging, on the chart, without anyone running a tool.
+#
+# ONE RULE THAT MATTERS MORE THAN THE COLOURS. The record cannot answer
+# most questions - it is a command log, so it has no villager count, no
+# pace, no idle Town Centres, and never will. A chart the record is silent
+# on must not offer a checkbox that draws nothing, because an empty line
+# and a line at zero look identical and one of them is a lie. Each chart
+# DECLARES which witnesses it can serve, and the control only appears for
+# the ones that can.
+SCREEN = "screen"      # read off the HUD by Loom, live
+FROM_RECORD = "record"  # the game's own log of what it was told to do
+
+# The record's colour, one hue used for it everywhere - chart lines, marks
+# and table rows alike, so "this came from the recorded game" is learned
+# once and then recognised. Violet because every other colour in the
+# palette already means something: green is on pace, blue ahead, amber
+# slightly behind, red late, and the greys are population and cap.
+RECORD_COLOR = QColor(190, 140, 235)
+
+WITNESS_LABELS = {SCREEN: "Loom read", FROM_RECORD: "recorded game"}
+
+
+
+
+def record_rows(section):
+    """What the recorded game says about the match itself.
+
+    Drawn from the record and labelled as such, never merged into the
+    rows Loom read - the window's whole 1.0.7 rule. Winning in
+    particular: nothing on the HUD says a game was won, so this is not a
+    better reading of something Loom saw, it is the only reading there is.
+    """
+    header = (section or {}).get("header")
+    if not header:
+        return []
+    rows = []
+    if header.get("map"):
+        rows.append(("map", header["map"], None))
+    kind = " · ".join(str(v) for v in (header.get("diplomacy"),
+                                       header.get("difficulty")) if v)
+    if kind:
+        rows.append(("match", kind, None))
+    for player in header.get("players") or []:
+        won = player.get("winner")
+        parts = [player.get("civilisation") or "?"]
+        if player.get("eapm") is not None:
+            parts.append(f"{player['eapm']} eAPM")
+        if player.get("rating"):
+            parts.append(f"{player['rating']} rating")
+        # good=True colours a winner, None leaves it plain. An unfinished
+        # or abandoned game has no winner and must not paint everyone a
+        # loser, so False is only used when someone else won.
+        anyone_won = any(p.get("winner") for p in header["players"])
+        rows.append((f"{player['name']}{' — won' if won else ''}",
+                     " · ".join(parts),
+                     True if won else (False if anyone_won else None)))
+    return rows
+
+
+
+
+def game_outcome(data):
+    """"won" / "lost" for the row, or None when nobody can say.
+
+    The author's player is the one with a NAME in a skirmish - the AI
+    comes back with an empty string - but that is a guess, so it is not
+    made. `winner` is read off the first player instead, which is the
+    recording player: a recorded game is written from one seat.
+    """
+    header = ((data or {}).get("record") or {}).get("header")
+    players = (header or {}).get("players") or []
+    if not players:
+        return None
+    if not any(p.get("winner") for p in players):
+        return None          # unfinished, or a draw nobody won
+    return "won" if players[0].get("winner") else "lost"
+
+
+
+
+# Everything a fully-read record carries. ONE list, used both to decide
+# whether a file needs topping up and to decide whether the button that
+# does it is clickable - which is the bug this was written for. The two
+# were separate judgements: enrich_with_record knew how to fill in a
+# record attached by an older build, and the button was disabled whenever
+# a record existed at all, so that code could never be reached from the
+# window. A user who attached a game before eAPM existed had no way to
+# ever see it.
+RECORD_KEYS = ("header", "apm", "villagers_ordered")
+
+
+def record_is_complete(data):
+    """Has this file's record been read by a build that knew everything?
+
+    PRESENCE, not value. None is a legitimate answer for any of these - a
+    header this mgz cannot read, a body that stopped early - and testing
+    the value would re-read those files on every open forever. A record
+    attached by an older build simply has no such key, which is the thing
+    being detected. Absent and null are different answers, here as
+    everywhere else in this project.
+    """
+    attached = (data or {}).get("record")
+    return bool(attached) and all(key in attached for key in RECORD_KEYS)
+
+
+
+
+def two_column_html(rows):
+    """(label, what Loom read, what the record says) as a table.
+
+    The author's ask, and it is the two-witness rule finishing the job it
+    started on the charts. A single violet heading over a mixed list said
+    the section came from the record without saying WHICH numbers did, so
+    a reader had to already know the answer to read the table. Two columns
+    say it per row, which is the only place it can be said.
+
+    An empty cell means that witness cannot answer, and is left blank
+    rather than dashed or zeroed - the record has no idea a Town Centre
+    was idle, and writing 0 there would be a claim it never made.
+    """
+    parts = [
+        "<table cellspacing='6'>"
+        "<tr><td></td>"
+        "<td style='color: rgb(160,160,168);'><b>Loom read</b></td>"
+        f"<td style='color: rgb({RECORD_COLOR.red()},{RECORD_COLOR.green()},"
+        f"{RECORD_COLOR.blue()});'><b>recorded game</b></td></tr>"]
+    for label, read, recorded in rows:
+        parts.append(
+            f"<tr><td style='color: rgb(160,160,168);'>{label}</td>"
+            f"<td style='color: rgb({TEXT.red()},{TEXT.green()},"
+            f"{TEXT.blue()});'>{'' if read is None else read}</td>"
+            f"<td style='color: rgb({RECORD_COLOR.red()},"
+            f"{RECORD_COLOR.green()},{RECORD_COLOR.blue()});'>"
+            f"{'' if recorded is None else recorded}</td></tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def comparison_rows(data):
+    """Every number both witnesses can speak to, side by side.
+
+    Only rows where at least one of the two has something to say, and a
+    blank where the other does not. The point is to make WHERE THEY
+    DISAGREE visible without anyone running a tool - which is what the
+    author asked for and is also how a reader fault gets noticed.
+    """
+    game = (data or {}).get("game") or {}
+    record = (data or {}).get("record") or {}
+    if not record:
+        return []
+    header = record.get("header") or {}
+    players = header.get("players") or []
+    me = players[0] if players else {}
+    rows = []
+
+    loom_seconds = game.get("duration")
+    rows.append(("game length",
+                 format_time(loom_seconds) if loom_seconds else None,
+                 format_time(record["duration"]) if record.get("duration")
+                 else None))
+
+    ordered = record.get("villagers_ordered")
+    rows.append(("villagers",
+                 f"{game.get('max_villagers', 0)} at peak",
+                 f"{len(ordered)} ordered" if ordered else None))
+
+    # Ages: the crest says when it ARRIVED, the record when it was
+    # STARTED. Different moments, so both are labelled and neither is
+    # called the other's correction.
+    arrivals = {which: when for when, what, which in (game.get("ages") or [])
+                if what == "reached"}
+    for name, number in (("feudal", 2), ("castle", 3), ("imperial", 4)):
+        started = (record.get("ages") or {}).get(f"{name}_age")
+        if number not in arrivals and started is None:
+            continue
+        rows.append((f"{name} age",
+                     f"{format_time(arrivals[number])} reached"
+                     if number in arrivals else None,
+                     f"{format_time(started)} started"
+                     if started is not None else None))
+
+    # THE STARTING TOWN CENTRE IS NEVER PLACED. A player begins with one,
+    # so the record's count of placements is always one short of the
+    # number standing - and left raw this row read "3 seen / 2 placed",
+    # which looks exactly like the reader over-counting and is not. This
+    # table exists to surface disagreements; a row that manufactures one
+    # is worse than no row.
+    placed = (record.get("builds") or {}).get("town_center")
+    rows.append(("town centers", f"{game.get('tc_count', 0)} seen",
+                 f"{len(placed) + 1} — one to start, {len(placed)} built"
+                 if placed is not None and record.get("builds") else None))
+
+    loom_apm = (data.get("apm") or {})
+    actions = (loom_apm.get("keys_total", 0) or 0) +         (loom_apm.get("clicks_total", 0) or 0)
+    commands = (record.get("apm") or {}).get("commands_total")
+    rows.append(("actions",
+                 f"{actions} keys and clicks" if actions else None,
+                 f"{commands} commands" if commands else None))
+    if me.get("eapm") is not None:
+        rows.append(("eAPM", None, f"{me['eapm']} over the match"))
+
+    # Loom-only rows, kept in the same table with the right-hand cell
+    # blank. Moving them elsewhere would suggest the record disagrees
+    # about them, when it simply cannot see them.
+    if game.get("tc_idle_seconds"):
+        rows.append(("TC idle time",
+                     tc_time(game["tc_idle_seconds"]), None))
+    if game.get("deaths"):
+        rows.append(("villagers lost",
+                     str(sum(d[1] for d in game["deaths"])), None))
+    return rows
+
+
+
 def list_stats():
     """Every stats file, newest first: [(path, label, data-or-None)].
 
@@ -659,6 +957,13 @@ def list_stats():
         # bugs - and a repaired corpus has none of it.
         if clock_faults(data):
             label += "  ⚠ check clock"
+        # A won game and a lost one must not look identical in a history.
+        # Only ever from the record - nothing on the HUD says who won -
+        # and silent when no record is attached, because "not known" and
+        # "lost" are different answers.
+        outcome = game_outcome(data)
+        if outcome:
+            label += f"  {outcome}"
         rows.append((path, label, data))
     return rows
 
@@ -763,7 +1068,15 @@ def span_average(times, values, start, end):
     return sum(inside) / len(inside)
 
 
-PlanRow = namedtuple("PlanRow", "name token planned observed expected")
+PlanRow = namedtuple("PlanRow",
+                     "name token planned observed expected ordered")
+# `ordered` is when the RECORD says the player clicked, and it is last
+# with a default so every existing caller and test keeps working. None
+# means the record was not consulted or had nothing for this item, which
+# is not the same as the item never being ordered - it is drawn as
+# nothing either way, because a mark for a time nobody knows would be an
+# invention.
+PlanRow.__new__.__defaults__ = (None,)
 
 # A card's time is when the INSTRUCTION APPEARS, not a deadline. The
 # author's ruling, and it is the difference between a useful chart and
@@ -872,7 +1185,7 @@ PLAN_ICON = 22
 PLAN_LANE = PLAN_ICON + 4
 
 
-def plan_versus_actual(stem, game):
+def plan_versus_actual(stem, game, record=None):
     """[(name, planned, observed)] for every build item Loom could verify.
 
     The thing no other tool can draw, because no other tool knows which
@@ -907,6 +1220,22 @@ def plan_versus_actual(stem, game):
     # house item takes the second house.
     unclaimed = {sighting.subject: list(sighting.times)
                  for sighting in events.for_statistics(game)}
+    # The record's own order times, consumed by the SAME ledger rule. A
+    # build naming "house" three times must take the first, second and
+    # third house ORDER, for exactly the reason it takes the first,
+    # second and third house completion.
+    ordered = {}
+    for group in ("builds", "researches"):
+        for subject, times in ((record or {}).get(group) or {}).items():
+            ordered.setdefault(subject, []).extend(times)
+    # Ages are kept apart in the record section - Truth.ages() names them
+    # while name_of_tech does not, so researches carries them as
+    # technology_101 and only this key has "feudal_age". One value each,
+    # because an age is ordered once even when it is ordered twice.
+    for subject, when in ((record or {}).get("ages") or {}).items():
+        ordered.setdefault(subject, []).append(when)
+    for times in ordered.values():
+        times.sort()
     claimed_once = set()
     rows = []
     timed = [step for step in build.steps if step.time is not None]
@@ -948,12 +1277,31 @@ def plan_versus_actual(stem, game):
                 # Loom reads says so, and the research being sighted
                 # only says somebody clicked.
                 arrived = crest.get(age_wanted)
+                # AGE_NAMES is "Feudal Age"; the record calls it
+                # "feudal_age". The first word is the whole difference,
+                # and joining them without splitting produced the key
+                # "feudal age_age", which matched nothing and silently
+                # left every age without an order time.
+                era = AGE_NAMES.get(age_wanted, "").split()
+                started = ordered.get(f"{era[0].lower()}_age") if era else None
                 rows.append(PlanRow(
                     AGE_NAMES.get(age_wanted, '?').lower(),
                     next((v for k, v in segments if k == 'icon'), None),
-                    step.time, arrived, window))
+                    step.time, arrived, window,
+                    started.pop(0) if started else None))
                 continue
+            clicked = None
             for subject, count in evidence:
+                # When the player ORDERED it. Taken first so an item Loom
+                # never saw completed still shows when it was asked for -
+                # which is the most useful case there is: the record says
+                # you built it, and Loom's reader missed the arrival.
+                waiting = ordered.get(subject) or []
+                if len(waiting) >= count:
+                    taken_orders = waiting[:count]
+                    del waiting[:count]
+                    clicked = min(clicked if clicked is not None else
+                                  taken_orders[0], taken_orders[0])
                 left = unclaimed.get(subject) or []
                 if len(left) < count:
                     missing = True
@@ -979,7 +1327,7 @@ def plan_versus_actual(stem, game):
                           and token_subject(value) == evidence[0][0]), None)
             rows.append(PlanRow(name, token, step.time,
                                 None if missing else done,
-                                window))
+                                window, clicked))
     return rows
 
 
@@ -1254,6 +1602,98 @@ class ChartView(QWidget):
         "apm": ("APM", "_draw_apm"),
     }
 
+    # Which witnesses each chart can honestly draw. A chart missing from
+    # here is SCREEN only, which is the truthful default: the recorded
+    # game is a command log and has no villager count, no pace and no idle
+    # Town Centres to offer. Declaring it per chart rather than assuming
+    # both is the difference between a control that draws nothing and a
+    # control that is not there - and an empty line looks exactly like a
+    # line at zero.
+    # Which witnesses each chart can honestly draw, AND WHAT EACH IS
+    # CALLED HERE. The name is per chart because the two witnesses are
+    # measuring different quantities on every one of them, and a generic
+    # "Loom read / recorded game" pair invites a reader to treat the gap
+    # between two lines as a fault rather than as the two different things
+    # they are. The tooltip says how the number arrived, which is the
+    # question anyone comparing them will ask next.
+    #
+    # A chart missing from here is SCREEN only, which is the truthful
+    # default: the record is a command log and has no pace and no idle
+    # Town Centres to offer.
+    WITNESSES = {
+        "villagers": {
+            # Just "Loom read" here: the part checkboxes beside it
+            # already name the series, and repeating the word made the
+            # row read as two controls for the same thing.
+            SCREEN: ("Loom read",
+                     "The villager count and population read off the HUD"
+                     " once a second. This is who is ALIVE right now, so"
+                     " it falls when villagers die."),
+            FROM_RECORD: ("villagers queued (recorded game)",
+                          "Every villager you ORDERED, as a running total,"
+                          " from the game's own record. It counts the"
+                          " click rather than the villager, so it only"
+                          " ever rises - the gap to the green line is"
+                          " villagers lost plus whatever is still in a"
+                          " Town Centre."),
+        },
+        "population": {
+            SCREEN: ("population and cap (Loom read)",
+                     "Total population and the house room for it, both"
+                     " read off the HUD. The gap between population and"
+                     " villagers is your army."),
+        },
+        "plan": {
+            SCREEN: ("what Loom saw",
+                     "When the notification feed announced each item was"
+                     " BUILT or researched."),
+            FROM_RECORD: ("what you ordered (recorded game)",
+                          "When each item was PLACED or started, from the"
+                          " game's own record. Earlier than the green by"
+                          " however long the thing took to build."),
+        },
+        "apm": {
+            SCREEN: ("APM (Loom read)",
+                     "Keys and clicks counted at your keyboard while Loom"
+                     " ran. Includes everything you pressed, whether or"
+                     " not the game did anything with it."),
+            FROM_RECORD: ("eAPM (recorded game)",
+                          "Commands the game actually ACTED on, from its"
+                          " own record. The gap below the green line is"
+                          " input that went nowhere - a hotkey pressed"
+                          " twice, a click on a unit already selected."),
+        },
+    }
+
+    # Series WITHIN one chart that are worth switching on their own.
+    # Deliberately not separate charts: they share a value axis, and two
+    # charts sharing a frame would each draw their own, putting the lines
+    # on different scales while looking as though they were comparable.
+    PARTS = {
+        # One box per LINE, because the chart draws three and lumping two
+        # of them together meant a box whose label named one line and
+        # whose tick controlled two.
+        "villagers": (("villagers", "villagers"),
+                      ("population", "population"),
+                      ("cap", "house room")),
+    }
+
+    @classmethod
+    def parts_for(cls, chart):
+        """Sub-series this chart can switch separately. Usually none."""
+        return cls.PARTS.get(chart, ())
+
+    @classmethod
+    def witnesses_for(cls, chart):
+        """Which witnesses this chart can draw. Never a guess."""
+        return tuple(cls.WITNESSES.get(chart, {SCREEN: None}))
+
+    @classmethod
+    def witness_label(cls, chart, witness):
+        """What this chart calls that witness, and why it says so."""
+        found = (cls.WITNESSES.get(chart) or {}).get(witness)
+        return found or (WITNESS_LABELS[witness], None)
+
     # How far off plan still counts as on time, in seconds. The pace
     # meter's own tolerance, so the two never disagree about a step.
     ON_TIME_SECONDS = 15
@@ -1268,7 +1708,13 @@ class ChartView(QWidget):
         # for each of them.
         self.combined = combined
         self.charts = tuple(charts)
+        self.data = None
         self.enabled = list(charts)
+        self.parts = [name for chart in charts
+                      for name, _ in self.parts_for(chart)]
+        # Both on by default: a game with a record attached should show
+        # the disagreement without anyone having to go looking for it.
+        self.witnesses = [SCREEN, FROM_RECORD]
         self.timeline = None
         self.apm = None
         self.apm_smooth = []
@@ -1294,6 +1740,9 @@ class ChartView(QWidget):
         self.setMinimumSize(480, 240)
 
     def show_game(self, data):
+        # Kept whole so a chart can reach the record section. Everything
+        # derived below is still derived once here rather than per paint.
+        self.data = data
         self.timeline = trimmed_to_one_game(data.get("timeline")
                                             if data else None)
         self.apm = trimmed_to_one_game(data.get("apm") if data else None)
@@ -1304,7 +1753,8 @@ class ChartView(QWidget):
         # once per paint.
         self.plan = plan_versus_actual(
             ((data or {}).get("meta") or {}).get("build"),
-            (data or {}).get("game") or {}) if data else []
+            (data or {}).get("game") or {},
+            (data or {}).get("record")) if data else []
         # (t, what, age) straight from the recorder - "reached" now, and
         # "clicked" too in files older than that ruling. Files written
         # before the age reader existed have no key at all.
@@ -1519,6 +1969,34 @@ class ChartView(QWidget):
         for _, method in drawn:
             getattr(self, method)(painter, plot)
 
+    def _readout_keys(self, chart):
+        """Which series this chart is CURRENTLY drawing, for the readout.
+
+        Not which it COULD draw. A number quoted for a line that has been
+        switched off invites the reader to hunt for it - the same fault
+        as a tab quoting a series from a chart on another tab, which is
+        why CHART_SERIES exists at all. Now that the lines can be turned
+        off one at a time, the list has to be built the same way.
+        """
+        keys = []
+        parts = self.parts_for(chart)
+        witnesses = self.witnesses_for(chart)
+        if SCREEN not in self.witnesses:
+            screen_keys = ()
+        elif parts:
+            # A chart with parts reports exactly the parts that are on.
+            names = {"villagers": "villagers", "population": "pop",
+                     "cap": "pop_cap"}
+            screen_keys = tuple(names[part] for part, _ in parts
+                                if part in self.parts and part in names)
+        else:
+            screen_keys = CHART_SERIES.get(chart, ())
+        keys.extend(screen_keys)
+        if FROM_RECORD in witnesses and FROM_RECORD in self.witnesses:
+            keys.extend(RECORD_SERIES.get(chart, ()))
+        return tuple(keys)
+
+
     def _draw_readout(self, painter):
         """The strip above the charts: where you are, and how to move.
 
@@ -1554,7 +2032,7 @@ class ChartView(QWidget):
         if moment is None:
             return
         keys = tuple(key for name in self.charts if name in self.enabled
-                     for key in CHART_SERIES.get(name, ()))
+                     for key in self._readout_keys(name))
         # `or ""` rather than trusting the summary: drawText raises on
         # None, and a raise inside paintEvent aborts the process.
         # A chart that claimed the pointer answers in place of the
@@ -1635,6 +2113,14 @@ class ChartView(QWidget):
                     and found.get("villagers") is not None):
                 found["military"] = max(
                     0, found["pop"] - found["villagers"])
+        # How many villagers had been ORDERED by this moment. A running
+        # total, so it is the count of order times at or before now -
+        # bisect rather than a scan, because this runs on every mouse
+        # move over a chart that can hold hundreds of them.
+        ordered = ((self.data or {}).get("record") or {}).get(
+            "villagers_ordered")
+        if ordered:
+            found["queued"] = bisect.bisect_right(ordered, moment)
         if self.apm and self.apm.get("t"):
             apm_times = self.apm["t"]
             index = min(range(len(apm_times)),
@@ -1905,6 +2391,17 @@ class ChartView(QWidget):
             # an item near the top of the frame no longer labels itself
             # off the edge of the widget.
             self._pointer_text = self._plan_label(front)
+        # When the player ORDERED each item, from the recorded game. A
+        # small mark on the item's own lane rather than a second icon:
+        # the icons already overlap by design and doubling them would
+        # make the chart unreadable to say something a tick says fine.
+        #
+        # Drawn UNDER the icons so it can never hide one, and joined to
+        # its icon by a hairline - the distance between them is the thing
+        # worth seeing, because it is walking plus building plus however
+        # long it took you to notice the card.
+        if FROM_RECORD in self.witnesses:
+            self._draw_ordered_marks(painter, marks, plot)
         # Everything else first, the pointed-at one last, so an icon
         # buried under three others surfaces whole rather than in slices.
         for mark in marks:
@@ -1914,6 +2411,36 @@ class ChartView(QWidget):
             self._draw_plan_mark(painter, front)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.restore()
+
+    def _draw_ordered_marks(self, painter, marks, plot):
+        """A violet tick where the record says each item was ordered.
+
+        Only for rows that HAVE one. An item the record never mentions
+        gets nothing, because a mark at a time nobody knows would be an
+        invention - and this whole chart exists to keep what was seen
+        apart from what was assumed.
+        """
+        plot_x, plot_y, plot_w, plot_h = plot
+        low, high = self.window()
+        span = high - low or 1
+        painter.setBrush(RECORD_COLOR)
+        for row, _said, done, y in marks:
+            if row.ordered is None:
+                continue
+            where = plot_x + (row.ordered - low) / span * plot_w
+            if not plot_x <= where <= plot_x + plot_w:
+                continue
+            # The hairline first and faint, so it reads as a connection
+            # rather than as another series crossing the chart.
+            if done is not None:
+                painter.setPen(QPen(QColor(RECORD_COLOR.red(),
+                                           RECORD_COLOR.green(),
+                                           RECORD_COLOR.blue(), 90), 1))
+                painter.drawLine(int(where), int(y), int(done), int(y))
+            painter.setPen(QPen(RECORD_COLOR, 1))
+            painter.drawEllipse(int(where) - 3, int(y) - 3, 6, 6)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
 
     def _plan_layout(self, plot):
         """Where each build item sits: [(row, said_x, done_x, y)].
@@ -2053,6 +2580,21 @@ class ChartView(QWidget):
         self._draw_age_rules(painter, plot)
         self._layer_villagers(painter, plot, x, y, title)
 
+    def _villagers_ordered(self):
+        """(t, running total) for every villager the player asked for.
+
+        A step line by construction - three ordered in one second is a
+        jump of three - and that is the shape it should have, because a
+        batch queued IS a step. Smoothing it would draw a gradual rise
+        nobody performed.
+        """
+        section = (self.data or {}).get("record") or {}
+        times = section.get("villagers_ordered")
+        if not times:
+            return []
+        return [(when, index + 1) for index, when in enumerate(times)]
+
+
     def _layer_villagers(self, painter, plot, x=None, y=None,
                          title=None):
         """The villager and population lines, over a plot someone
@@ -2061,7 +2603,23 @@ class ChartView(QWidget):
         timeline = self.timeline
         villagers = [v for v in timeline["villagers"] if v is not None]
         caps = [c for c in timeline.get("pop_cap", []) if c is not None]
-        hi = max(villagers + caps + [10])
+        ordered = self._villagers_ordered()
+        show_vills = "villagers" in self.parts
+        show_pop = "population" in self.parts
+        show_cap = "cap" in self.parts
+        # The axis follows only what is DRAWN, so hiding the population
+        # rescales to the villager line rather than leaving it squashed
+        # against the floor by a cap it can no longer be compared to.
+        scale = [10]
+        if show_vills:
+            scale += villagers
+        if show_pop:
+            scale += [v for v in timeline.get("pop", []) if v is not None]
+        if show_cap:
+            scale += caps
+        if ordered and FROM_RECORD in self.witnesses:
+            scale += [ordered[-1][1]]
+        hi = max(scale)
         # Three lines in two greys and a green needs naming as much as
         # the APM pair did - more, since two of them are the same colour
         # family and the gap between them IS the military.
@@ -2069,19 +2627,37 @@ class ChartView(QWidget):
             # Only when this layer OWNS the frame. Sharing one, the key
             # and the axes belong to whoever framed it, or three layers
             # draw three keys over each other.
-            key = [(ON_PACE_COLOR, 2, "villagers")]
-            if caps:
-                key += [(DIM_TEXT, 2, "population"), (FAINT_TEXT, 2, "cap")]
+            key = []
+            if SCREEN in self.witnesses:
+                if show_vills:
+                    key = [(ON_PACE_COLOR, 2, "villagers")]
+                if show_pop:
+                    key += [(DIM_TEXT, 2, "population")]
+                if caps and show_cap:
+                    key += [(FAINT_TEXT, 2, "house room")]
+            if ordered and FROM_RECORD in self.witnesses:
+                # Named for what it IS. "villagers" against "villagers"
+                # would invite the reader to treat a divergence as a
+                # reading fault, when the two are counting different
+                # things: one is alive now, the other is every one ever
+                # asked for.
+                key += [(RECORD_COLOR, 2, "ordered, running total")]
             self._draw_key(painter, x, y, title, key)
         self._value_axis(painter, plot, 0, hi)
-        if caps:
-            self._draw_series(painter,
-                              zip(timeline["t"], timeline["pop_cap"]),
-                              FAINT_TEXT, plot, 0, hi)
-            self._draw_series(painter, zip(timeline["t"], timeline["pop"]),
-                              DIM_TEXT, plot, 0, hi)
-        self._draw_series(painter, zip(timeline["t"], timeline["villagers"]),
-                          ON_PACE_COLOR, plot, 0, hi)
+        if SCREEN in self.witnesses:
+            if caps and show_cap:
+                self._draw_series(painter,
+                                  zip(timeline["t"], timeline["pop_cap"]),
+                                  FAINT_TEXT, plot, 0, hi)
+            if show_pop:
+                self._draw_series(painter, zip(timeline["t"], timeline["pop"]),
+                                  DIM_TEXT, plot, 0, hi)
+            if show_vills:
+                self._draw_series(painter,
+                                  zip(timeline["t"], timeline["villagers"]),
+                                  ON_PACE_COLOR, plot, 0, hi)
+        if ordered and FROM_RECORD in self.witnesses:
+            self._draw_series(painter, ordered, RECORD_COLOR, plot, 0, hi)
 
         def entered_with(age, start, end):
             # "How many vills on Feudal" is the most-quoted benchmark in
@@ -2123,9 +2699,14 @@ class ChartView(QWidget):
 
     def _draw_apm(self, painter, x, y, width, height, title):
         plot = self._frame(painter, x, y, width, height, title)
-        self._draw_key(painter, x, y, title,
-                       [(APM_RAW_COLOR, 1, "read"),
-                        (APM_COLOR, 2, "average")])
+        commanded = self._record_apm()
+        key = []
+        if SCREEN in self.witnesses:
+            key += [(APM_RAW_COLOR, 1, "read"),
+                    (APM_COLOR, 2, "average")]
+        if commanded and FROM_RECORD in self.witnesses:
+            key += [(RECORD_COLOR, 2, "eAPM")]
+        self._draw_key(painter, x, y, title, key)
         values = [v for v in self.apm["apm"] if v is not None]
         # The axis tops out at a human ceiling. One absurd bucket (key
         # auto-repeat in files recorded before the counter learned to
@@ -2138,7 +2719,14 @@ class ChartView(QWidget):
         # into the bottom fifth to make room for one auto-repeat spike;
         # those now run off the top and clip, which is honest.
         smooth = [v for v in self.apm_smooth if v is not None]
-        hi = min(max((smooth or values) + [60]) * 1.1, 400)
+        # The record's line shares the axis, or the two cannot be compared
+        # by eye - which is the entire reason both are on one chart.
+        commanded_smooth = []
+        if commanded:
+            commanded_smooth = rolling_median(commanded["t"], commanded["apm"],
+                                              APM_SMOOTHING)
+        together = smooth + [v for v in commanded_smooth if v is not None]
+        hi = min(max((together or values) + [60]) * 1.1, 400)
         self._value_axis(painter, plot, 0, hi)
         self._time_axis(painter, *plot)
         self._draw_age_rules(painter, plot)
@@ -2147,11 +2735,32 @@ class ChartView(QWidget):
         # same rule that draws an assumed tick differently from an
         # observed one - and keeping the buckets visible means smoothing
         # can never hide a real spike, which is what a mean is prone to.
-        self._draw_series(painter, zip(self.apm["t"], self.apm["apm"]),
-                          APM_RAW_COLOR, plot, 0, hi, width=1)
-        self._draw_series(painter, zip(self.apm["t"], self.apm_smooth),
-                          APM_COLOR, plot, 0, hi)
+        if SCREEN in self.witnesses:
+            self._draw_series(painter, zip(self.apm["t"], self.apm["apm"]),
+                              APM_RAW_COLOR, plot, 0, hi, width=1)
+            self._draw_series(painter, zip(self.apm["t"], self.apm_smooth),
+                              APM_COLOR, plot, 0, hi)
+        # What the game actually ACTED on. The gap between this and the
+        # keystroke line is input that went nowhere - a hotkey mashed
+        # twice, a click on a unit already selected - and no other tool
+        # can show it, because nothing that reads a replay sees the
+        # keyboard and nothing at the keyboard sees the game.
+        if commanded and FROM_RECORD in self.witnesses:
+            self._draw_series(painter, zip(commanded["t"], commanded_smooth),
+                              RECORD_COLOR, plot, 0, hi)
         self._apm_span_labels(painter, plot)
+
+    def _record_apm(self):
+        """The recorded game's own actions per minute, or None.
+
+        None when no record is attached, and when one is attached whose
+        body stopped early. Absent rather than empty, so the chart draws
+        nothing rather than a line at zero - a game nobody commanded and
+        a game nobody asked about must not look alike.
+        """
+        section = (self.data or {}).get("record") or {}
+        found = section.get("apm")
+        return found if found and found.get("t") else None
 
     def _draw_span_labels(self, painter, plot, text_for, whole=None):
         """One number per age, centred over the stretch that age occupied.
@@ -2231,12 +2840,89 @@ class ChartTab(QWidget):
 
         controls = QHBoxLayout()
         self.boxes = {}
+        # A checkbox per chart, EXCEPT when the tab has only one. "APM" on
+        # the APM tab switches off the only thing there is to look at,
+        # which is not a choice anyone wants offered.
         for name in charts:
             box = QCheckBox(ChartView.CHARTS[name][0])
             box.setChecked(True)
             box.toggled.connect(self._toggled)
-            controls.addWidget(box)
+            if len(charts) > 1:
+                controls.addWidget(box)
             self.boxes[name] = box
+
+        self.part_boxes = {}
+
+        # The witness controls, and ONLY for witnesses some chart on this
+        # tab can actually serve. A box that draws nothing is worse than
+        # no box: the reader ticks it, sees no line, and concludes the
+        # recorded game says zero rather than that it was never asked.
+        #
+        # Coloured to match their own lines, and the same two colours on
+        # every tab: green is what Loom read off the screen, violet is the
+        # recorded game. Learned once, then recognised.
+        self.witness_boxes = {}
+        offered = set()
+        for name in charts:
+            offered.update(ChartView.witnesses_for(name))
+        if len(offered) > 1:
+            if len(charts) > 1:
+                controls.addSpacing(16)
+            parts = [pair for name in charts
+                     for pair in ChartView.parts_for(name)]
+            for witness in (SCREEN, FROM_RECORD):
+                if witness not in offered:
+                    continue
+                # Named by the chart that offers it, because the two are
+                # measuring different quantities and a generic pair of
+                # labels invites the gap between the lines to be read as
+                # a fault.
+                owner = next(name for name in charts
+                             if witness in ChartView.witnesses_for(name))
+                label, tip = ChartView.witness_label(owner, witness)
+                colour = ON_PACE_COLOR if witness == SCREEN else RECORD_COLOR
+                tint = (f"rgb({colour.red()},{colour.green()},"
+                        f"{colour.blue()})")
+
+                # A witness with PARTS gets no checkbox of its own. The
+                # parts already say everything it could: unticking all of
+                # them draws nothing, which is what the witness box would
+                # have done, and two controls for one outcome is a control
+                # that lies about what it does. So the witness becomes the
+                # GROUP LABEL its parts sit inside.
+                if witness == SCREEN and parts:
+                    group = QWidget()
+                    inside = QHBoxLayout(group)
+                    inside.setContentsMargins(8, 0, 8, 0)
+                    inside.setSpacing(10)
+                    heading = QLabel(label)
+                    heading.setStyleSheet(f"color: {tint};")
+                    if tip:
+                        heading.setToolTip(tip)
+                    inside.addWidget(heading)
+                    for part, part_label in parts:
+                        part_box = QCheckBox(part_label)
+                        part_box.setChecked(True)
+                        part_box.toggled.connect(self._toggled)
+                        part_box.setStyleSheet(f"color: {tint};")
+                        inside.addWidget(part_box)
+                        self.part_boxes[part] = part_box
+                    group.setStyleSheet(
+                        f"QWidget {{ border: 1px solid {tint};"
+                        " border-radius: 4px; }"
+                        " QCheckBox { border: none; }"
+                        " QLabel { border: none; }")
+                    controls.addWidget(group)
+                    continue
+
+                box = QCheckBox(label)
+                box.setChecked(True)
+                box.toggled.connect(self._toggled)
+                box.setStyleSheet(f"color: {tint};")
+                if tip:
+                    box.setToolTip(tip)
+                controls.addWidget(box)
+                self.witness_boxes[witness] = box
         controls.addStretch(1)
         for label, tip, action in (
                 ("−", "zoom out", lambda: self.view.zoom_by(1 / 1.6)),
@@ -2272,6 +2958,18 @@ class ChartTab(QWidget):
     def _toggled(self):
         self.view.enabled = [name for name, box in self.boxes.items()
                              if box.isChecked()]
+        if self.part_boxes:
+            self.view.parts = [name for name, box in self.part_boxes.items()
+                               if box.isChecked()]
+        if self.witness_boxes or self.part_boxes:
+            witnesses = [w for w, box in self.witness_boxes.items()
+                         if box.isChecked()]
+            # A witness whose parts replaced its checkbox stays ON: the
+            # parts decide what is drawn, and unticking every one of them
+            # already draws nothing.
+            if SCREEN not in self.witness_boxes and self.part_boxes:
+                witnesses.append(SCREEN)
+            self.view.witnesses = witnesses
         self.view.update()
 
     def _scrolled(self, value):
@@ -2534,6 +3232,30 @@ class StatsWindow(QWidget):
         tab["label"].setText(coming_soon_html(name))
         return tab["scroll"]
 
+    def _show_record_button(self, data):
+        """Enable the button, and say what it would actually do.
+
+        Three states, not two. A game with no record can have one
+        attached; a game whose record was read by an older build can be
+        FINISHED, which is the state that had no way of being reached;
+        and a complete one has nothing left to do.
+        """
+        if record_is_complete(data):
+            self.add_record_button.setEnabled(False)
+            self.add_record_button.setText("Recorded game attached")
+        elif (data or {}).get("record"):
+            self.add_record_button.setEnabled(True)
+            self.add_record_button.setText("Finish reading recorded game")
+            self.add_record_button.setToolTip(
+                "This game's record was attached by an older version of"
+                " Loom. Re-reading it adds what that version could not:"
+                " who won, both civilisations, and the actions the game"
+                " actually acted on.")
+        else:
+            self.add_record_button.setEnabled(True)
+            self.add_record_button.setText("Add recorded game")
+
+
     def _add_record(self):
         """Attach the match's own recorded game to the selected file.
 
@@ -2556,7 +3278,7 @@ class StatsWindow(QWidget):
             said = enrich_with_record(path, chosen)
         data = load_stats(path)
         self.accuracy_tab["label"].setText(accuracy_html(data, path))
-        self.add_record_button.setEnabled(not (data or {}).get("record"))
+        self._show_record_button(data)
         QMessageBox.information(self, "Recorded game", said)
 
 
@@ -2622,8 +3344,23 @@ class StatsWindow(QWidget):
         else:
             self.build_tab["label"].setText(
                 "The build order was not completed in this game.")
+        record_html = ""
+        rows = record_rows(data.get("record"))
+        if rows:
+            record_html = (
+                f"<p style='color: rgb({RECORD_COLOR.red()},"
+                f"{RECORD_COLOR.green()},{RECORD_COLOR.blue()});'>"
+                "The match, from the recorded game</p>"
+                + rows_as_html(rows) + "<br>")
+        # Side by side, so which witness said what is readable per ROW
+        # rather than inferred from a heading over a mixed list.
+        side_by_side = comparison_rows(data)
+        if side_by_side:
+            record_html += ("<p style='color: rgb(200,200,208);'>"
+                            "What each of them saw</p>"
+                            + two_column_html(side_by_side) + "<br>")
         self.game_tab["label"].setText(
-            clock_warning_html(data)
+            clock_warning_html(data) + record_html
             + rows_as_html(game_rows(data.get("game", {}), build))
             + "<p style='color: rgb(120,120,128);'>Game length means the"
             " last usable reading - the game does not announce its end."
@@ -2639,7 +3376,7 @@ class StatsWindow(QWidget):
         self._selected_path = current.data(Qt.ItemDataRole.UserRole)
         self.accuracy_tab["label"].setText(
             accuracy_html(data, self._selected_path))
-        self.add_record_button.setEnabled(not data.get("record"))
+        self._show_record_button(data)
         for tab in (self.society, self.economy, self.apm_charts,
                     self.pace_charts, self.military_charts):
             tab.show_game(data)
