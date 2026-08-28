@@ -12,6 +12,7 @@ only the part that applies to it.
 | **Statistics + graphs** | ✅ | ✅ | ✅ |
 | **APM tracking** | ✅ | ✅ | ❌ not yet |
 | **Demo / simulate modes** | ✅ | ✅ | ✅ |
+| **Packaged install** | ✅ Flatpak | ✅ zip with `.exe` | ❌ source only |
 | **Status** | primary | primary | paused |
 
 Everything that is not capture or overlay — the build-order engine, pace, the
@@ -31,8 +32,22 @@ region, verified at startup by asking the X server rather than trusting Qt.
 That matters more than it sounds — a panel the pointer can enter breaks the
 game's cursor confinement, and the mouse walks onto another monitor mid-match.
 
-APM tracking works here and only here, reading raw X input events. It counts
-keys and clicks and records nothing about which ones.
+APM tracking reads raw X input events, in a child process. It counts keys
+and clicks and records nothing about which ones. (Windows counts the same
+thing by a different mechanism — see below — so this is no longer the only
+platform that has it.)
+
+**Installing is one command.** Loom is packaged as a Flatpak, so there is no
+Python to set up: the runtime brings its own. Unlike the Windows `.exe` the
+Linux package is installed from SOURCE rather than frozen, which is what
+lets the APM child process start at all — a frozen build has no mode to
+launch it with. Everything the build needs is in
+[`packaging/linux/`](../packaging/linux/README.md), whose README carries the
+argument for each sandbox permission the package asks for.
+
+One of those permissions is X11, and the reason is the paragraph above: the
+desktop-screenshot route returns black on Wayland, so Loom must read the
+game's own X window.
 
 → [Install guide](install-linux.md)
 
@@ -114,3 +129,9 @@ The capture seam is one package —
 [`loom/capture/`](../loom/capture/README.md) — that picks a backend by
 `sys.platform`. A new platform is one module implementing six functions plus one
 line in a table. Nothing downstream changes.
+
+Shipping to that platform is a second, separate job: a `packaging/<os>/`
+folder, and a decision about whether the app is frozen there or installed
+from source. Those two answers are not related — Windows freezes and Linux
+does not, for reasons written up in
+[`packaging/linux/README.md`](../packaging/linux/README.md).

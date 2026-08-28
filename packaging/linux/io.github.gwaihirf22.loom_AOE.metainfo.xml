@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Loom's AppStream metadata: what a software centre shows about it.
+
+     The app id is io.github.gwaihirf22.loom_AOE because Flathub derives it
+     from the code-hosting URL, and the public repository is
+     github.com/gwaihirf22/loom_AOE. It matches the .desktop basename, the
+     icon basename, the Flatpak manifest and entry.DESKTOP_ID; all five have
+     to agree or the shell cannot match a running window to its entry.
+
+     <releases> is checked at release time by tools/release.py rather than
+     generated, because Flathub wants a date and notes beside the number and
+     only I can write those. -->
+<component type="desktop-application">
+  <id>io.github.gwaihirf22.loom_AOE</id>
+
+  <name>Loom</name>
+  <summary>Live build-order assistant for Age of Empires II: DE</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- GPL-3.0-only, not -or-later: PyQt6 is GPL-3.0-only and a distributed
+       binary bundling it is a combined work. See LICENSE and NOTICE. -->
+  <project_license>GPL-3.0-only</project_license>
+
+  <developer id="io.github.gwaihirf22">
+    <name>gwaihirf22</name>
+  </developer>
+
+  <launchable type="desktop-id">io.github.gwaihirf22.loom_AOE.desktop</launchable>
+
+  <description>
+    <p>
+      Loom watches Age of Empires II: Definitive Edition's HUD by screen
+      capture, reads the total villager count and the game clock off it
+      several times a second, and uses those two numbers to drive a build
+      order — showing the step to do now, the step after it, whether you
+      are on pace, and how your villagers are spread across food, wood,
+      gold and stone versus what the build wants.
+    </p>
+    <p>
+      It never touches the game process. Nothing is injected, no memory is
+      read and no file the game is still writing is opened; Loom takes
+      pixels in and puts an overlay out. Recorded games are read only after
+      a match has ended, because the file contains both players' orders
+      including everything the fog of war hid.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>A transparent, click-through overlay that stays above the game</li>
+      <li>Build orders in the RTS Overlay JSON format, so community builds load unchanged</li>
+      <li>A step checklist that distinguishes what Loom observed from what it assumed</li>
+      <li>Idle Town Centre and housed alerts read off the production queue</li>
+      <li>Per-game statistics with graphs, and APM tracking</li>
+      <li>The stock HUD and the Anne_HK Better UI mod are both read</li>
+    </ul>
+    <p>
+      Loom is early software. It reads the screen, so it meets a different
+      machine in every resolution, display scaling and HUD mod out there.
+      Reports with your resolution and desktop are the fastest way problems
+      get fixed.
+    </p>
+  </description>
+
+  <content_rating type="oars-1.1"/>
+
+  <url type="homepage">https://github.com/gwaihirf22/loom_AOE</url>
+  <url type="bugtracker">https://github.com/gwaihirf22/loom_AOE/issues</url>
+  <url type="vcs-browser">https://github.com/gwaihirf22/loom_AOE</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#c8a678</color>
+    <color type="primary" scheme_preference="dark">#3b2f24</color>
+  </branding>
+
+  <categories>
+    <category>Game</category>
+    <category>StrategyGame</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>aoe2</keyword>
+    <keyword>build order</keyword>
+    <keyword>overlay</keyword>
+    <keyword>rts</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The overlay over a live match, showing the current step and pace</caption>
+      <image>https://raw.githubusercontent.com/gwaihirf22/loom_AOE/main/images/overlay-in-game.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>The launcher: pick a build, change settings, see what Loom is reading</caption>
+      <image>https://raw.githubusercontent.com/gwaihirf22/loom_AOE/main/images/launcher.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The build preview, showing every step before a game starts</caption>
+      <image>https://raw.githubusercontent.com/gwaihirf22/loom_AOE/main/images/build-preview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Placing the overlay panel where you want it</caption>
+      <image>https://raw.githubusercontent.com/gwaihirf22/loom_AOE/main/images/place-overlay.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="1.0.7" date="2026-08-26">
+      <url type="details">https://github.com/gwaihirf22/loom_AOE/blob/main/CHANGELOG.md</url>
+      <description>
+        <p>The first release packaged for Linux. See the changelog for the full list.</p>
+      </description>
+    </release>
+  </releases>
+</component>

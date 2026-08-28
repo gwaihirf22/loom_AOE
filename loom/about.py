@@ -201,7 +201,7 @@ appear when you press Start overlay, and stays away until you untick it. Loom
 still reads the game, still records the match and still feeds this window;
 only the thing drawn over the game is gone. Tick both and Loom lives entirely
 on your other screen.</p>
-<p>The launcher's <b>Hide overlay</b> button and <b>Ctrl+Shift+0</b> are the
+<p>The launcher's <b>Hide overlay</b> button and <b>Ctrl+Shift+Minus</b> are the
 temporary version of that: they hide the panel for as long as Loom is running
 and are forgotten when it closes, so a quick peek never changes what happens
 next time.</p>
@@ -220,6 +220,23 @@ up somewhere unhelpful.</p>
 waits for the game, then picks up wherever the match already is.</p>
 <p><b>4. Check the alerts.</b> Idle Town Centre and housing warnings can be
 turned off individually if you would rather not see them.</p>
+<h3>Playing without a build order</h3>
+<p>The top two entries in the build list are not builds. Pick one and Loom
+runs everything except the build order - it still reads the clock, your
+villagers, the production queue and the age, still raises the idle-Town-Centre
+and housing alerts, and still writes a statistics file for the game.</p>
+<p><b>NO BUILD ORDER - Tracking and Alerts only</b> puts nothing on screen but
+the alert bands. Nothing at all until something needs saying, which is the
+point - while it waits for a match it shows one quiet band so you can see
+Loom is running.</p>
+<p><b>NO BUILD ORDER - with basic overlay</b> adds a small panel above those
+bands: the game clock, your villager count, villagers on each resource, the
+age you are in and whether your Town Centres are producing.</p>
+<p>These are for the games a build order does not cover - an unusual
+match-up, a map you are improvising on, or simply once you are off script.
+One thing is missing by nature rather than by omission: <b>CLICK UP</b> means
+"your build says click up now", so with no build there is no now and the band
+cannot appear. Everything else works exactly as it does with a build.</p>
 <p>Loom writes a statistics file for every game, which the
 <b>Statistics</b> button opens. Once a match has finished, it also reads
 the game's own recorded game to check those numbers against what the game
@@ -332,17 +349,13 @@ live build left to drift out of sync with - so the panel says <b>MANUAL</b>
 until you walk forward off the last step, or press <b>Ctrl+Shift+R</b>. Either
 brings the report back.</p>
 <h3>Getting the panel out of the way</h3>
-<p><b>Ctrl+Shift+0</b> — hide the panel, or bring it back. The launcher's
-<b>Hide overlay</b> button does the same thing, and turns green while the
-panel is hidden.</p>
+<p><b>Ctrl+Shift+Minus</b> — the <b>-</b> key — hides the panel, or brings
+it back. The launcher's <b>Hide overlay</b> button does the same thing, and
+turns green while the panel is hidden.</p>
 <p>Hiding is not stopping. Loom carries on reading the game, recording the
 match and counting APM the whole time — only the window goes away, and
 everything is still there when you bring it back. Stopping the overlay would
 throw the match away.</p>
-<p>One thing to know about this key in particular: it sits in the same family
-as the game's control groups (Ctrl and a number assigns one, Shift and a
-number adds to a selection). If you have remapped into that territory, give
-this a different key in the launcher.</p>
 <p>There is also a <b>start/stop overlay</b> key, Ctrl+Shift+F1 — one key
 doing what the launcher's Start and Stop buttons do, so the overlay can be
 launched mid-game without alt-tabbing.</p>
@@ -350,8 +363,17 @@ launched mid-game without alt-tabbing.</p>
 <p>Hotkeys ship <b>switched off</b>: a key Loom registers is taken away from
 the game, and that should be your choice, not a surprise. Tick
 <b>Use hotkeys</b> in the launcher and the bindings above are live. All of
-them are editable there too, under <b>Build-order hotkeys</b>, and any of
-them can be left empty to switch that one action off.</p>
+them are editable there too, under <b>Build-order hotkeys</b>: click a field
+and <b>press the combination you want</b> — there is nothing to spell out.
+<b>Esc</b> leaves it as it was and <b>Delete</b> empties it, which switches
+that one action off.</p>
+<p>A combination needs at least one of Ctrl, Alt, Shift or Win. That is not
+fussiness: Loom registers the key with the operating system, so a bare
+<b>Q</b> would stop working in Age of Empires for as long as Loom ran.</p>
+<p><b>On Windows, Ctrl+Shift+0 cannot be used</b> — something in the OS
+takes that one combination before any program sees it, so pressing it into a
+field does nothing at all. It is the reason the hide key is
+<b>Ctrl+Shift+Minus</b>. Every other Ctrl+Shift+digit is fine.</p>
 <p>Worth knowing: these are registered with the operating system, so
 <b>while Loom is running, the game does not see them</b>. If one of them
 clashes with a hotkey you use in Age of Empires, change it here — Loom will

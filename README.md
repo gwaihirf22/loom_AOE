@@ -77,7 +77,7 @@ answer is [at the end](#is-this-cheating), for anyone who wants it.
 
 ## Contents
 
-- [Get Loom running (Windows)](#get-loom-running-windows) — download, unzip, play
+- [Get Loom running](#get-loom-running) — download and play, on Windows or Linux
 - [Set up the game](#set-up-the-game) — the one setting that matters, and two useful mods
 - [First run](#first-run) — four things, once
 - [Reading the panel](#reading-the-panel) — what the overlay is telling you
@@ -85,7 +85,7 @@ answer is [at the end](#is-this-cheating), for anyone who wants it.
 - [Adding build orders](#adding-build-orders) — where to find them, where to put them
 - [Make it yours](#make-it-yours) — size, transparency, alerts, APM
 - [Statistics](#statistics) — every game, graphed
-- [Which platforms it runs on](#which-platforms-it-runs-on) — Linux and macOS too
+- [Which platforms it runs on](#which-platforms-it-runs-on) — Windows and Linux, and where macOS stands
 - [Is this cheating?](#is-this-cheating) — no, and here is the long answer
 - [Running from source](#running-from-source) — for development
 - [How it works](#how-it-works) — the engineering story
@@ -95,16 +95,33 @@ answer is [at the end](#is-this-cheating), for anyone who wants it.
 
 
 
-## Get Loom running (Windows)
+## Get Loom running
+
+There is no Python to install on either platform. Pick your OS.
+
+### Windows
 
 1. Download the latest
    [`Loom-x.y.z-windows.zip`](https://github.com/gwaihirf22/loom_AOE/releases/latest).
 2. Unzip it anywhere you like.
 3. Run `Loom.exe`.
 
-That is the whole install — no Python, nothing else to set up. It needs
-**Windows 10 version 1903 or newer** and the game. `Loom.exe` is the
-launcher; everything else opens from it.
+That is the whole install. It needs **Windows 10 version 1903 or newer** and
+the game. `Loom.exe` is the launcher; everything else opens from it.
+
+### Linux
+
+Loom is a Flatpak, so the runtime brings its own Python:
+
+```sh
+flatpak install ./Loom-x.y.z-x86_64.flatpak
+flatpak run io.github.gwaihirf22.loom_AOE
+```
+
+You may have to point Loom at your Steam library if it sits outside the
+usual place — one `flatpak override` command, covered in the
+[Linux guide](docs/install-linux.md). Verified on Bazzite / KDE Plasma /
+Wayland; the game must run in **Full screen** mode.
 
 ### If Windows objects
 
@@ -251,6 +268,25 @@ overlay controls, and the settings tabs. Everything opens from here.*
 4. **Check the alerts.** The idle-Town-Centre and housing warnings can each
    be switched off if you would rather not see them.
 
+### Playing without a build order
+
+The top two entries in the build list are not builds. Pick one and Loom runs
+everything except the build order — it still reads the clock, your villagers,
+the production queue and the age, still raises the idle-Town-Centre and
+housing alerts, and still writes a statistics file.
+
+- **NO BUILD ORDER — Tracking and Alerts only** puts nothing on screen but the
+  alert bands. While it waits for a match it shows one quiet band, so you can
+  see Loom is running.
+- **NO BUILD ORDER — with basic overlay** adds a small panel above them: game
+  clock, villager count, villagers on each resource, your age, and whether
+  your Town Centres are producing.
+
+For the games a build order does not cover — an unusual match-up, a map you
+are improvising on, or simply once you are off script. One band is missing by
+nature rather than omission: **CLICK UP** means *"your build says click up
+now"*, so with no build there is no now.
+
 ---
 
 
@@ -317,8 +353,10 @@ are editable.
   not time out: while it is off the panel says **MANUAL** across the top,
   naming the key that gets you back. A new match always returns to
   following the game.
-- **Ctrl+Shift+0** — hide the panel, or bring it back. The launcher's **Hide
-  overlay** button does the same thing and turns green while it is hidden.
+- **Ctrl+Shift+Minus** — the **-** key — hides the panel, or brings it back.
+  The launcher's **Hide overlay** button does the same thing and turns green
+  while it is hidden. It is not `Ctrl+Shift+0`, which looks tidier and which
+  Windows swallows before any program can see it.
 
 When the build order finishes, the panel rests on its report card — and you
 can step off it. **Ctrl+Shift+Q** goes back to the last step of the build and
@@ -328,9 +366,7 @@ live build to drift out of sync with: the panel says **MANUAL** until you walk
 forward off the last step, or press **Ctrl+Shift+R**, either of which brings
 the report back.
   Hiding is not stopping: Loom keeps reading the game, recording the match
-  and counting APM the whole time, and only the window goes away. Note this
-  one sits in the same family as the game's control groups (Ctrl and a
-  number), so rebind it if you have remapped into that territory.
+  and counting APM the whole time, and only the window goes away.
 - **Ctrl+Shift+F1** — start or stop the overlay, doing what the launcher's
   Start and Stop buttons do, so the overlay can be started mid-game without
   alt-tabbing.
@@ -469,15 +505,17 @@ enforces it.
 | Overlay | ✅ | ✅ | ❌ not over fullscreen |
 | Statistics + graphs | ✅ | ✅ | ✅ |
 | APM tracking | ✅ | ✅ | ❌ not yet |
+| Packaged install | ✅ Flatpak | ✅ zip with `.exe` | ❌ source only |
 
-On Windows, [the zip above](#get-loom-running-windows) is the install. The
-per-OS guides carry the details — display modes, where settings live, what
-is not supported yet:
+Windows and Linux both have a one-step install; see
+[above](#get-loom-running). The per-OS guides carry the details — display
+modes, where settings live, what is not supported yet:
 
 - **[Windows](docs/install-windows.md)** — Windows 10 1903+; also covers
   running from source.
-- **[Linux](docs/install-linux.md)** — XWayland, Proton, **Full screen**
-  mode. Verified on Bazzite / KDE Plasma / Wayland.
+- **[Linux](docs/install-linux.md)** — the Flatpak, and the one permission
+  you may need to grant it. XWayland, Proton, **Full screen** mode.
+  Verified on Bazzite / KDE Plasma / Wayland.
 - **[macOS](docs/install-macos.md)** — paused and known-degraded; read the
   limitations first.
 
@@ -664,10 +702,14 @@ loom/                   everything that gets imported
   stopline.py           the launcher's "please stop", back down on stdin
   runner.py             running the other Loom programs as children
   config.py             saved settings: overlay position, alerts, build
-tools/                  development scripts, never imported
+tools/                  scripts, never imported - run directly or with -m.
+                        Mostly development, but NOT only: apm_counter.py
+                        ships and counts APM on Linux
   grab_frames.py        screenshot grabber: run_<time>_<skin>[_<label>]/
   index_captures.py     rewrites captures/INDEX.md from the folder names
-  capture_smoketest.py  the Wayland capture test (documents why mss is unused)
+  capture_smoketest.py  the Wayland capture test (documents why mss is
+                        unused - and is the only thing that imports it,
+                        which is why mss is a dev-only dependency)
   overlay_test.py       does always-on-top survive a fullscreen game, and is
                         the panel really click-through?
   apm_counter.py        counts keys and clicks per bucket - never which key
@@ -687,13 +729,21 @@ captures/               frames grabbed while playing (gitignored); INDEX.md
                         is generated, so rename a folder to describe it
 images/                 resource icons for overlay
 tests/                  the test suite
-docs/                   install guides, platform support, how it works
+packaging/              what each OS needs to ship Loom as an app
+  linux/                the Flatpak: manifest, AppStream metainfo, .desktop
+                        entry, icon, and the README arguing each sandbox
+                        permission. Installed from source, not frozen
+docs/                   install guides, platform support, how it works,
+                        and the map of the modules (architecture.md)
 CHANGELOG.md            version history; 1.0.0 is the Windows release
 ```
 
 Anything under `loom/` is imported; anything under `tools/` is only run
-directly. Paths come from `loom/paths.py`, derived from the source location
-rather than the working directory, so Loom runs from anywhere.
+directly, never imported by the app. That is a rule about direction, not
+about shipping — `tools/apm_counter.py` is part of the Linux package and is
+spawned as `python -m tools.apm_counter` while you play. Paths come from
+`loom/paths.py`, derived from the source location rather than the working
+directory, so Loom runs from anywhere.
 
 ---
 

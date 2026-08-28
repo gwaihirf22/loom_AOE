@@ -116,6 +116,54 @@ def test_frozen_captures_go_to_the_player_s_data_directory(monkeypatch):
     assert paths._captures_dir() == paths.DATA_DIR / "captures"
 
 
+def test_installed_from_source_captures_go_to_the_player_s_data_directory(
+        monkeypatch, tmp_path):
+    """The same rule as the test above, reached the other way, and the
+    reason paths.installed() exists at all.
+
+    A Flatpak installs Loom from SOURCE: a real interpreter, sys.frozen
+    never set, and PROJECT_ROOT under /app where nothing may be written.
+    Keying this decision on sys.frozen answered "did PyInstaller build
+    this" when the question was "may I write here" - two questions that
+    agreed on Windows and part company here, so captures resolved into a
+    read-only mount and glyphs.TextWatcher's dump of unreadable
+    notification lines had nowhere to go.
+
+    Pinned as the RULE (a read-only tree moves captures) rather than as the
+    mechanism, so it still holds for whatever the next read-only install
+    shape turns out to be."""
+    monkeypatch.setattr(paths.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(paths.os, "access", lambda path, mode: False)
+
+    assert paths.installed() is True
+    assert paths._captures_dir() == paths.DATA_DIR / "captures"
+
+
+def test_a_writable_clone_is_not_an_installation(monkeypatch, tmp_path):
+    """The other half, so the check cannot pass by always saying yes -
+    which would silently move every developer's captures out of the tree
+    that tools/ expects to find them in."""
+    monkeypatch.setattr(paths.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
+
+    assert paths.installed() is False
+    assert paths._captures_dir() == tmp_path / "captures"
+
+
+def test_a_onefile_bundle_is_installed_however_writable_it_looks(
+        monkeypatch, tmp_path):
+    """Why sys.frozen stays in the answer rather than being replaced by the
+    writability test: onefile extracts to a temporary directory that IS
+    writable, and is deleted on exit. Anything saved there is destroyed
+    with it, so "I can write here" is not the same as "I may"."""
+    monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(paths.os, "access", lambda path, mode: True)
+
+    assert paths.installed() is True
+
+
 def test_read_only_assets_stay_anchored_to_the_source_tree():
     for shipped in (paths.TEMPLATES_DIR, paths.BUILDS_DIR, paths.ICONS_DIR):
         assert shipped.parent == paths.PROJECT_ROOT

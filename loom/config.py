@@ -273,7 +273,7 @@ def overlay_disabled():
     A PREFERENCE about how the overlay starts, deliberately not the same thing
     as whether it is hidden right now. Someone playing from the build preview
     on a second monitor should not have to hide the panel by hand every time
-    they press Start; the Hide overlay button and Ctrl+Shift+0 stay a
+    they press Start; the Hide overlay button and Ctrl+Shift+Minus stay a
     this-session toggle that is never remembered, so a mid-match peek cannot
     quietly change what happens tomorrow.
 
@@ -310,6 +310,57 @@ def set_active_build(stem):
     settings["active_build"] = str(stem)
     save(settings)
     return settings
+
+
+# What the overlay is being asked to do. "build" is the whole of Loom as it
+# has always worked; the other two run every reader and every production
+# alert with no build order behind them.
+#
+#   build           the build order panel
+#   tracking        alert bands only - nothing else is drawn
+#   tracking_panel  a live dashboard, plus the alert bands
+BUILD_MODE = "build"
+TRACKING_MODE = "tracking"
+TRACKING_PANEL_MODE = "tracking_panel"
+OVERLAY_MODES = (BUILD_MODE, TRACKING_MODE, TRACKING_PANEL_MODE)
+
+
+def overlay_mode():
+    """Which of the three things the overlay should be, as a string.
+
+    Its own key rather than a sentinel written into `active_build`, and the
+    reason is a real one rather than tidiness: `active_build` is a build FILE
+    STEM, and tools/replay_queue.py hands it straight to
+    `BuildOrder.load_by_name`. A sentinel there would raise FileNotFoundError
+    in a tool that has nothing to do with this feature.
+
+    Keeping them separate also buys the behaviour a player expects for free -
+    switching to tracking and back remembers the build they were on, because
+    nothing ever overwrote it.
+
+    Anything unrecognised reads as "build". A settings file edited by hand,
+    or written by a newer Loom, must not leave the launcher with a mode
+    nothing knows how to start.
+    """
+    value = load().get("overlay_mode")
+    return value if value in OVERLAY_MODES else BUILD_MODE
+
+
+def set_overlay_mode(mode):
+    """Remember what the player asked the overlay to be."""
+    settings = load()
+    settings["overlay_mode"] = (mode if mode in OVERLAY_MODES else BUILD_MODE)
+    save(settings)
+    return settings
+
+
+def tracking_only(mode=None):
+    """Is this a mode with no build order behind it?
+
+    One place to ask, so the two tracking modes cannot drift apart in the
+    half-dozen callers that only care whether there is a build.
+    """
+    return (mode or overlay_mode()) in (TRACKING_MODE, TRACKING_PANEL_MODE)
 
 
 def browser_window():
@@ -505,16 +556,27 @@ HOTKEY_ACTIONS = OVERLAY_HOTKEY_ACTIONS + LAUNCHER_HOTKEY_ACTIONS
 # throws the master switch - at which point the bindings waiting behind it
 # are a working set rather than blanks to fill in.
 #
-# toggle_hidden is Ctrl+Shift+0, chosen by the author. Worth knowing that it
-# sits in the same family as the game's control groups - Ctrl+digit assigns
-# one, Shift+digit adds to a selection - so a player who has remapped into
-# Ctrl+Shift+digit will want to move it. That is what rebinding is for, and
-# the launcher's Hide button does the same job without any key at all.
+# toggle_hidden was Ctrl+Shift+0 up to and including 1.0.7, and it had to
+# move because
+# WINDOWS EATS THAT COMBINATION. Measured: with the window in the foreground,
+# Shift+0 arrives as Key_ParenRight and Ctrl+Shift+1 as Key_Exclam, while
+# Ctrl+Shift+0 in the same run produces NO KEY EVENT AT ALL - something above
+# Qt consumes it. RegisterHotKey still reports it free, which is why it could
+# be registered and used while being impossible to type into the settings
+# window: the OS hands the hotkey back to whoever asked for it and never
+# routes the keystrokes to a focused widget.
+#
+# So a player who cleared it could not put it back, and no amount of work on
+# the capture field can fix a key that never arrives. Ctrl+Shift+Minus is the
+# "-" key next to it, reachable by the same hand, and it lands nowhere near
+# the game's control groups - which was the other reason the old default was
+# worth a second thought, since Ctrl+digit assigns a group and Shift+digit
+# adds to a selection.
 DEFAULT_HOTKEYS = {
     "previous_step": "Ctrl+Shift+Q",
     "next_step": "Ctrl+Shift+W",
     "toggle_follow": "Ctrl+Shift+R",
-    "toggle_hidden": "Ctrl+Shift+0",
+    "toggle_hidden": "Ctrl+Shift+Minus",
     "start_stop_overlay": "Ctrl+Shift+F1",
 }
 
@@ -758,3 +820,63 @@ def set_attach_recorded_game(enabled):
     settings[ATTACH_RECORDED_GAME] = bool(enabled)
     save(settings)
 
+
+
+# Where the statistics window's dividers sit: {name: [sizes...]}.
+#
+# One key holding every splitter rather than a key each, because they are
+# one decision - how the player wants that window laid out - and a
+# per-splitter key would need a new accessor pair every time a pane is
+# added. Sizes rather than a ratio: Qt hands back pixels and converting to
+# a proportion and back loses the exact position on every restore.
+STATS_SPLITTERS = "stats_splitters"
+
+
+def stats_splitters():
+    """The saved divider positions, as {name: [int, ...]}. Empty if never
+    dragged - the window uses its own defaults then."""
+    value = load().get(STATS_SPLITTERS)
+    if not isinstance(value, dict):
+        return {}
+    found = {}
+    for name, sizes in value.items():
+        # A hand-edited config must not be able to crash the window, so
+        # anything that is not a list of numbers is simply not there.
+        if isinstance(sizes, list) and all(
+                isinstance(one, (int, float)) for one in sizes):
+            found[str(name)] = [int(one) for one in sizes]
+    return found
+
+
+def set_stats_splitter(name, sizes):
+    """Remember one divider's position."""
+    settings = load()
+    saved = settings.get(STATS_SPLITTERS)
+    if not isinstance(saved, dict):
+        saved = {}
+    saved[str(name)] = [int(one) for one in sizes]
+    settings[STATS_SPLITTERS] = saved
+    save(settings)
+    return settings
+
+
+# A popped-out chart window's last size. ONE size shared by all of them
+# rather than one per chart: they are the same kind of window, and a
+# player who sizes one has said how big they want a chart to be.
+def chart_window():
+    """The size, as (width, height). None if never resized."""
+    value = load().get("chart_window")
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def set_chart_window(width, height):
+    """Remember how big a popped-out chart was left."""
+    settings = load()
+    settings["chart_window"] = [int(width), int(height)]
+    save(settings)
+    return settings

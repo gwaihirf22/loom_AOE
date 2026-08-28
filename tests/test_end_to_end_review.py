@@ -26,8 +26,8 @@ import pytest
 from PyQt6.QtWidgets import QApplication
 
 import loom_overlay
-from loom import (alerts, build_order, config, follow, overlay, paths,
-                  reader, session)
+from loom import (age as age_reader, alerts, build_order, checklist,
+                  config, follow, overlay, paths, reader, session)
 
 
 @pytest.fixture(autouse=True)
@@ -53,18 +53,29 @@ def build():
 
 
 class FakeHud:
-    """Hands out whatever reading the test wants next."""
+    """Hands out whatever reading the test wants next.
+
+    `age` defaults to None - no crest reading - and that is not a neutral
+    choice. build_order.extra_villagers has two rules and the second, the
+    age ceiling, is disabled entirely without an age. So a test that leaves
+    this None cannot see the villager surplus at all, and an assertion
+    about it would pass for a reason unrelated to what it claims to check.
+    Set it when the surplus is the subject.
+    """
 
     def __init__(self):
         self.villagers = 0
         self.clock = 0
         self.event = None
         self.villager_gap = None
+        self.age = None
 
     def poll(self):
         return reader.Reading(
             villagers=self.villagers, game_time=self.clock,
             event=self.event, hud_visible=True,
+            age=(age_reader.AgeReading(age=self.age, score=1.0)
+                 if self.age is not None else None),
             population=(self.villagers, 200), queue_slots=[],
             game_events=[], villager_gap=self.villager_gap)
 
@@ -329,3 +340,96 @@ def test_a_machine_with_no_hotkeys_at_all_is_offered_nothing(monkeypatch):
     assert loom_overlay.step_hint_trouble() is None
     config.set_hotkeys_enabled(True)
     assert loom_overlay.step_hint_trouble() is None
+
+
+# ---- the build ends, and the counting ends with it ---------------------
+#
+# Live, twenty minutes after a build that finished at +4, the header read
+# "+55 VILL · —" directly above a report row still correctly saying "+4
+# beyond the build". extra_villagers is pure and knows nothing about a
+# build ending, so its age-ceiling rule degenerates to "villagers minus the
+# largest count anywhere in the build" and climbs for the rest of the game.
+# What stops it is the controller taking the figure from report.max_extra
+# once the build is complete - the same number the report row draws.
+
+
+def test_the_villager_surplus_stops_climbing_when_the_build_ends(live, build):
+    """The bug itself. The count kept rising for the whole rest of the game
+    while the player went on playing, and nothing on the panel knew the
+    build had ended - even though the dash beside it meant exactly that."""
+    controller, panel, hud, _following = live
+    hud.age = max(step.age for step in build.steps if step.age)
+    play_to_completion(controller, hud, build)
+    settled = panel.pace_text
+
+    for _ in range(30):
+        hud.villagers += 2
+        hud.clock += 30
+        controller.tick()
+
+    assert panel.pace_text == settled, (
+        f"the chip moved after the build ended: {settled!r} -> "
+        f"{panel.pace_text!r}")
+
+
+def test_the_chip_and_the_report_row_cannot_disagree(live, build):
+    """Taken from report.max_extra rather than frozen separately, so there
+    is one number rather than two that have to be kept equal."""
+    controller, panel, hud, _following = live
+    hud.age = max(step.age for step in build.steps if step.age)
+    play_to_completion(controller, hud, build)
+
+    for _ in range(20):
+        hud.villagers += 3
+        hud.clock += 30
+        controller.tick()
+
+    surplus = controller.report.max_extra
+    if surplus > 0:
+        assert panel.pace_text == f"+{surplus} VILLS > BUILD"
+    else:
+        assert panel.pace_text == ""
+
+
+def test_the_report_page_does_not_inherit_a_stale_chip(live, build):
+    """Both numbers were on screen together because show_report never wrote
+    the chip - it drew whatever the last step-page poll left behind."""
+    controller, panel, hud, following = live
+    hud.age = max(step.age for step in build.steps if step.age)
+    play_to_completion(controller, hud, build)
+    for _ in range(10):
+        hud.villagers += 3
+        hud.clock += 30
+        controller.tick()
+    press(controller, following, "next_step")
+
+    assert panel.report_rows is not None, "expected the report page"
+    surplus = controller.report.max_extra
+    expected = f"+{surplus} VILLS > BUILD" if surplus > 0 else ""
+    assert panel.pace_text == expected
+
+
+def test_completion_ticks_nothing_off_the_last_card(live, build):
+    """The author's other half: consider the build complete internally, but
+    do not mark anything done until Loom has actually seen it.
+
+    checklist._assume_through clamps at len(steps) - 2 so the final card is
+    never assumed past, however far the cursor runs. This is the guard at
+    the CONTROLLER level - that the completion latch, and the freeze that
+    now rides on it, still credit nobody. The fake HUD emits no events at
+    all, so anything ticked here was invented.
+    """
+    controller, panel, hud, _following = live
+    hud.age = max(step.age for step in build.steps if step.age)
+    play_to_completion(controller, hud, build)
+
+    for _ in range(20):
+        hud.villagers += 1
+        hud.clock += 30
+        controller.tick()
+
+    last = len(build.steps) - 1
+    states = controller.checklist.states(last, len(build.steps[last].items))
+
+    assert all(state is checklist.NOT_DONE for state in states), (
+        f"completion credited work on the last card: {states}")

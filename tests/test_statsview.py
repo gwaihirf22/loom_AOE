@@ -161,16 +161,20 @@ def test_tc_efficiency():
 
 
 def test_game_rows_carry_the_honesty_notes():
-    rows = statsview.game_rows(
-        {"duration": 600, "max_villagers": 30, "tc_count": 2,
-         "tc_idle_seconds": 12.0, "queued": {"knight": 500},
-         "deaths": [[300, 2, True]], "attacks": [295]})
-    labels = {label for label, _, _ in rows}
-    assert "knight" in labels
+    game = {"duration": 600, "max_villagers": 30, "tc_count": 2,
+            "tc_idle_seconds": 12.0, "queued": {"knight": 500},
+            "deaths": [[300, 2, True]], "attacks": [295]}
+    rows = statsview.game_rows(game)
     values = dict((label, value) for label, value, _ in rows)
-    # Queue sightings are labelled as sightings, never as produced counts.
-    assert values["knight"].startswith("first queued")
     assert values["villagers lost"] == "2 (2 to raids)"
+    # A queue sighting is NOT here any more. It is a thing the recorded
+    # game can be asked about, so it belongs in the inventory where the
+    # answer sits beside it - listed here as well, it was the same
+    # sighting twice on one tab with only one of the pair saying who saw
+    # it.
+    assert "knight" not in {label for label, _, _ in rows}
+    units = dict(statsview.inventory_rows({"game": game}))["Units"]
+    assert ("knight", "queue 8:20", None) in units, units
 
 
 def test_the_build_window_idle_row_leads_the_whole_game_one():
@@ -471,12 +475,12 @@ class FakeStep:
         self.items_segments = segments
 
 
-def plan_for(monkeypatch, steps, game):
+def plan_for(monkeypatch, steps, game, record=None):
     from loom import build_order
     fake = type("B", (), {"steps": steps})()
     monkeypatch.setattr(build_order.BuildOrder, "load_by_name",
                         classmethod(lambda cls, name: fake))
-    return statsview.plan_versus_actual("whatever", game)
+    return statsview.plan_versus_actual("whatever", game, record)
 
 
 def item(token, words="Build "):
@@ -768,7 +772,7 @@ def test_the_record_lands_beside_what_loom_read_never_over_it(stats_dir,
     path = stats_dir / "2026-08-25_010714_g.json"
     before = json.loads(path.read_text(encoding="utf-8"))
     monkeypatch.setattr(statsview.replay, "match",
-                        lambda p: statsview.replay.Match(
+                        lambda p, available=None: statsview.replay.Match(
                             type("R", (), {"path": pathlib.Path("r.aoe2record")}),
                             statsview.replay.CERTAIN, "one", None))
     monkeypatch.setattr(statsview.replay, "harvest", lambda p: StoredTruth())
@@ -788,7 +792,7 @@ def test_the_accuracy_report_works_from_the_file_alone(stats_dir, monkeypatch):
     write_game(stats_dir, "2026-08-25_010714_g.json")
     path = stats_dir / "2026-08-25_010714_g.json"
     monkeypatch.setattr(statsview.replay, "match",
-                        lambda p: statsview.replay.Match(
+                        lambda p, available=None: statsview.replay.Match(
                             type("R", (), {"path": pathlib.Path("r.aoe2record")}),
                             statsview.replay.CERTAIN, "one", None))
     monkeypatch.setattr(statsview.replay, "harvest", lambda p: StoredTruth())
@@ -1155,13 +1159,16 @@ def test_an_age_says_which_moment_each_witness_is_naming():
 
 
 def test_a_row_only_one_witness_can_answer_leaves_the_other_blank():
-    """The record has no idea a Town Centre was idle. Writing 0 there
-    would be a claim it never made."""
+    """Nothing on the HUD says what a player's eAPM was. Writing a number
+    there would be a claim Loom never made."""
     rows = dict((label, (read, rec))
                 for label, read, rec in statsview.comparison_rows(
                     a_compared_game()))
-    assert rows["TC idle time"][1] is None
     assert rows["eAPM"][0] is None, "Loom cannot compute eAPM and said it did"
+    # And a number only LOOM can give is not in this table at all - it
+    # belongs under "Only Loom could see this", which says so in a
+    # heading rather than by leaving a cell empty and hoping.
+    assert "TC idle time" not in rows
     html = statsview.two_column_html(statsview.comparison_rows(
         a_compared_game()))
     assert "None" not in html, "a blank cell rendered the word None"
@@ -1224,15 +1231,19 @@ def test_a_witness_with_parts_becomes_their_LABEL_not_a_third_box(app):
 
         Loom read { [ ] villagers  [ ] population }   [ ] villagers queued
     """
-    from PyQt6.QtWidgets import QCheckBox, QLabel
+    from PyQt6.QtWidgets import QCheckBox, QLabel, QWidget
     tab = statsview.ChartTab(("villagers",))
     assert statsview.SCREEN not in tab.witness_boxes,         "the screen witness kept a checkbox its parts had replaced"
     assert set(tab.part_boxes) == {"villagers", "population", "cap"}
 
-    row = tab.layout().itemAt(0).layout()
-    group = next(row.itemAt(i).widget() for i in range(row.count())
-                 if row.itemAt(i).widget() is not None
-                 and row.itemAt(i).widget().layout() is not None)
+    # Found by SEARCHING rather than by walking layout positions: the
+    # control row became a flow row so it could wrap, and a test that
+    # navigates the layout tree breaks on a change that is invisible to
+    # anyone using the window.
+    group = next(w for w in tab.findChildren(QWidget)
+                 if w.layout() is not None
+                 and any(isinstance(w.layout().itemAt(i).widget(), QLabel)
+                         for i in range(w.layout().count())))
     inside = group.layout()
     heading = inside.itemAt(0).widget()
     assert isinstance(heading, QLabel) and heading.text() == "Loom read"
@@ -1437,3 +1448,1030 @@ def test_the_order_marks_appear_only_while_that_witness_is_on(app):
     with_it = violet()
     view.witnesses = [statsview.SCREEN]
     assert with_it > violet(), "the record witness drew nothing"
+
+
+def test_the_build_icons_answer_to_the_screen_checkbox(app):
+    """The icons ARE the screen witness - each sits where the feed said
+    the thing arrived, wearing the verdict that reading earned. They drew
+    regardless until the author ticked the box and nothing happened,
+    which is the failure the witness declaration exists to prevent."""
+    from PyQt6.QtGui import QPixmap
+    view = statsview.ChartView(("plan",))
+    view.show_game(game_with_ages())
+    view.plan = [statsview.PlanRow("mill", None, 100, 200, (85, 260), 150)]
+    view.resize(800, 300)
+
+    def verdict_pixels():
+        canvas = QPixmap(view.size())
+        view.render(canvas)
+        image = canvas.toImage()
+        want = statsview.ON_PACE_COLOR
+        return sum(1 for y in range(0, image.height(), 2)
+                   for x in range(0, image.width(), 2)
+                   if abs(image.pixelColor(x, y).red() - want.red()) < 30
+                   and abs(image.pixelColor(x, y).green() - want.green()) < 30
+                   and abs(image.pixelColor(x, y).blue() - want.blue()) < 30)
+
+    view.witnesses = [statsview.SCREEN, statsview.FROM_RECORD]
+    assert verdict_pixels() > 0, "the on-time border was never drawn"
+    view.witnesses = [statsview.FROM_RECORD]
+    assert verdict_pixels() == 0, "the icons ignored the screen checkbox"
+
+
+def test_the_hit_geometry_survives_the_icons_being_hidden(app):
+    """`marks` is the hit-test geometry, not just the icons - the record's
+    rings are still there to be hovered when the icons are off."""
+    from PyQt6.QtGui import QPixmap
+    view = statsview.ChartView(("plan",))
+    view.show_game(game_with_ages())
+    view.plan = [statsview.PlanRow("mill", None, 100, 200, (85, 260), 150)]
+    view.resize(800, 300)
+    view.witnesses = [statsview.FROM_RECORD]
+    view.render(QPixmap(view.size()))
+    assert view._plan_marks, "hiding the icons threw away the hit-testing"
+
+
+def test_a_legend_never_names_a_line_nobody_is_drawing(app):
+    """The verdicts are the screen witness's judgements, so their key
+    goes when that witness does - and the record's entry only appears
+    when some item actually has an order time to mark."""
+    view = statsview.ChartView(("plan",))
+    view.show_game(game_with_ages())
+    view.plan = [statsview.PlanRow("mill", None, 100, 200, (85, 260), None)]
+    view.witnesses = [statsview.SCREEN, statsview.FROM_RECORD]
+    assert not view._plan_has_orders(), "claimed a ring with nothing to mark"
+    view.plan = [statsview.PlanRow("mill", None, 100, 200, (85, 260), 150)]
+    assert view._plan_has_orders()
+    view.witnesses = [statsview.SCREEN]
+    assert not view._plan_has_orders(), "the ring key ignored its own witness"
+
+
+def test_the_pace_line_is_dotted_and_nothing_else_is():
+    """Two greys on one chart: "never seen" at (120,120,128) against the
+    pace line's (162,160,180), 134 apart and still one grey in thin
+    strokes. Told apart by KIND rather than hue, which survives being
+    next to any future colour and works for a colourblind reader."""
+    import inspect
+    from PyQt6.QtCore import Qt as QtCore_Qt
+    pace = inspect.getsource(statsview.ChartView._layer_pace)
+    assert "DotLine" in pace, "the pace line went back to solid"
+    # ...and the default is still solid, so no other caller moved.
+    signature = inspect.signature(statsview.ChartView._draw_series)
+    assert signature.parameters["style"].default == QtCore_Qt.PenStyle.SolidLine
+
+
+def test_a_key_swatch_matches_the_line_it_stands_for():
+    """A dotted line with a solid swatch beside it is a legend
+    disagreeing with the chart it explains - and the reader trusts the
+    small picture precisely because it is next to the words."""
+    import inspect
+    source = inspect.getsource(statsview.ChartView._paint_key)
+    assert "entry[3]" in source, "a key entry can no longer carry a style"
+    assert "SolidLine" in source, "entries without a style lost their default"
+
+
+# ---- panes the player can size --------------------------------------------
+
+def test_the_games_list_is_no_longer_capped(app, stats_dir):
+    """It was setMaximumWidth(300), so a build name longer than that was
+    elided however large the window got - widening only ever fed the
+    tabs, and there was no way to see the rest of the name."""
+    window = statsview.StatsWindow()
+    assert window.games.maximumWidth() > 1000, "the list is still capped"
+    assert window.games.minimumWidth() > 0, "the list can now vanish entirely"
+
+
+def test_a_game_name_too_long_to_show_is_still_readable(stats_dir):
+    """The divider helps and cannot always be enough."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    statsview.rename_game(stats_dir / "2026-08-25_010714_g.json",
+                          "the one where I got boomed off three town centres")
+    window = statsview.StatsWindow()
+    window.refresh()
+    item = window.games.item(0)
+    assert "boomed" in item.toolTip(), "an elided name has nowhere to be read"
+
+
+def test_every_divider_is_restored_from_one_place(app, stats_dir):
+    """A splitter built and then left out of a hand-kept restore list
+    would silently ignore its saved position - the kind of gap nobody
+    notices for months, and the third one of its shape this week."""
+    window = statsview.StatsWindow()
+    assert {name for _, name, _ in window._dividers} == {
+        "history", "build", "military"}
+
+
+def test_a_saved_divider_position_comes_back(app, stats_dir, monkeypatch):
+    """And a position saved when the window had a different number of
+    panes is ignored rather than padded: it answers a question nobody is
+    asking any more."""
+    from loom import config
+    from PyQt6.QtWidgets import QApplication
+    monkeypatch.setattr(config, "stats_splitters",
+                        lambda: {"history": [321, 654]})
+    window = statsview.StatsWindow()
+    # Shown and sized first: before that the window has no geometry and
+    # Qt clamps setSizes to a layout that has not happened yet, which is
+    # the whole reason the restore lives in showEvent.
+    window.resize(1000, 600)
+    window.show()
+    QApplication.processEvents()
+    window._restore_splitter(window.split, "history", [260, 720])
+    # Within a few pixels, not exactly. Qt scales the whole list to fill
+    # the window, so both the saved sizes and the defaults come back
+    # slightly adjusted - asserting the exact number would be testing
+    # arithmetic nobody chose, and it would fail on any window width.
+    assert abs(window.split.sizes()[0] - 321) < 10
+
+    monkeypatch.setattr(config, "stats_splitters",
+                        lambda: {"history": [1, 2, 3]})
+    window._restore_splitter(window.split, "history", [260, 720])
+    assert abs(window.split.sizes()[0] - 260) < 10,         "a saved shape from a different set of panes was forced on"
+
+
+def test_a_hand_edited_config_cannot_break_the_window(stats_dir, monkeypatch):
+    """The settings file is user-visible, so anything that is not a list
+    of numbers is simply not there rather than a crash on open."""
+    from loom import config
+    for rubbish in ({"history": "wide"}, {"history": [None, 2]},
+                    "not a dict", None):
+        monkeypatch.setattr(config, "load", lambda r=rubbish: {
+            config.STATS_SPLITTERS: r})
+        assert config.stats_splitters() == {} or all(
+            isinstance(v, list) for v in config.stats_splitters().values())
+
+
+def test_the_control_row_does_not_pin_the_whole_tab(app, stats_dir):
+    """Qt reports a row's minimum width as the SUM of its children, so
+    the long witness labels pinned the Build report page at 1438px and
+    the divider could never give the list more than its 140px minimum
+    however wide the window got. A flow row's minimum is its widest
+    single child."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    for index in range(window.tabs.count()):
+        page = window.tabs.widget(index)
+        assert page.minimumSizeHint().width() < 900, \
+            f"{window.tabs.tabText(index)} pins the window open"
+
+
+def test_a_dotted_line_stays_dotted_where_it_runs_flat(app):
+    """It came out dotted on its steep climbs and solid everywhere it was
+    flat. Qt restarts a pen's dash pattern at every drawLine call, and a
+    flat run is about a pixel wide per sample - shorter than one dash
+    period, so every segment drew entirely "on"."""
+    from PyQt6.QtGui import QPixmap
+    flat = list(range(0, 600, 5))
+    data = {"meta": {}, "game": {"ages": []},
+            "timeline": {"t": flat, "pace": [40] * len(flat),
+                         "villagers": [10] * len(flat),
+                         "idle_tcs": [0] * len(flat),
+                         "pop": [10] * len(flat),
+                         "pop_cap": [20] * len(flat)}}
+    view = statsview.ChartView(("pace",))
+    view.show_game(data)
+    view.resize(800, 300)
+    canvas = QPixmap(view.size())
+    view.render(canvas)
+    image = canvas.toImage()
+
+    want = statsview.PACE_COLOR
+
+    def lit(x, y):
+        pixel = image.pixelColor(x, y)
+        return (abs(pixel.red() - want.red()) < 40
+                and abs(pixel.blue() - want.blue()) < 40)
+
+    row = max(range(image.height()),
+              key=lambda y: sum(lit(x, y) for x in range(image.width())))
+    along = [lit(x, row) for x in range(image.width())]
+    breaks = sum(1 for i in range(1, len(along)) if along[i] != along[i - 1])
+    assert breaks > 20, "the flat run drew solid - the dash did not carry"
+
+
+def test_a_series_is_one_polyline_per_unbroken_run(app):
+    """A gap and a recording seam must still break the line, or the two
+    halves join across a hole in the readings."""
+    import inspect
+    source = inspect.getsource(statsview.ChartView._draw_series)
+    assert "drawPolyline" in source, "back to a drawLine per pair"
+    # Three places have to flush: a None reading, a backwards clock, and
+    # the end of the points.
+    assert source.count("flush()") >= 3, "a break stopped breaking the line"
+
+
+def test_every_checkbox_on_a_control_row_explains_itself(app):
+    """The witness boxes carried an explanation from the day they were
+    added and the series boxes beside them never did, so on the one tab
+    that has both, half the row explained itself and half did not."""
+    tab = statsview.ChartTab(("plan", "pace"), combined="build and pace")
+    for name, box in tab.boxes.items():
+        assert box.toolTip(), f"the {name} checkbox says nothing about itself"
+    for witness, box in tab.witness_boxes.items():
+        assert box.toolTip(), f"the {witness} checkbox says nothing"
+
+
+def test_every_registered_chart_has_something_to_say_about_itself():
+    """A hand-kept list beside a registry drifts - this is the third one
+    this week - so it is walked from the registry rather than eyeballed."""
+    for name in statsview.ChartView.CHARTS:
+        about = statsview.ChartView.ABOUT.get(name)
+        assert about and len(about) > 20, name
+
+
+# ---- the header band, measured rather than guessed ------------------------
+
+def test_the_frame_reserves_the_crest_room_it_actually_needs(app):
+    """Three functions used to decide this independently and none of them
+    measured: _frame hard-coded 26px, _draw_key re-derived the title's own
+    row from scratch, and _draw_age_rules hung half a crest above the plot
+    without telling either. The crests landed six pixels into the title.
+
+    The clearance is asserted for every REGISTERED chart, and then again
+    with CREST_SIZE monkeypatched - that second half is the point. It is
+    the only assertion here that fails the moment someone writes a magic
+    number back into _frame.
+    """
+    from PyQt6.QtGui import QPainter, QPixmap
+    for name, (title, _method) in statsview.ChartView.CHARTS.items():
+        view = statsview.ChartView((name,))
+        view.show_game(game_with_ages())
+        canvas = QPixmap(700, 300)
+        painter = QPainter(canvas)
+        try:
+            plot = view._frame(painter, 10, 10, 600, 260, title,
+                               statsview.ChartView.PLAN_KEY)
+        finally:
+            painter.end()
+        crest_top = plot[1] - statsview.CREST_OVERHANG
+        header = 10 + statsview.header_height(
+            title, statsview.ChartView.PLAN_KEY, 600)
+        assert crest_top >= header, f"{name}: the crest sits in the words"
+
+
+def test_a_bigger_crest_moves_the_room_reserved_for_it(app, monkeypatch):
+    """The reservation and the draw read ONE constant, so they cannot
+    drift apart again. This is the requirement the old code failed:
+    CREST_SIZE was not referenced by _frame at all, so changing it
+    silently changed the overlap."""
+    from PyQt6.QtGui import QPainter, QPixmap
+
+    def plot_top(overhang):
+        monkeypatch.setattr(statsview, "CREST_OVERHANG", overhang)
+        view = statsview.ChartView(("villagers",))
+        view.show_game(game_with_ages())
+        canvas = QPixmap(700, 300)
+        painter = QPainter(canvas)
+        try:
+            return view._frame(painter, 10, 10, 600, 260, "T", ())[1]
+        finally:
+            painter.end()
+
+    assert plot_top(40) - plot_top(10) == 30, \
+        "the plot did not move with the crest it is making room for"
+
+
+def test_the_key_wraps_and_never_drops_an_entry():
+    """It ran off the right edge of a narrow chart. Wrapping rather than
+    clipping, because a key entry silently missing is a legend lying
+    about which colour is which."""
+    entries = [(statsview.ON_PACE_COLOR, 2, f"series number {n}")
+               for n in range(10)]
+    for width in (1200, 700, 480):
+        placed, rows = statsview.key_layout("A LONG CHART TITLE",
+                                            entries, width)
+        assert len(placed) == len(entries), f"{width}: an entry was dropped"
+        assert all(dx < width for _entry, dx, _row in placed), \
+            f"{width}: an entry starts past the frame"
+    narrow = statsview.key_layout("A LONG CHART TITLE", entries, 480)[1]
+    wide = statsview.key_layout("A LONG CHART TITLE", entries, 1200)[1]
+    assert narrow > wide, "a narrow chart did not wrap its key"
+
+
+def test_a_wrapped_key_pushes_the_plot_down(app):
+    """The header is measured, so more rows of key means less plot -
+    which is what "measured" has to mean if it means anything."""
+    entries = [(statsview.ON_PACE_COLOR, 2, f"series number {n}")
+               for n in range(10)]
+    one = statsview.header_height("T", entries[:1], 1200)
+    many = statsview.header_height("T", entries, 480)
+    assert many > one, "wrapping the key did not make room for it"
+
+
+def test_a_chart_with_no_key_pays_nothing_for_one():
+    """The author wants things tight. A header that always reserved a key
+    row would cost every chart that has no key."""
+    assert statsview.header_height("T", (), 800) < statsview.header_height(
+        "T", [(statsview.ON_PACE_COLOR, 2, "one")], 800)
+
+
+def test_the_readout_never_covers_a_chart_title(app):
+    """It clamped only to the widget, so it landed on titles, keys and
+    crests. Pushed DOWN past the header rather than up: the gap above a
+    chart is MARGIN and the box is taller than that, so upward is not a
+    direction that exists here."""
+    view = statsview.ChartView(("villagers", "apm"))
+    view.show_game(game_with_ages())
+    view.resize(900, 600)
+    boxes = view._chart_boxes()
+    assert boxes, "no charts to point at"
+    x, y, width, _height, title, _draw = boxes[0]
+
+    view.hover_x, view.hover_y = x + 200, y + 4      # right on the title
+    _left, top = view.hover_box(160)
+    assert top >= y + statsview.header_height(title, view.PLAN_KEY, width), \
+        "the readout sat on the chart's own title"
+
+
+def test_the_readout_never_leaves_the_left_edge(app):
+    """A wide readout flipped near the left edge went off the widget
+    entirely - there was a right clamp and no left one."""
+    view = statsview.ChartView(("villagers",))
+    view.show_game(game_with_ages())
+    view.resize(600, 400)
+    view.hover_x, view.hover_y = 20, 200
+    left, _top = view.hover_box(560)
+    assert left >= statsview.MARGIN, "the readout went off the left edge"
+
+
+def test_a_long_readout_stays_inside_the_widget(app):
+    """The gate this chart never had, and the reason the fault survived.
+
+    The test above asserts left >= MARGIN and passes precisely because it
+    checks ONE edge. Nothing anywhere asserted left + width <= width(), so
+    a box wider than the widget was pinned at the left margin and ran off
+    the right with nothing to stop it - which is exactly what an unpaired
+    build item did, at 730-790px on a pane whose minimum is 480.
+    """
+    view = statsview.ChartView(("villagers",))
+    view.show_game(game_with_ages())
+    view.resize(600, 400)
+    view.hover_x, view.hover_y = 300, 200
+
+    told = ("stable - card 14:20 - ordered 13:52 - from the recorded game"
+            " - Loom read fewer of these than you built, so it cannot say"
+            " which one this was")
+    lines = statsview.wrap(told)
+    assert len(lines) > 1, "the label under test should need more than a line"
+
+    from PyQt6.QtGui import QFontMetrics
+    metrics = QFontMetrics(statsview.readout_font())
+    width = max(metrics.horizontalAdvance(line) for line in lines) + 10
+    width = min(width, max(60, view.width() - 2 * statsview.MARGIN))
+    left, top = view.hover_box(width)
+
+    assert left >= statsview.MARGIN
+    assert left + width <= view.width(), "the readout ran off the right edge"
+    height = statsview.READOUT_HEIGHT * len(lines)
+    top = max(statsview.READOUT_HEIGHT + 2,
+              min(top, view.height() - height - 2))
+    assert top + height <= view.height(), "the readout ran off the bottom"
+
+
+def test_the_hovered_label_is_drawn_on_more_than_one_line(app):
+    """What the player sees. The unpaired-item label carries 103
+    characters of unconditional tail, so it can never fit on one line at
+    any window size worth using."""
+    told = ("stable - card 14:20 - ordered 13:52 - from the recorded game"
+            " - Loom read fewer of these than you built, so it cannot say"
+            " which one this was")
+
+    lines = statsview.wrap(told)
+
+    assert len(lines) >= 3
+    for line in lines:
+        assert len(line) <= 60, line
+
+
+def test_the_chart_geometry_has_one_definition(app):
+    """paintEvent held the arithmetic and an unreachable branch of it
+    held a second copy - which is how the pointer ended up with its own
+    third idea of where the charts were."""
+    import inspect
+    source = inspect.getsource(statsview.ChartView.paintEvent)
+    assert source.count("if self.combined:") == 1, \
+        "the unreachable combined branch is back"
+    assert "_chart_boxes" in source
+
+
+def test_the_age_numbers_sit_on_the_floor_not_the_ceiling(app):
+    """They shared the top row with the crests AND with the build
+    chart's first lane of icons. The floor is not free either - the idle
+    band grows up from it - so each label clears its own ground, which
+    the top could never have offered: `hi` is the maximum of the values,
+    so every series touches the ceiling by construction."""
+    import inspect
+    source = inspect.getsource(statsview.ChartView._draw_span_labels)
+    assert "plot_y + plot_h" in source, "the labels went back to the top"
+    assert "_label_chip" in source, "a label draws straight onto the series"
+
+
+def test_a_label_is_never_drawn_under_the_thing_that_covers_it(app):
+    """Both the idle chart and the military chart drew their labels
+    BEFORE the series that paints over them. True before this change and
+    guaranteed after it, since the labels now sit where the idle band
+    grows."""
+    import inspect
+    for method in (statsview.ChartView._draw_idle_tcs,
+                   statsview.ChartView._draw_military):
+        source = inspect.getsource(method)
+        last_label = source.rfind("_draw_span_labels")
+        last_paint = max(source.rfind("fillRect"), source.rfind("_draw_series"))
+        assert last_label > last_paint, \
+            f"{method.__name__} still paints over its own labels"
+
+
+# ---- a chart in a window of its own ---------------------------------------
+
+def test_popping_out_leaves_the_tab_its_own_chart(app, stats_dir):
+    """A SECOND copy, the author's ruling - so a big window can be
+    studied BESIDE the tab rather than instead of it. The cost is that
+    they are two views: they do not follow each other, and the button
+    says so."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    window._pop_out(("villagers",), "Society", None)
+    popped = window._popouts[("villagers",)]
+
+    popped.tab.part_boxes["population"].setChecked(False)
+    popped.tab.view.zoom_by(4)
+    assert popped.tab.view.parts != window.society.view.parts
+    assert popped.tab.view.window() != window.society.view.window(), \
+        "the two views share a zoom - they are one chart, not two"
+
+
+def test_a_popped_out_chart_follows_the_selected_game(app, stats_dir):
+    """A window still showing the game before last, while the list has
+    moved on, is the worst failure available to a window whose whole
+    purpose is careful reading - and it would look exactly like data."""
+    write_game(stats_dir, "2026-08-25_010714_a.json")
+    write_game(stats_dir, "2026-08-24_010714_b.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    window._pop_out(("villagers",), "Society", None)
+    popped = window._popouts[("villagers",)]
+
+    window.games.setCurrentRow(1)
+    assert popped.tab.view.data is window._selected, \
+        "the pop-out kept showing the game the list had moved off"
+
+
+def test_popping_out_twice_raises_the_one_that_exists(app, stats_dir):
+    """Rather than stacking an identical second window behind the
+    first."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    window._pop_out(("villagers",), "Society", None)
+    window._pop_out(("villagers",), "Society", None)
+    assert len(window._popouts) == 1
+
+
+def test_closing_a_pop_out_is_remembered(app, stats_dir):
+    """Forgotten rather than hidden, so the next one is a fresh window at
+    the remembered SIZE rather than wherever the last was dragged."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    window._pop_out(("villagers",), "Society", None)
+    window._popouts[("villagers",)].close()
+    assert window._popouts == {}
+
+
+def test_a_pop_out_does_not_offer_to_pop_itself_out(app):
+    """A pop-out of a pop-out is two windows arguing about one chart."""
+    from PyQt6.QtWidgets import QPushButton
+    popped = statsview.ChartWindow(("apm",), "APM")
+    assert "pop out" not in [b.text() for b in popped.findChildren(QPushButton)]
+    assert "pop out" in [
+        b.text() for b in statsview.ChartTab(("apm",)).findChildren(QPushButton)]
+
+
+def test_every_tab_that_draws_a_chart_can_be_popped_out(app, stats_dir):
+    """The author's ruling: consistent, so there is nothing to remember
+    about which ones do it."""
+    from PyQt6.QtWidgets import QPushButton
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    window = statsview.StatsWindow()
+    for tab in (window.society, window.economy, window.apm_charts,
+                window.military_charts, window.pace_charts):
+        assert "pop out" in [b.text() for b in tab.findChildren(QPushButton)]
+
+
+def test_shift_and_the_wheel_walks_along_a_long_game_name(app, stats_dir):
+    """Qt elides an item that overflows and offers no way to see the
+    rest. The tooltip covers reading ONE; this covers comparing twenty."""
+    from PyQt6.QtCore import QPoint, QPointF, Qt as QtCore_Qt
+    from PyQt6.QtGui import QWheelEvent
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    statsview.rename_game(stats_dir / "2026-08-25_010714_g.json",
+                          "the one where I got boomed off three town centres"
+                          " while staring at the wrong side of the map")
+    window = statsview.StatsWindow()
+    window.resize(1000, 600)
+    window.show()
+    window.refresh()
+    window.split.setSizes([200, 800])
+    app.processEvents()
+
+    bar = window.games.horizontalScrollBar()
+    assert bar.maximum() > 0, "the name was elided instead of overflowing"
+
+    def wheel(modifier, dy=-120):
+        return QWheelEvent(
+            QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, dy),
+            QtCore_Qt.MouseButton.NoButton, modifier,
+            QtCore_Qt.ScrollPhase.NoScrollPhase, False)
+
+    window.games.wheelEvent(wheel(QtCore_Qt.KeyboardModifier.ShiftModifier))
+    moved = bar.value()
+    assert 0 < moved < bar.maximum(), \
+        "one notch went nowhere, or went the whole way at once"
+    window.games.wheelEvent(
+        wheel(QtCore_Qt.KeyboardModifier.ShiftModifier, dy=120))
+    assert bar.value() < moved, "it would not come back"
+
+
+def test_a_plain_wheel_still_scrolls_the_list_the_way_it_did(app, stats_dir):
+    """Shift is the addition. Taking the ordinary gesture away would be
+    a worse trade than the problem it solves."""
+    from PyQt6.QtCore import QPoint, QPointF, Qt as QtCore_Qt
+    from PyQt6.QtGui import QWheelEvent
+    for n in range(40):
+        write_game(stats_dir, f"2026-08-{(n % 28) + 1:02d}_0107{n:02d}_g.json")
+    window = statsview.StatsWindow()
+    window.resize(600, 300)
+    window.show()
+    window.refresh()
+    app.processEvents()
+    down = window.games.verticalScrollBar()
+    assert down.maximum() > 0, "not enough games to scroll"
+    window.games.wheelEvent(QWheelEvent(
+        QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, -120),
+        QtCore_Qt.MouseButton.NoButton, QtCore_Qt.KeyboardModifier.NoModifier,
+        QtCore_Qt.ScrollPhase.NoScrollPhase, False))
+    assert down.value() > 0, "a plain wheel stopped scrolling the list"
+
+
+def test_the_witness_group_border_is_aimed_at_the_box_alone(app):
+    """A bare `QWidget { border }` in a stylesheet is inherited by every
+    widget inside it, so the checkboxes came out boxed as well - and
+    undoing that with `QCheckBox { border: none }` is fighting the
+    cascade rather than not starting it."""
+    from PyQt6.QtWidgets import QWidget
+    tab = statsview.ChartTab(("villagers",))
+    group = next(w for w in tab.findChildren(QWidget)
+                 if w.objectName() == "witnessGroup")
+    assert "#witnessGroup" in group.styleSheet()
+    assert "border: none" not in group.styleSheet()
+    margins = group.layout().contentsMargins()
+    assert margins.top() >= 3 and margins.bottom() >= 3, \
+        "the border runs through the checkbox indicators"
+
+
+# ---- an item Loom could not place -----------------------------------------
+
+def test_a_drifted_item_is_placed_by_the_record_not_by_a_guess(monkeypatch):
+    """Items are matched to sightings in planned order, which is only
+    sound when Loom read exactly as many of a thing as were ordered. Read
+    one house against three built and the later cards are credited with
+    completions belonging to different houses - measured on a real game,
+    "house x2, ordered 0:04, Loom saw 6:33", six minutes on a
+    twenty-five-second building."""
+    steps = [FakeStep(50, [item("building_economy/house")]),
+             FakeStep(175, [item("building_economy/house")])]
+    game = {"events": [[600, "built:house"]]}
+    record = {"builds": {"house": [10, 120]}, "researches": {}, "ages": {}}
+    rows = plan_for(monkeypatch, steps, game, record)
+    assert [row.paired for row in rows] == [False, False]
+    assert [row.ordered for row in rows] == [10, 120]
+
+
+def test_a_subject_loom_counted_right_is_left_exactly_as_it_was(monkeypatch):
+    """The author's rule: if Loom was already correct, leave it."""
+    steps = [FakeStep(50, [item("building_economy/mill")])]
+    game = {"events": [[300, "built:mill"]]}
+    record = {"builds": {"mill": [180]}, "researches": {}, "ages": {}}
+    rows = plan_for(monkeypatch, steps, game, record)
+    assert rows[0].paired and rows[0].observed == 300
+
+
+def test_a_subject_the_record_says_nothing_about_is_not_drifted(monkeypatch):
+    """Silence is not disagreement. Judging a subject the record never
+    mentions would be the mistake this whole seam exists to avoid."""
+    steps = [FakeStep(50, [item("building_economy/mill")])]
+    rows = plan_for(monkeypatch, steps,
+                    {"events": [[300, "built:mill"]]}, None)
+    assert rows[0].paired
+
+
+def test_a_drifted_item_answers_to_the_RECORD_checkbox(app):
+    """It is the recorded game speaking, not Loom - so it goes on and off
+    with that box, and unticking "what Loom saw" leaves exactly the items
+    Loom could not place."""
+    from PyQt6.QtGui import QPixmap
+    view = statsview.ChartView(("plan",))
+    view.show_game(game_with_ages())
+    view.plan = [statsview.PlanRow("house", None, 100, 600, (85, 260),
+                                   150, False)]
+    view.resize(800, 300)
+
+    def violet():
+        canvas = QPixmap(view.size())
+        view.render(canvas)
+        image = canvas.toImage()
+        want = statsview.RECORD_COLOR
+        return sum(1 for y in range(0, image.height(), 2)
+                   for x in range(0, image.width(), 2)
+                   if abs(image.pixelColor(x, y).red() - want.red()) < 30
+                   and abs(image.pixelColor(x, y).green() - want.green()) < 30
+                   and abs(image.pixelColor(x, y).blue() - want.blue()) < 30)
+
+    view.witnesses = [statsview.FROM_RECORD]
+    assert violet() > 0, "the drifted item vanished with the screen witness"
+    view.witnesses = [statsview.SCREEN]
+    assert violet() == 0, "a drifted item drew under the wrong checkbox"
+
+
+def test_a_drifted_item_gets_no_verdict_and_says_why(app):
+    """A violet icon with no explanation is a colour the reader has to
+    guess the meaning of, on the one chart where guessing is the thing
+    being designed out."""
+    view = statsview.ChartView(("plan",))
+    row = statsview.PlanRow("house", None, 100, 600, (85, 260), 150, False)
+    told = view._plan_label((row, 0, 0, 0))
+    assert "recorded game" in told
+    assert "cannot say which one" in told
+    for verdict in ("on time", "late", "early"):
+        assert verdict not in told, "a drifted item was judged anyway"
+
+
+# ---- how long the player's own buildings take -----------------------------
+
+def test_a_players_own_building_times_replace_the_book_number(monkeypatch,
+                                                              tmp_path):
+    """The book is one-villager time and nobody builds with one. Measured
+    across 61 games, a Castle listed at 200s came in at 75/123/175 - two
+    or three villagers on every one, every time."""
+    import json
+    from loom import durations, paths
+    (tmp_path / "durations.json").write_text(
+        json.dumps({"games": 61, "buildings": {"castle": 123}}),
+        encoding="utf-8")
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    durations.measured(reload=True)
+    try:
+        assert durations.build_or_research_time("castle") == 123
+        # ...and the game's own number is still askable, which is what a
+        # tool comparing the two needs.
+        assert durations.build_or_research_time("castle", personal=False) == 200
+    finally:
+        durations.measured(reload=True)
+
+
+def test_a_technology_is_never_overridden_by_a_measurement(monkeypatch,
+                                                           tmp_path):
+    """Research does not divide among helpers, so the book value IS the
+    truth - and a measured figure can only be that plus queue time,
+    because a Blacksmith already busy makes the next technology wait.
+
+    The evidence: across 61 games the MINIMUM matches the table exactly
+    for horse_collar, gold_mining, bodkin_arrow, fletching, ballistics,
+    husbandry, iron_casting, bracer, wheelbarrow and every armour line -
+    and not one measured minimum came in UNDER the table, which would be
+    impossible."""
+    import json
+    from loom import durations, paths
+    (tmp_path / "durations.json").write_text(
+        json.dumps({"games": 61, "buildings": {"loom": 999}}),
+        encoding="utf-8")
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    durations.measured(reload=True)
+    try:
+        assert durations.build_or_research_time("loom") == 25
+    finally:
+        durations.measured(reload=True)
+
+
+def test_a_missing_or_broken_measurement_file_changes_nothing(monkeypatch,
+                                                              tmp_path):
+    """It lives in the player's own data folder, which is user-visible."""
+    from loom import durations, paths
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    durations.measured(reload=True)
+    assert durations.build_or_research_time("castle") == 200
+    (tmp_path / "durations.json").write_text("{ not json", encoding="utf-8")
+    durations.measured(reload=True)
+    assert durations.build_or_research_time("castle") == 200
+    try:
+        (tmp_path / "durations.json").write_text(
+            '{"buildings": {"castle": "soon"}}', encoding="utf-8")
+        durations.measured(reload=True)
+        assert durations.build_or_research_time("castle") == 200
+    finally:
+        durations.measured(reload=True)
+
+
+def test_one_game_with_an_opinion_is_not_a_measurement():
+    """A median over two samples is two games, not a habit."""
+    from tools.measure_durations import personal_times
+    from loom import durations
+    plenty = [40] * durations.ENOUGH_SAMPLES
+    kept, thin = personal_times({
+        ("mill", "building"): plenty,
+        ("castle", "building"): [80, 120],
+        ("loom", "technology"): plenty,
+    })
+    assert kept == {"mill": 40}
+    assert "castle" in thin
+    assert "loom" not in kept, "a technology was written out as a building"
+
+
+def _chart_tabs(window):
+    """Every ChartTab the window actually holds, found by walking it.
+
+    Walked rather than listed, for the reason the chart registry test
+    already gives: a hand-written list agrees with the window on the day
+    it is written and silently stops covering the tab somebody adds
+    afterwards. This is the test for a bug that was exactly that shape.
+    """
+    return [tab for tab in window.findChildren(statsview.ChartTab)]
+
+
+def test_attaching_a_record_redraws_everything_that_shows_one(stats_dir,
+                                                              monkeypatch):
+    """The fault: the record landed on disk and the screen kept the old
+    answer until the selection was re-run by hand.
+
+    `_add_record` refreshed the accuracy label and the button. The record
+    feeds nine things, five of them ChartTabs, so every violet series
+    stayed missing and a user reported the charts as broken. Asserted by
+    walking the window's own tabs, so a tab added later is covered
+    without anyone remembering to add it here.
+    """
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    monkeypatch.setattr(statsview.replay, "match",
+                        lambda p, available=None: statsview.replay.Match(
+                            type("R", (), {"path": pathlib.Path("r.aoe2record")}),
+                            statsview.replay.CERTAIN, "one", None))
+    monkeypatch.setattr(statsview.replay, "harvest", lambda p: StoredTruth())
+    monkeypatch.setattr(statsview.QMessageBox, "information",
+                        staticmethod(lambda *a, **k: None))
+
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    tabs = _chart_tabs(window)
+    assert tabs, "the window has no charts to check"
+    assert all((tab.view.data or {}).get("record") is None for tab in tabs)
+
+    window._add_record()
+
+    for tab in tabs:
+        assert (tab.view.data or {}).get("record"), \
+            "a chart is still showing the game as it was before the record"
+
+
+def test_the_banner_and_the_button_never_disagree(stats_dir):
+    """Two controls for one action, so they are driven by one function.
+
+    The banner exists because a missing record is missing from every
+    chart at once while the button for it lives on the tenth tab. That is
+    only safe while nothing can make them say different things.
+    """
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    assert window.banner.isVisibleTo(window), "nothing offered a record"
+    assert window.add_record_button.isEnabled()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "header": None, "apm": None, "villagers_ordered": None}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    window.reload(path)
+    assert not window.banner.isVisibleTo(window), \
+        "the banner outlived the thing it was asking for"
+    assert not window.add_record_button.isEnabled()
+
+
+def test_the_scan_report_leads_with_what_somebody_can_act_on(stats_dir):
+    """A bulk operation nobody reads the result of has finished silently.
+
+    The two actionable outcomes lead even when they are the smallest
+    numbers: a report opening with 206 games that never had a record
+    buries the three that need a person to choose.
+    """
+    from collections import Counter
+    outcomes = Counter({statsview.ATTACHED: 2,
+                        statsview.NO_RECORD: 206,
+                        statsview.NEEDS_A_PERSON: 3,
+                        statsview.UNREADABLE: 1})
+    said = statsview.scan_report(outcomes, 212, 212, stopped=False)
+    assert said.index("could not be decided") < said.index("no recorded game")
+    paragraphs = [line for line in said.splitlines() if line.strip()]
+    assert "Attached 2" in paragraphs[1], "the count did not lead"
+    # A bucket at zero is left out entirely rather than reported as none.
+    quiet = statsview.scan_report(Counter({statsview.ATTACHED: 1}), 1, 1,
+                                 stopped=False)
+    assert "unreadable" not in quiet and "could not be read" not in quiet
+    # Stopping is not failing, and it says how far it got.
+    stopped = statsview.scan_report(Counter(), 4, 58, stopped=True)
+    assert "4 of 58" in stopped
+
+
+def test_a_race_and_an_absence_are_different_outcomes():
+    """The classifier must not fold "too fresh to read" into "no record",
+    for the same reason `replay.match` must not: one is worth trying
+    again in a few seconds and the other never will be."""
+    assert statsview.scan_outcome("added") == statsview.ATTACHED
+    assert statsview.scan_outcome("already has its recorded game") \
+        == statsview.ATTACHED
+    assert statsview.scan_outcome(
+        "the game is still writing that file - try again in a few"
+        " seconds, once it has finished") == statsview.WAITING
+    assert statsview.scan_outcome("no recorded game was running then") \
+        == statsview.NO_RECORD
+    assert statsview.scan_outcome("2 recorded games were running then") \
+        == statsview.NEEDS_A_PERSON
+    assert statsview.scan_outcome(
+        "could not read that recorded game: ValueError") \
+        == statsview.UNREADABLE
+
+
+def test_the_scan_button_wears_the_records_own_colour(stats_dir):
+    """It is a record control, so it is violet - the same violet every
+    series the recorded game contributes is drawn in. Pinned against
+    RECORD_COLOR rather than against a literal, so the button follows if
+    that colour is ever retuned."""
+    window = statsview.StatsWindow()
+    style = window.scan_button.styleSheet()
+    assert statsview.css_rgb(statsview.RECORD_COLOR) in style
+    # Scoped by object name: a bare `border:` is inherited by a widget's
+    # children, which is how the witness checkboxes once wore their
+    # group's border.
+    assert "#scanButton" in style
+    assert window.scan_button.objectName() == "scanButton"
+
+
+def test_a_popped_out_chart_lands_on_the_screen_its_parent_is_on(stats_dir,
+                                                                 monkeypatch):
+    """The fault: a pop-out was given a size and no position at all.
+
+    A window with no position asked for is not placed neutrally, it is
+    placed by somebody else's default - and with the statistics window on
+    a second monitor that default put the chart back on the primary
+    desktop, partly off the edge of it.
+
+    A second monitor cannot be conjured under the offscreen platform, so
+    the screen this window is on is stated instead. That is the right
+    thing to fake: the bug was never in the arithmetic, it was in which
+    screen's work area the arithmetic was handed.
+    """
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    # A monitor to the RIGHT of the primary one, the case that broke.
+    second = (2560, 0, 5119, 1439)
+    monkeypatch.setattr(statsview.placement, "work_area",
+                        lambda widget: second)
+
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    window.move(2600, 100)
+    window.resize(1200, 800)
+
+    window._pop_out(("villagers",), "Society", None)
+    popped = next(iter(window._popouts.values()))
+
+    left, top, right, bottom = second
+    assert popped.x() >= left, "the chart went back to the primary screen"
+    assert popped.x() + popped.width() <= right + 1, "it hangs off the edge"
+    assert top <= popped.y() <= bottom, "it is off the top or bottom"
+    # And near the window it came from, not merely somewhere legal.
+    assert abs(popped.y() - window.y()) <= window.height()
+
+
+def test_beside_flips_rather_than_hanging_off_a_second_monitor():
+    """The arithmetic, at coordinates a second monitor actually uses.
+
+    Right by preference, left when the right would hang off - and the
+    work area passed MUST be the anchor's own screen, which is the whole
+    reason this moved out of launcher.py where only one window used it.
+    """
+    from loom.placement import beside
+    second = (2560, 0, 5119, 1439)
+    # Room to the right: it goes there.
+    x, _y = beside((2600, 100, 800), (900, 560), second)
+    assert x == 2600 + 800 + 12
+    # No room: it flips to the left of the anchor rather than off-screen.
+    x, _y = beside((4200, 100, 800), (900, 560), second)
+    assert x == 4200 - 900 - 12
+    # Wider than the space left: clamped on, never half off.
+    x, _y = beside((2560, 100, 100), (4000, 560), second)
+    assert x >= 2560
+
+
+# ---- the post-game inventory, and the line it must not cross -------------
+
+def test_the_inventory_does_not_move_reader_accuracy(stats_dir):
+    """The guarantee the whole design rests on.
+
+    The unit join happens in the VIEW - `record_orders` reads the record
+    section directly and never touches `loom.events`. That is what makes
+    "Reader accuracy is untouched" a fact rather than a hope, and if the
+    join ever leaks into the sightings this is what says so.
+    """
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 600,
+                      "header": None, "apm": None, "villagers_ordered": None,
+                      "builds": {"barracks": [120]}, "researches": {},
+                      "queued": {"unit_4": 31}, "ages": {}}
+    before = statsview.accuracy_rows(data)
+    statsview.postgame_html(data)          # the whole view, rendered
+    after = statsview.accuracy_rows(data)
+    assert [d.subject for d in before["overfired"]] == \
+        [d.subject for d in after["overfired"]]
+    assert [d.subject for d in before["unread"]] == \
+        [d.subject for d in after["unread"]]
+
+
+def test_a_unit_the_record_stored_as_an_id_still_gets_its_count():
+    """`replay.UNITS` names only the villager, so the record carries
+    `unit_4` rather than `archer` - which read as an archer nobody
+    ordered until the view learned to translate. Nine subjects on one
+    real game, every one of them a unit the player obviously trained."""
+    orders = statsview.record_orders(
+        {"queued": {"unit_4": 31, "unit_39": 57, "villager": 87}})
+    assert orders["archer"] == "ordered ×31"
+    assert orders["cavalryarcher"] == "ordered ×57"
+    # A COUNT, never a time. The record tracks trained units as a running
+    # total with no per-unit clock, so a time here would be invented.
+    assert ":" not in orders["archer"]
+
+
+def test_three_spellings_of_one_unit_are_one_row():
+    """The feed says `cavalry_archer`, the queue's template is
+    `cavalryarcher`, and the record's id table agrees with the queue.
+    Joined on the raw string, a unit the player really trained sits in
+    the pile with nothing beside it - the exact false accusation this
+    view exists to prevent."""
+    game = {"queued": {"cavalryarcher": 500},
+            "events": [[520, "created:cavalry_archer"]]}
+    units = dict(statsview.inventory_rows(
+        {"game": game,
+         "record": {"queued": {"unit_39": 57}}}))["Units"]
+    labels = [row[0] for row in units]
+    assert labels.count("cavalry archer") == 1, labels
+    assert all(row[2] == "ordered ×57" for row in units if row[2])
+
+
+def test_what_the_record_cannot_name_is_not_filed_as_unbacked(stats_dir):
+    """A relic pickup is not an order and the record has no vocabulary
+    for one. Putting it under "nothing in the record matches these"
+    would be absence dressed as refutation - the record was never asked,
+    so its silence is not evidence."""
+    game = {"events": [[100, "picked_up:relic_picked_up"]],
+            "queued": {"careening": 300}}
+    data = {"game": game, "record": {"builds": {}, "researches": {},
+                                     "queued": {}}}
+    inventory = dict(statsview.inventory_rows(data))
+    listed = [row[0] for rows in inventory.values() for row in rows]
+    assert "relic picked up" not in listed
+    assert "relic_picked_up" in [s.subject
+                                 for s in statsview.unmatched_kinds(data)]
+
+
+def test_the_unbacked_heading_states_evidence_not_a_verdict():
+    """The record holds ORDERS, so a cancelled foundation and an
+    abandoned research land under this heading legitimately. Calling
+    them misreads is the verdict Reader accuracy delivers under a much
+    narrower rule, and it is not earned here."""
+    said = statsview.NOTHING_MATCHES.lower()
+    for verdict in ("misread", "wrong", "phantom", "error", "invented",
+                    "false", "bug"):
+        assert verdict not in said, f"{verdict!r} is a verdict, not evidence"
+    assert "record" in said
+
+
+def test_the_loom_column_always_says_what_it_is():
+    """Loom is shipping. Somebody reading `careening` in a game with no
+    ships has to be told what the left column is, or the honest answer -
+    these are raw reader output - reads as a program making things up."""
+    for has_record in (True, False):
+        said = statsview.loom_disclaimer(has_record)
+        assert "may or may not" in said
+    # With no record every row is unverified and no empty cell says so,
+    # which is why that case says more rather than less.
+    assert len(statsview.loom_disclaimer(False)) > 120
+    assert "attach" in statsview.loom_disclaimer(False).lower()

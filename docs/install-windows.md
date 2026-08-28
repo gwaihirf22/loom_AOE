@@ -113,16 +113,25 @@ it. The originals are left where they are.
 
 Loom registers four key combinations while it runs (**Ctrl+Shift+W** forward a
 step, **Ctrl+Shift+Q** back, **Ctrl+Shift+R** stop or resume following the
-game, **Ctrl+Shift+0** hide the panel or bring it back). All four are
+game, **Ctrl+Shift+Minus** — the **-** key — hide the panel or bring it
+back). All four are
 rebindable and can be switched off in the launcher. The step keys only pause
 automatic following for ten seconds and then resume by themselves; the panel
 says **MANUAL** whenever it is not tracking the game.
 
 Hiding is not stopping — Loom keeps reading, recording and counting while the
 panel is off screen, and the launcher's **Hide overlay** button does the same
-job for anyone who would rather not spend a key on it. Ctrl+Shift+0 is the one
-binding worth a second thought before you keep it: it sits in the same family
-as the game's control groups, so remap it if you use those.
+job for anyone who would rather not spend a key on it.
+
+**Windows eats Ctrl+Shift+0**, which is why the hide key is Ctrl+Shift+Minus
+rather than the rounder-looking Ctrl+Shift+0. Something in the OS consumes
+that one combination before any program sees it: measured on Windows 11,
+`Shift+0` and `Ctrl+Shift+1` arrive normally in the same run and
+`Ctrl+Shift+0` produces no key event at all. It can still be *registered* —
+Windows reports the combination free and hands the hotkey straight back to
+whoever asked for it — so if you have it bound from an older version it keeps
+working, while the settings window cannot let you type it back in once you
+clear it. Pick anything else.
 
 **Track APM** counts keystrokes and clicks for the post-game statistics. It
 uses the Windows Raw Input API, which reports that a key went down without

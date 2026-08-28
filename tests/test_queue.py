@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from loom import anchor, hud, queue
+from loom import anchor, hud, paths, queue
 from loom.production import (ProductionTracker, PRODUCTION_IDLE,
                              PRODUCTION_RESUMED, HOUSED, POP_CAPPED, UNBLOCKED)
 
@@ -250,6 +250,55 @@ def test_techs_never_carry_counts():
         == ("villager_male", 3)
     assert queue.reconcile_identity_and_count("loom", 0.25, None) \
         == ("loom", None)
+
+
+def test_an_upgrade_technology_is_not_its_unit():
+    """The split that stopped a research being reported as a unit.
+
+    The game names an upgrade technology exactly like the unit it produces,
+    so build_queue_templates filed 029_crossbowman.DDS - a picture of a bare
+    crossbow - as a third variant of the crossbowman UNIT. Loom then owned
+    the research's art, matched it at 0.784, and confidently said
+    "crossbowman". Measured, the two pictures correlate at 0.045.
+
+    Walked rather than listed. A hand-list of the twenty-five would pass
+    happily on the day a twenty-sixth arrives unsplit, which is the failure
+    mode this project has already paid for more than once.
+    """
+    kinds = queue.identity_kinds()
+    suffix = queue.UPGRADE_SUFFIX
+    splits = [name for name in kinds if name.endswith(suffix)
+              and name[:-len(suffix)] in kinds]
+    assert len(splits) >= 25, splits
+    built = {path.name.split(".")[0]
+             for path in (paths.TEMPLATES_DIR / "queue").glob("*.png")}
+    for name in splits:
+        base = name[:-len(suffix)]
+        assert kinds[name] == queue.TECHNOLOGY, name
+        # The base keeps its own picture. A split that took the unit's last
+        # template away would trade a wrong name for no reading at all.
+        assert base in built, base
+        assert name in built, name
+    # The one the author found by eye, named so a silent re-merge fails here.
+    assert "crossbowman_upgrade" in splits
+    assert queue.kind_of("crossbowman") == queue.UNIT
+
+
+def test_the_numeral_rule_reaches_the_split_technologies():
+    """A research is a single order and can never carry a batch numeral.
+
+    Before the split these cells were units as far as this module could
+    tell, so the rule could not be applied to them at all.
+    """
+    assert queue.counted_as_technology("crossbowman_upgrade")
+    assert not queue.counted_as_technology("crossbowman")
+    confident = queue.CONTENT_IDENTITY_SCORE
+    assert queue.reconcile_identity_and_count(
+        "crossbowman_upgrade", confident + 0.1, 4)         == ("crossbowman_upgrade", None)
+    assert queue.reconcile_identity_and_count("crossbowman", 0.7, 4)         == ("crossbowman", 4)
+    # Everything the reconciliation trusted before still counts.
+    for identity in queue.TECH_IDENTITIES:
+        assert queue.counted_as_technology(identity), identity
 
 
 def test_every_template_has_a_recorded_kind():

@@ -3,6 +3,13 @@
 #     pip install -r requirements-dev.txt
 -r requirements.txt
 
+# Screen capture for tools/capture_smoketest.py, which is the ONLY thing in
+# the tree that imports it - nothing under loom/ ever has. It sat in
+# requirements.txt for the life of the project, so every install carried a
+# capture library the app never loads, and the Linux package would have
+# vendored it into a Flatpak for the same nothing.
+mss==10.2.0
+
 # python-xlib with no platform marker, on purpose - note that requirements.txt
 # markers it to Linux, and that is still right for a user installing Loom.
 #

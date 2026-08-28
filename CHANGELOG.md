@@ -6,6 +6,121 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## Unreleased
+
+### Added
+
+- **Loom is packaged for Linux, as a Flatpak.** One install command on
+  Bazzite, Fedora, Ubuntu, Arch, SteamOS and Nobara, with no Python
+  install. Everything the build needs is in `packaging/linux/`. Bazzite's
+  store is Bazaar, a Flathub front end, so publishing there is what puts
+  Loom in that store — the same artifact serves every other distribution.
+- **The Linux package is installed from SOURCE rather than frozen**, which
+  is the opposite of the Windows `.exe` and deliberately so: a Flatpak's
+  runtime brings a real Python. That removes the need for a Linux
+  PyInstaller spec, and it is what lets APM work at all — on Linux the
+  counter is a child process, and a frozen build could not have started it
+  because `entry.MODES` has no mode for it.
+- `LOOM_RECORDS_DIR` names the folder holding recorded games, for a Steam
+  library on a drive Loom cannot guess at. Colon-separated for more than
+  one, like `PATH`.
+- **Post-game Data is two columns: what Loom read, beside what the game was
+  actually told to do.** The recorded game is the only ruler in the project
+  that is not one of Loom's own readers, so putting the two side by side is
+  the difference between "the reader says nine archers" and "the reader says
+  nine and the game was ordered nine".
+- **A Scan button walks the backlog of past games and attaches the recorded
+  game to each**, and a violet banner says so when a game has no record
+  rather than leaving an empty chart to be read as a zero.
+
+### Fixed
+
+- **Holding Shift no longer stops a key being captured in the settings
+  window.** Qt reports the character a key *produces* rather than the key
+  that was struck, so `Ctrl+Shift+9` arrived as `ParenLeft` and
+  `Ctrl+Shift+;` as `Colon` — names the grammar has never heard of, so the
+  press was declined. That was 21 of the 86 bindable keys: the whole digit
+  row, all eleven punctuation keys, and Tab. Letters were unaffected, which
+  is why it looked like a digit-only fault.
+
+- **Captures no longer resolve into a read-only installation.** The
+  decision asked `sys.frozen` — "did PyInstaller build this" — when the
+  question it needed answered was "may I write here". Those agreed on
+  Windows and part company in a Flatpak, where nothing is frozen and the
+  program directory is read-only, so the overlay's dump of unreadable
+  notification lines had nowhere to go. `paths.installed()` asks the real
+  question now.
+- **Recorded games are found when Steam is itself a Flatpak.** Its home is
+  redirected, so none of the paths Loom knew existed and it reported no
+  recorded games on machines full of them.
+- **A technology was filed under a unit's name, twenty-five times over.**
+  The game names an upgrade technology exactly like the unit it produces,
+  so Loom held the Crossbowman RESEARCH as a third picture of the
+  crossbowman UNIT and confidently reported a unit whenever it saw the
+  research. Measured, the two images correlate at 0.045 — they were never
+  two views of one thing. Twenty-five identities were affected; each now
+  carries its own name, and the game's rule that a technology never shows a
+  batch numeral reaches all of them.
+- **Thirty-one archers and fifty-seven cavalry archers stopped looking like
+  misreads.** `events.from_record` never read the recorded game's UNIT
+  orders and `replay.name_of_unit` could name only the villager, so
+  everything else was stored as `unit_4` or `unit_39` and read back as
+  something Loom had invented. Nine subjects a game were being blamed on
+  the readers, from data that was already on disk.
+- **Pace no longer staircases.** Lag is the horizontal gap between two
+  curves that only ever move forward, so it can change by at most a second
+  per second in either direction; the report is clamped to that. Measured
+  over 164 games the mean worst single jump fell from 31.6s to 12.1s while
+  the mean PEAK was unchanged at 360.3s — so the jumps were the artefact
+  and nothing true was lost. One change, and both the overlay and the
+  statistics chart are fixed by it.
+- **A popped-out chart lands beside the statistics window on *its* screen**,
+  rather than back on the primary monitor half off the edge. `beside`,
+  `clamped_position` and `WINDOW_GAP` moved out of `launcher.py` into
+  `placement.py` on the way, which is where the question already lived.
+- **The recorded game attaches itself when a match ends**, with one retry
+  past the thirty-second settle window, and attaching one redraws the whole
+  view instead of two widgets that could disagree with the rest of it.
+- **The launcher's window carries Loom's icon on Linux.** Nothing told Qt
+  which desktop entry the process belongs to, so the window inherited the
+  interpreter's identity and the taskbar showed a placeholder — the same
+  problem `windows_app_identity` was written for, on the other platform.
+  Both are now `entry.app_identity()`.
+
+### Changed
+
+- **The key that hides the panel is now `Ctrl+Shift+Minus` — the `-` key —
+  and no longer `Ctrl+Shift+0`.** Windows consumes `Ctrl+Shift+0` before any
+  program sees it. Measured in a single run with the window in the
+  foreground: `Shift+0` arrives as `ParenRight` and `Ctrl+Shift+1` as
+  `Exclam`, while `Ctrl+Shift+0` produces **no key event at all**. It can
+  still be *registered* — Windows reports the combination free and hands the
+  hotkey straight back to whoever asked for it — which is exactly why it
+  worked as a binding while being impossible to type into the settings
+  window. Nothing in Loom can capture a key that never arrives, so the
+  default moved rather than being patched around. An existing
+  `Ctrl+Shift+0` binding is left alone and keeps working; only the shipped
+  default changes.
+
+- `tools/release.py` reads the version from `loom/__init__.py` instead of
+  taking an independent one on the command line, and refuses an argument
+  that disagrees with it. Publishing 1.0.8 from a tree that still said
+  1.0.7 would have shipped a release whose own title bar contradicted its
+  tag, with nothing anywhere checking. It also refuses to publish a
+  version the Linux metadata has not been told about.
+- `mss` moved to `requirements-dev.txt`. Only `tools/capture_smoketest.py`
+  has ever imported it; nothing under `loom/` does.
+- **Loom reports itself as `1.0.8-dev` rather than `1.0.7`.** A `-dev`
+  suffix means the tree is between releases, so a build running from source
+  or from a nightly says so in its title bar and in every stats file it
+  writes, instead of claiming to be the last release. `tools/release.py`
+  reads the same suffix and refuses to publish such a tree as a release —
+  and refuses to publish a real release as a nightly.
+- **The Statistics and Scan buttons wear the record's violet**, derived from
+  the same `RECORD_COLOR` the charts use so a control cannot drift away from
+  the thing it opens. Darkened by measurement rather than by eye: white on
+  the chart colour is 2.58:1 and unreadable, where `darker(160)` is 5.88:1.
+
 ## 1.0.7 — 2026-08-26
 
 ### Fixed

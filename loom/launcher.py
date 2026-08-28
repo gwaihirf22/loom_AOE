@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (QDesktopServices, QFont, QFontDatabase,
                          QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
@@ -33,13 +33,18 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QVBoxLayout, QWidget)
 
 from . import (apm, buildcheck, config, entry, hotkeys, overlay, paths,
-               placement, statefeed)
+               placement, replay, statefeed)
 from .flowlayout import flow_row
-from .hotkeys import keyspec
+# One home for the window arithmetic. These used to be defined
+# here, back when the launcher was the only window that placed
+# another one beside itself.
+from .placement import WINDOW_GAP, beside, clamped_position
+from .tooltips import wrapped
+from .hotkeys import keyspec, qtkeys
 from . import __version__ as loom_version
 from .about import AboutWindow
 from .browser import BuildBrowser
-from .statsview import StatsWindow
+from .statsview import RECORD_COLOR, StatsWindow, css_rgb
 from .build_order import (GENERIC_CIVILIZATION, available_builds,
                           civilization_label, civilization_names,
                           civilizations, filtered_builds)
@@ -114,8 +119,41 @@ NEEDS_THE_OVERLAY_SLOT_FREE = {"session"}
 PLACE_COMMAND = ("place",
                  lambda stem: ["loom_overlay.py", "--place", "--build", stem])
 
-# The gap left between the launcher and a window placed beside it.
-WINDOW_GAP = 12
+# The two build-free modes, in the order they are pinned above the library.
+# Module data like DEV_COMMANDS and for the same reason: the labels and the
+# argv they produce can then be checked by a test with no Qt at all.
+TRACKING_ROWS = (
+    (config.TRACKING_MODE,
+     "NO BUILD ORDER — Tracking and Alerts only"),
+    (config.TRACKING_PANEL_MODE,
+     "NO BUILD ORDER — with basic overlay — Alerts and Tracking"),
+)
+
+# Which --no-build shape each mode asks the overlay for.
+TRACKING_FLAGS = {config.TRACKING_MODE: "bands",
+                  config.TRACKING_PANEL_MODE: "panel"}
+
+
+def overlay_argv(mode, stem, place=False):
+    """The argv that runs this mode, as plain data.
+
+    One function for Start and for Place overlay, because the two must agree
+    about what a mode IS - a placement panel that showed a different thing
+    from the one that plays would be placing the wrong window.
+
+    A tracking mode never carries --build. The flag says what it is instead
+    of a sentinel stem, so nothing downstream has to learn to refuse a stem
+    that is not one - BuildOrder.load_by_name is never handed a mode.
+    """
+    argv = ["loom_overlay.py"]
+    if place:
+        argv.append("--place")
+    if mode in TRACKING_FLAGS:
+        argv += ["--no-build", TRACKING_FLAGS[mode]]
+    else:
+        argv += ["--build", stem]
+    return argv
+
 
 # How the settings are grouped into tabs. Data rather than widget code for
 # the same reason DEV_COMMANDS is: a test can check the grouping without
@@ -146,6 +184,22 @@ MINIMUM_SIZE = (560, 380)
 # geometry to config.json. Saving per pixel of a drag would hammer the file;
 # this is the same debounce loom/browser.py uses for the preview window.
 SAVE_GEOMETRY_AFTER_MS = 1000
+
+# How long to wait before asking a second time for the match's recorded
+# game. Derived from `replay.SETTLED_SECONDS` rather than written next to
+# it as a number: the wait exists ONLY because that window has to pass, so
+# a change there that this did not follow would put the retry back inside
+# the refusal it was written to outlast. The margin is for the clock the
+# refusal measures with being the file's mtime, not this timer's start.
+RETRY_ATTACH_AFTER_MS = (replay.SETTLED_SECONDS + 5) * 1000
+
+# How far the record's chart colour is darkened to become a button fill,
+# and how far the hover lightens back. Measured against white text: the
+# chart colour itself is 2.58:1, these are 5.88:1 and 4.73:1, and 4.5:1
+# is the floor for comfortable reading. Kept as numbers rather than two
+# hex codes so the button stays tied to RECORD_COLOR.
+STATS_BUTTON_DARKEN = 160
+STATS_BUTTON_HOVER_DARKEN = 140
 
 # How often, at most, a settings change is announced to a RUNNING overlay.
 #
@@ -209,57 +263,6 @@ def fitted_size(preferred, minimum, area):
     return width, height
 
 
-def clamped_position(position, size, area):
-    """Move a window fully onto the screen. Returns (x, y).
-
-    position is where it wants to be, size is (width, height), area is the
-    work area as (left, top, right, bottom).
-
-    The case this is for is a geometry remembered on one machine and restored
-    on another: a launcher left at the bottom of a 2560x1440 desktop reopens
-    entirely below a 1920x1080 one, and the only symptom is that Loom appears
-    not to start. Top-left wins over bottom-right when the window is larger
-    than the screen, because the title bar is the part you need to reach.
-    """
-    x, y = position
-    width, height = size
-    left, top, right, bottom = area
-
-    x = min(x, right - width)
-    y = min(y, bottom - height)
-    return max(left, x), max(top, y)
-
-
-def beside(anchor, size, area):
-    """Where to put a window so it sits next to another one, on screen.
-
-    anchor is (x, y, width) of the window to sit beside, size is (width,
-    height) of the window being placed, and area is the screen's work area as
-    (left, top, right, bottom). Returns (x, y).
-
-    Pure arithmetic on purpose: the interesting cases are a preview too wide
-    for the space to the right, and a monitor left of the primary one whose
-    coordinates are negative. Neither is convenient to reproduce by opening
-    real windows, and both would put the preview somewhere the player cannot
-    reach - so they are worth testing with fake inputs instead.
-
-    To the right by preference, flipping left when the right would hang off
-    the edge, and clamped into the work area either way.
-    """
-    anchor_x, anchor_y, anchor_width = anchor
-    width, height = size
-    left, top, right, bottom = area
-
-    x = anchor_x + anchor_width + WINDOW_GAP
-    if x + width > right:
-        x = anchor_x - width - WINDOW_GAP
-    # Clamped last, so a window wider than the space still lands on screen
-    # rather than half off it.
-    x = max(left, min(x, right - width))
-    y = max(top, min(anchor_y, bottom - height))
-    return x, y
-
-
 def fixed_width_font():
     """A font that is actually fixed-pitch, on every platform.
 
@@ -300,8 +303,9 @@ class OutputPane(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setToolTip("Output from everything the launcher runs - the"
-                        " overlay, the tools, the test suite.")
+        self.setToolTip(wrapped(
+            "Output from everything the launcher runs - the"
+                        " overlay, the tools, the test suite."))
         self.setFont(fixed_width_font())
         # QPlainTextEdit drops the oldest block (line) beyond this count, so
         # the pane cannot grow without bound during a long session.
@@ -356,10 +360,10 @@ class BuildPicker(QGroupBox):
         # whether it worked. The list is always open, so every keystroke
         # shows its own answer and the build wanted is one click away.
         self.list = QListWidget()
-        self.list.setToolTip(
+        self.list.setToolTip(wrapped(
             "Which build order the overlay and the preview follow.\n"
             "Import build adds one; they are kept in\n"
-            f"{self.builds_dir}")
+            f"{self.builds_dir}"))
         self.list.setUniformItemSizes(True)
         self.list.setMinimumHeight(LIBRARY_ROWS * LIBRARY_ROW_HEIGHT)
 
@@ -369,15 +373,15 @@ class BuildPicker(QGroupBox):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search builds…")
         self.search.setClearButtonEnabled(True)
-        self.search.setToolTip(
+        self.search.setToolTip(wrapped(
             "Matches the name, civilization and author. Every word has to "
-            "match, so \"hera arena\" narrows to one build.")
+            "match, so \"hera arena\" narrows to one build."))
         self.search.textChanged.connect(self._apply_filter)
 
         self.civ_filter = QComboBox()
-        self.civ_filter.setToolTip(
+        self.civ_filter.setToolTip(wrapped(
             "Show the builds you could play as one civilization.\n"
-            "Generic builds are included, because they work for every civ.")
+            "Generic builds are included, because they work for every civ."))
         self.civ_filter.currentIndexChanged.connect(self._apply_filter)
 
         self.count_label = QLabel()
@@ -389,13 +393,13 @@ class BuildPicker(QGroupBox):
         finder.addWidget(self.count_label)
 
         self.import_button = QPushButton("Import build…")
-        self.import_button.setToolTip(
+        self.import_button.setToolTip(wrapped(
             "Add a build order from an RTS Overlay JSON file. Loom checks it "
-            "first and says what it finds.")
+            "first and says what it finds."))
         self.import_button.clicked.connect(self._import)
 
         self.open_button = QPushButton("Open builds folder")
-        self.open_button.setToolTip(f"Open {self.builds_dir}")
+        self.open_button.setToolTip(wrapped(f"Open {self.builds_dir}"))
         self.open_button.clicked.connect(self._open_folder)
 
         buttons = QHBoxLayout()
@@ -434,7 +438,9 @@ class BuildPicker(QGroupBox):
         # that what was saved. filtered_builds keeps it whatever the filter
         # says, so narrowing the list can never move the selection onto a
         # build the player did not pick - Start would then run it.
-        chosen = self.selected_stem() or config.active_build()
+        chosen = self.selected_row() or config.overlay_mode()
+        if chosen == config.BUILD_MODE:
+            chosen = config.active_build()
         matched = filtered_builds(self._library,
                                   query=self.search.text(),
                                   civilization=self.civ_filter.currentData())
@@ -452,6 +458,18 @@ class BuildPicker(QGroupBox):
         # an empty choice on the way past, and this runs on every keystroke.
         blocked = self.list.blockSignals(True)
         self.list.clear()
+        # The two build-free modes, pinned above the library. Added OUTSIDE
+        # filtered_builds rather than passed through it: they are modes, not
+        # builds, and a search box that could hide them would let Start run
+        # something the player never picked - the same failure the `keep`
+        # rule exists to prevent, arriving by a different door.
+        for mode, label in TRACKING_ROWS:
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, mode)
+            font = item.font()
+            font.setItalic(True)      # reads as a different kind of thing
+            item.setFont(font)
+            self.list.addItem(item)
         for stem, build in shown:
             label = (f"{build.name} — {civilization_label(build)}"
                      f" — {build.author or 'unknown'}"
@@ -462,10 +480,14 @@ class BuildPicker(QGroupBox):
             # The stem rides along invisibly - it is what --build takes.
             item.setData(Qt.ItemDataRole.UserRole, stem)
             self.list.addItem(item)
-        # Falls back to the first row when the chosen build's file has since
-        # been deleted, rather than leaving nothing selected.
+        # Falls back to the first BUILD when the chosen build's file has
+        # since been deleted, rather than leaving nothing selected - and
+        # deliberately not to row 0, which is now a tracking mode. Landing
+        # there would silently switch a player whose build file went missing
+        # into a mode that draws no card, which looks exactly like Loom
+        # broken rather than like a build that disappeared.
         row = self._row_of(chosen)
-        self.list.setCurrentRow(row if row >= 0 else 0)
+        self.list.setCurrentRow(row if row >= 0 else self._first_build_row())
         self.list.scrollToItem(self.list.currentItem())
         self.list.blockSignals(blocked)
 
@@ -530,7 +552,14 @@ class BuildPicker(QGroupBox):
         return -1
 
     def _chosen(self, *_args):
-        """A build was picked: remember it, and tell the launcher."""
+        """A row was picked: remember it, and tell the launcher.
+
+        The mode and the build are remembered SEPARATELY, so picking a
+        tracking mode does not overwrite which build you were on. Coming
+        back to build mode then returns you to it rather than to whatever
+        the default happens to be.
+        """
+        config.set_overlay_mode(self.selected_mode())
         stem = self.selected_stem()
         if stem is not None:
             config.set_active_build(stem)
@@ -548,9 +577,14 @@ class BuildPicker(QGroupBox):
         self.selection_changed.emit()
 
     def _take_first_result(self):
-        """Enter in the search box picks the top row."""
+        """Enter in the search box picks the top matching BUILD.
+
+        Not row 0, which is a tracking mode: someone who has typed a search
+        and pressed Enter is looking for a build, and handing them a mode
+        that draws no card would read as the search having failed strangely.
+        """
         if self.list.count():
-            self.list.setCurrentRow(0)
+            self.list.setCurrentRow(self._first_build_row())
 
     # ---- adding one ----------------------------------------------------
 
@@ -645,10 +679,45 @@ class BuildPicker(QGroupBox):
                 self.list.setCurrentRow(row)
         return problems
 
-    def selected_stem(self):
-        """The chosen build's file stem, or None if the library is empty."""
+    def selected_row(self):
+        """What the highlighted row carries: a build stem, or a mode.
+
+        The raw value. Everything else here narrows it - which is the point,
+        because the two are not interchangeable and a caller that treated a
+        mode as a stem would hand it to BuildOrder.load_by_name.
+        """
         item = self.list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def selected_mode(self):
+        """Which of the three things the overlay should be. Never None."""
+        row = self.selected_row()
+        return row if row in config.OVERLAY_MODES else config.BUILD_MODE
+
+    def selected_stem(self):
+        """The chosen build's file stem.
+
+        None when a tracking mode is picked as well as when the library is
+        empty, and deliberately the same answer for both: in each case there
+        is no build to run, which is what every caller of this actually
+        wants to know. It is also what keeps run_dev_command's `or` fallback
+        working - a mode string is truthy and would otherwise sail through
+        it into --build.
+        """
+        row = self.selected_row()
+        return None if row in config.OVERLAY_MODES else row
+
+    def _first_build_row(self):
+        """The topmost row that is a real build, or 0 if there are none.
+
+        0 only when the library is empty, and then it is the honest answer:
+        the tracking modes are the only things Loom can run.
+        """
+        for row in range(self.list.count()):
+            data = self.list.item(row).data(Qt.ItemDataRole.UserRole)
+            if data not in config.OVERLAY_MODES:
+                return row
+        return 0
 
     def selected_build(self):
         """The chosen build, already loaded. None if the library is empty."""
@@ -722,13 +791,13 @@ class AlertSettingsBox(QGroupBox):
         self.soften = QSpinBox()
         self.soften.setRange(0, 200)
         self.soften.setValue(soften)
-        self.soften.setToolTip(
-            "Below this many villagers the idle-TC alert is loud and red.")
+        self.soften.setToolTip(wrapped(
+            "Below this many villagers the idle-TC alert is loud and red."))
         self.silence = QSpinBox()
         self.silence.setRange(0, 200)
         self.silence.setValue(silence)
-        self.silence.setToolTip(
-            "At this many villagers the idle-TC alert stops entirely.")
+        self.silence.setToolTip(wrapped(
+            "At this many villagers the idle-TC alert stops entirely."))
         self.soften.valueChanged.connect(self._save_limits)
         self.silence.valueChanged.connect(self._save_limits)
 
@@ -744,9 +813,9 @@ class AlertSettingsBox(QGroupBox):
         self.headroom = QSpinBox()
         self.headroom.setRange(*config.HOUSE_HEADROOM_BOUNDS)
         self.headroom.setValue(config.house_headroom())
-        self.headroom.setToolTip(
+        self.headroom.setToolTip(wrapped(
             "Warn HOUSE SOON when this little population space is left -"
-            " raise it if you keep getting housed anyway.")
+            " raise it if you keep getting housed anyway."))
         self.headroom.valueChanged.connect(config.set_house_headroom)
 
         house = flow_row([QLabel("HOUSE SOON warns at"), self.headroom,
@@ -769,7 +838,7 @@ class AlertSettingsBox(QGroupBox):
         for name, text, tip in labels:
             box = QCheckBox(text)
             box.setChecked(toggles[name])
-            box.setToolTip(tip)
+            box.setToolTip(wrapped(tip))
             # The lambda needs name=name: without it, every lambda would
             # close over the same loop variable and toggle "house_warning".
             box.toggled.connect(
@@ -824,9 +893,9 @@ class OverlaySizeBox(QGroupBox):
         self.overall.setSingleStep(5)
         self.overall.setSuffix(" %")
         self.overall.setValue(round(config.overlay_scale() * 100))
-        self.overall.setToolTip(
+        self.overall.setToolTip(wrapped(
             "Grow the whole overlay panel - geometry, writing and icons"
-            " together.")
+            " together."))
         self.overall.valueChanged.connect(
             self._setter(config.set_overlay_scale, scale=100))
 
@@ -836,9 +905,9 @@ class OverlaySizeBox(QGroupBox):
         self.text.setSingleStep(5)
         self.text.setSuffix(" %")
         self.text.setValue(round(config.text_scale() * 100))
-        self.text.setToolTip(
+        self.text.setToolTip(wrapped(
             "Grow only the overlay's writing. The panel gets taller to fit"
-            " it, but never wider.")
+            " it, but never wider."))
         self.text.valueChanged.connect(
             self._setter(config.set_text_scale, scale=100))
 
@@ -869,7 +938,7 @@ def _slider_row(layout, caption, scale_hint, value, setter, tip):
     slider.setRange(0, 100)
     slider.setPageStep(10)
     slider.setValue(round(value * 100))
-    slider.setToolTip(tip)
+    slider.setToolTip(wrapped(tip))
 
     percent = QLabel(f"{slider.value()} %")
     percent.setMinimumWidth(40)
@@ -884,7 +953,7 @@ def _slider_row(layout, caption, scale_hint, value, setter, tip):
     # its longest WORD, not its longest line, and that is what lets the
     # settings column shrink instead of forcing a sideways scroll.
     caption_label.setWordWrap(True)
-    caption_label.setToolTip(tip)
+    caption_label.setToolTip(wrapped(tip))
     hint = QLabel(scale_hint)
     hint.setWordWrap(True)
     hint.setStyleSheet("color: gray;")
@@ -1006,9 +1075,9 @@ class PreviewAppearanceBox(QGroupBox):
         self.text.setSingleStep(5)
         self.text.setSuffix(" %")
         self.text.setValue(round(config.preview_text_scale() * 100))
-        self.text.setToolTip(
+        self.text.setToolTip(wrapped(
             "Grow only the cards' writing. A card gets taller to fit it,"
-            " but never wider.")
+            " but never wider."))
         self.text.valueChanged.connect(
             self._setter(config.set_preview_text_scale, scale=100))
 
@@ -1032,6 +1101,159 @@ class PreviewAppearanceBox(QGroupBox):
             save(value / scale if scale != 1 else value)
             self.changed.emit()
         return apply
+
+
+class KeyCaptureField(QLineEdit):
+    """A binding field that listens for a key press instead of being typed in.
+
+    Click it and press the combination. The keys the player presses are the
+    keys Loom registers, so there is no spelling step in between for anyone
+    to get wrong, and no run of half-typed settings written to disk on the
+    way to a good one.
+
+    THE UNMODIFIED KEYS ARE FREE, and that falls out of a rule that was
+    already there. keyspec refuses a binding with no modifier, because a
+    global hotkey is taken from the game and a bare "Q" would stop working
+    in Age of Empires while Loom ran. So no unmodified press can ever BE a
+    binding, which leaves the whole of that keyspace available here:
+
+        Esc                cancel, keep what was there
+        Delete/Backspace   clear it, switching the action off
+        Ctrl+Shift+Esc     binds Escape, like any other key
+
+    Nothing is taken away - all three keys stay bindable with a modifier.
+
+    It also turns that rule from an error into a state. Holding Ctrl+Shift
+    shows "Ctrl+Shift+..." and waits, rather than accepting a bare key and
+    then explaining why it was no good.
+    """
+
+    # The launcher holds its own start/stop key registered globally, and a
+    # registered hotkey is SWALLOWED - Windows hands it to the registering
+    # window as WM_HOTKEY and the focused widget never sees the keystrokes.
+    # Without dropping that grab first, pressing the current start/stop
+    # combination into a field would capture nothing AND start the overlay.
+    capture_started = pyqtSignal()
+    capture_ended = pyqtSignal()
+
+    # A completed capture: the canonical binding text, or "" to switch off.
+    captured = pyqtSignal(str)
+
+    # Something the press could not be. Not an error state on the settings
+    # as a whole - the field is still waiting - so it says so and carries on.
+    refused = pyqtSignal(str)
+
+    PROMPT = "press a combination..."
+
+    # Class-level defaults, not just instance ones, and this is load-bearing:
+    # QLineEdit's own constructor delivers events, which reach the event()
+    # override below BEFORE __init__ has run its own body. Reading an unset
+    # attribute there raises inside a Qt handler, which aborts the process
+    # with no traceback rather than propagating - the widget simply never
+    # finished being built.
+    _capturing = False
+    _settled = ""
+
+    def __init__(self, binding, parent=None):
+        super().__init__(binding, parent)
+        # Read-only to the keyboard's text, not to key events: keyPressEvent
+        # still runs, which is the whole trick. Typing cannot put a
+        # half-spelled binding in here any more.
+        self.setReadOnly(True)
+        self.setPlaceholderText("(no key)")
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._capturing = False
+        self._settled = binding
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._capturing = True
+        self._settled = self.text()
+        self.setText("")
+        self.setPlaceholderText(self.PROMPT)
+        self.capture_started.emit()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._finish(self._settled)
+
+    def accept(self, binding):
+        """The box took this capture: settle on it and leave capture mode.
+
+        Separate from `captured` because the field cannot know whether the
+        binding will be taken - only the box can see the other four actions,
+        and a clash is refused. So the field offers, the box decides, and a
+        refused press leaves the field still listening.
+        """
+        self._finish(binding)
+
+    def _finish(self, binding):
+        """Leave capture showing `binding`, and hand the grabs back."""
+        self._capturing = False
+        self._settled = binding
+        self.setText(binding)
+        self.setPlaceholderText("(no key)")
+        if self.hasFocus():
+            self.clearFocus()
+        self.capture_ended.emit()
+
+    def event(self, event):
+        """Take Tab before Qt spends it on focus.
+
+        Qt consumes Tab for focus navigation before keyPressEvent is ever
+        reached, and Tab is in keyspec.KEYS - so without this, Ctrl+Shift+Tab
+        is a binding the grammar accepts and the settings window cannot
+        capture.
+        """
+        if (self._capturing and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)):
+            self.keyPressEvent(event)
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+
+        key, modifiers = event.key(), event.modifiers()
+        bare = modifiers == Qt.KeyboardModifier.NoModifier
+
+        # The verbs, which only exist because an unmodified press can never
+        # be a binding. See the class docstring.
+        if bare and key == Qt.Key.Key_Escape:
+            self._finish(self._settled)
+            return
+        if bare and key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.captured.emit("")
+            return
+
+        if qtkeys.is_modifier_only(key):
+            # Show the combination gathering rather than ignoring the press.
+            self.setText(qtkeys.describe(modifiers, key))
+            return
+
+        # nativeVirtualKey is handed over because Shift changes what Qt
+        # CALLS a key - Ctrl+Shift+9 arrives as Key_ParenLeft - and the
+        # native code is the one that does not move. See qtkeys.
+        binding = qtkeys.binding_for(key, modifiers,
+                                     native=event.nativeVirtualKey())
+        if binding is None:
+            self.refused.emit(
+                "That key cannot be bound - Loom has no name for it on both"
+                " Windows and Linux, so a binding using it would save and"
+                " then never fire.")
+            return
+
+        trouble = keyspec.problem(binding)
+        if trouble:
+            # Chiefly the no-modifier rule, whose message explains what
+            # binding a bare key would cost the player in-game.
+            self.setText(binding)
+            self.refused.emit(trouble)
+            return
+
+        self.captured.emit(binding)
 
 
 class HotkeysBox(QGroupBox):
@@ -1080,21 +1302,33 @@ class HotkeysBox(QGroupBox):
     # makes it impossible for the others.
     bindings_changed = pyqtSignal()
 
+    # A field is listening for a key press, so the launcher must hand its own
+    # global registrations back for the moment - otherwise the one
+    # combination the player is most likely to re-press is the one the
+    # capture cannot see.
+    capture_started = pyqtSignal()
+    capture_ended = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__("Build-order hotkeys", parent)
 
         self.enabled = QCheckBox("Use hotkeys")
         self.enabled.setChecked(config.hotkeys_enabled())
-        self.enabled.setToolTip(
+        self.enabled.setToolTip(wrapped(
             "Register these key combinations system-wide. While Loom holds"
             " them, the game does not see them - so switch this off to hand"
-            " them all back at once.")
+            " them all back at once."))
         self.enabled.toggled.connect(config.set_hotkeys_enabled)
         self.enabled.toggled.connect(
             lambda _checked: self.bindings_changed.emit())
 
         bindings = config.hotkeys()
         self.fields = {}
+        # Built before the rows, because each field reports a refused press
+        # straight into it.
+        self.warning = QLabel("")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color: rgb(235, 190, 90);")
         # A grid, so the captions share one column and the fields share
         # another. They were a stack of separate rows, which meant every
         # field started wherever its own caption happened to end and no two
@@ -1106,20 +1340,25 @@ class HotkeysBox(QGroupBox):
         rows.setColumnStretch(1, 1)
         for line, action in enumerate(config.HOTKEY_ACTIONS):
             label, tip = self.LABELS[action]
-            field = QLineEdit(bindings[action])
-            field.setPlaceholderText("(no key)")
-            field.setToolTip(
-                f"{tip} Type something like Ctrl+Shift+W. Leave it empty to"
-                f" switch this action off and give the keys back to the"
-                f" game.")
+            # Right-aligned inside the field: the bindings share a
+            # "Ctrl+Shift+" prefix and differ in the last character, so
+            # ending them at the same place puts the part that actually
+            # varies in one column.
+            field = KeyCaptureField(bindings[action])
+            field.setToolTip(wrapped(
+                f"{tip} Click here and press the combination you want."
+                f" Delete clears it, switching this action off and giving"
+                f" the keys back to the game; Esc leaves it alone."))
             # name=action for the same reason the alert checkboxes need it:
             # without it every lambda closes over the last loop variable.
-            # Right-aligned: the bindings share a "Ctrl+Shift+" prefix and
-            # differ in the last character, so ending them at the same place
-            # puts the part that actually varies in one column.
-            field.setAlignment(Qt.AlignmentFlag.AlignRight)
-            field.textChanged.connect(
-                lambda text, name=action: self._save(name, text))
+            field.captured.connect(
+                lambda binding, name=action: self._captured(name, binding))
+            field.refused.connect(self.warning.setText)
+            # The launcher's own key is registered globally and would be
+            # swallowed before a focused widget could see it - see
+            # KeyCaptureField. Dropped while capturing, taken back after.
+            field.capture_started.connect(self.capture_started)
+            field.capture_ended.connect(self.capture_ended)
             self.fields[action] = field
 
             caption = QLabel(label)
@@ -1131,11 +1370,11 @@ class HotkeysBox(QGroupBox):
         self.hold.setRange(low, high)
         self.hold.setSuffix(" s")
         self.hold.setValue(config.manual_hold_seconds())
-        self.hold.setToolTip(
+        self.hold.setToolTip(wrapped(
             "How long a step key stops the overlay following the game before"
             " it picks the game back up by itself. The step keys are meant as"
             " a correction, not a mode - this is how long the correction"
-            " lasts.")
+            " lasts."))
         self.hold.valueChanged.connect(config.set_manual_hold_seconds)
 
         hold_caption = QLabel("A step key holds sync off for")
@@ -1145,10 +1384,6 @@ class HotkeysBox(QGroupBox):
         # wide as a hotkey field would look like somewhere to type a binding.
         rows.addWidget(self.hold, hold_line, 1,
                        alignment=Qt.AlignmentFlag.AlignLeft)
-
-        self.warning = QLabel("")
-        self.warning.setWordWrap(True)
-        self.warning.setStyleSheet("color: rgb(235, 190, 90);")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.enabled)
@@ -1170,6 +1405,33 @@ class HotkeysBox(QGroupBox):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self._check()
+
+    def _captured(self, action, binding):
+        """One completed capture. Refused if another action owns those keys.
+
+        Refusing rather than warning, which is the one behaviour change here:
+        the clash was always detected, and the amber label has always said so.
+        But a warning describes a state the player has already been put in,
+        where at the moment of a keypress the fix is obvious and the press
+        can simply not be taken. The field stays in capture, so the next
+        press just works.
+
+        Only a CLASH is refused. Everything else keyspec objects to was
+        already refused one layer down, in the field itself.
+        """
+        if binding:
+            wanted = {name: (binding if name == action else field.text())
+                      for name, field in self.fields.items()}
+            for first, second in keyspec.conflicts(wanted):
+                other = second if first == action else first
+                if action in (first, second):
+                    self.warning.setText(
+                        f"{self.LABELS[other][0]} is already on those keys."
+                        f" Pick another combination, or clear that one first.")
+                    return
+
+        self.fields[action].accept(binding)
+        self._save(action, binding)
 
     def _save(self, action, text):
         config.set_hotkey(action, text)
@@ -1229,9 +1491,9 @@ class DevPanel(QGroupBox):
         super().__init__("Developer tools", parent)
         self.scenario = QComboBox()
         self.scenario.addItems(COACH_SCENARIOS)
-        self.scenario.setToolTip(
+        self.scenario.setToolTip(wrapped(
             "Which synthetic match Coach simulate replays: on pace, running"
-            " late, or stalling out.")
+            " late, or stalling out."))
 
         # A wrapping row. This was a fixed three-column grid, which is the
         # same idea guessed in advance: three columns is right at one width
@@ -1243,7 +1505,8 @@ class DevPanel(QGroupBox):
             button = QPushButton(label)
             runnable = entry.can_run(build_args("fast_castle", "perfect"))
             button.setEnabled(runnable)
-            button.setToolTip(tip if runnable else f"{label}: {UNAVAILABLE_TIP}")
+            button.setToolTip(wrapped(
+                tip if runnable else f"{label}: {UNAVAILABLE_TIP}"))
             # name=... defaults again, for the same closure-over-loop reason.
             button.clicked.connect(
                 lambda _checked, prefix=prefix, build_args=build_args:
@@ -1253,7 +1516,8 @@ class DevPanel(QGroupBox):
         buttons = flow_row(made)
 
         stop = QPushButton("Stop task")
-        stop.setToolTip("Terminate whichever developer task is running.")
+        stop.setToolTip(
+            wrapped("Terminate whichever developer task is running."))
         stop.clicked.connect(stop_task)
 
         row = QHBoxLayout()
@@ -1332,28 +1596,29 @@ class LauncherWindow(QWidget):
             "QPushButton:enabled { background-color: #2e7d32; color: white; }")
         self.stop_button.setStyleSheet(
             "QPushButton:enabled { background-color: #b03a2e; color: white; }")
-        self.start_button.setToolTip(
-            "Run the overlay over the game with the chosen build order.")
-        self.stop_button.setToolTip("Stop the running overlay.")
-        self.place_button.setToolTip(
+        self.start_button.setToolTip(wrapped(
+            "Run the overlay over the game with the chosen build order."))
+        self.stop_button.setToolTip(wrapped("Stop the running overlay."))
+        self.place_button.setToolTip(wrapped(
             "Open a movable copy of the panel - drag it where you want the"
-            " overlay, then close it to save the position.")
-        self.status.setToolTip("Whether the overlay is currently running.")
+            " overlay, then close it to save the position."))
+        self.status.setToolTip(
+            wrapped("Whether the overlay is currently running."))
         self.start_button.clicked.connect(self.start_overlay)
         self.stop_button.clicked.connect(self.stop_overlay)
         self.place_button.clicked.connect(self.place_overlay)
         self.reset_place_button = QPushButton("Reset position")
-        self.reset_place_button.setToolTip(
+        self.reset_place_button.setToolTip(wrapped(
             "Forget where the overlay was placed and go back to the default"
             " spot (top right, under the game's bar). The rescue for a"
-            " position that ended up off the screen.")
+            " position that ended up off the screen."))
         self.reset_place_button.clicked.connect(self.reset_overlay_position)
         self.hide_button = QPushButton("Hide overlay")
-        self.hide_button.setToolTip(
+        self.hide_button.setToolTip(wrapped(
             "Take the panel off the screen without stopping it. Loom keeps"
             " reading the game, keeps recording the match and keeps counting"
             " APM - only the window goes away. The overlay's own hotkey does"
-            " the same thing without alt-tabbing out here.")
+            " the same thing without alt-tabbing out here."))
         self.hide_button.clicked.connect(self.toggle_overlay_hidden)
         # A wrapping row, not a fixed one. Six controls side by side reported
         # a minimum width of 1078px - 838 of buttons plus a 240px status
@@ -1365,9 +1630,9 @@ class LauncherWindow(QWidget):
 
         # Developer mode: a persisted checkbox revealing the tools panel.
         self.dev_toggle = QCheckBox("Developer mode")
-        self.dev_toggle.setToolTip(
+        self.dev_toggle.setToolTip(wrapped(
             "Show the debug tools: demo mode, the coach simulator, capture"
-            " tools and the test runner.")
+            " tools and the test runner."))
         self.dev_panel = DevPanel(self.run_dev_command, self.stop_dev_task)
         self.dev_toggle.setChecked(config.developer_mode())
         self.dev_toggle.toggled.connect(self._set_developer_mode)
@@ -1378,18 +1643,18 @@ class LauncherWindow(QWidget):
         # can never open behind it.
         self.browser = BuildBrowser(self)
         self.browser_toggle = QCheckBox("Show build preview")
-        self.browser_toggle.setToolTip(
+        self.browser_toggle.setToolTip(wrapped(
             "Show the build order in its own resizable window - browse it"
-            " before a match, watch it follow along during one.")
+            " before a match, watch it follow along during one."))
         self.browser_toggle.setChecked(config.build_browser())
         self.browser_toggle.toggled.connect(self._set_build_browser)
 
         self.record_toggle = QCheckBox("Attach recorded game")
-        self.record_toggle.setToolTip(
+        self.record_toggle.setToolTip(wrapped(
             "When a game ends, find the match's own .aoe2record and add"
             " what it says to the statistics - who won, both civilisations,"
             " and what the game was actually told to do. Only ever after"
-            " the match has ended.")
+            " the match has ended."))
         self.record_toggle.setChecked(config.attach_recorded_game())
         self.record_toggle.toggled.connect(config.set_attach_recorded_game)
         self.browser.closed.connect(
@@ -1418,27 +1683,45 @@ class LauncherWindow(QWidget):
 
         # APM tracking: a counter child that runs alongside the overlay.
         self.apm_toggle = QCheckBox("Track APM")
-        self.apm_toggle.setToolTip(
+        self.apm_toggle.setToolTip(wrapped(
             "Count keystrokes and clicks per minute while the overlay runs."
             " Counts only - the counter is built so it never knows which"
-            " key. Written into the game's stats file.")
+            " key. Written into the game's stats file."))
         self.apm_toggle.setChecked(config.track_apm())
         self.apm_toggle.toggled.connect(config.set_track_apm)
 
         # Past games, in their own window like the preview.
         self.stats_window = StatsWindow()
         self.stats_button = QPushButton("Statistics")
-        self.stats_button.setToolTip(
+        self.stats_button.setToolTip(wrapped(
             "Past games: the build report, the post-game summary, and"
-            " graphs. One file per game in stats/.")
+            " graphs. One file per game in stats/."))
         self.stats_button.clicked.connect(self._open_stats)
+        # Violet, the colour the recorded game wears throughout the
+        # statistics window, so the button and what it opens are visibly
+        # the same subject. DERIVED from that colour rather than written
+        # out again: retune RECORD_COLOR and this follows.
+        #
+        # Darkened, though, and by measurement rather than by eye. The
+        # chart colour is tuned to be legible as a thin line on a dark
+        # ground, which makes it far too light to sit behind white text -
+        # white on it is 2.58:1, under the 4.5:1 a person can comfortably
+        # read. darker(160) is 5.88:1, and the hover lightens to 4.73:1,
+        # which is still above the floor. A colour that works as a stroke
+        # is not automatically one that works as a fill.
+        tint = css_rgb(RECORD_COLOR.darker(STATS_BUTTON_DARKEN))
+        lighter = css_rgb(RECORD_COLOR.darker(STATS_BUTTON_HOVER_DARKEN))
+        self.stats_button.setStyleSheet(
+            f"QPushButton {{ background-color: {tint}; color: white;"
+            " font-weight: bold; padding: 4px 14px; border-radius: 3px; }"
+            f"QPushButton:hover {{ background-color: {lighter}; }}")
 
         # How to use: which HUD mods work, and how to get going. Shown once
         # on a fresh install by loom_app; this button is how it comes back.
         self.about_window = AboutWindow(self)
         self.about_button = QPushButton("How to use")
-        self.about_button.setToolTip(
-            "Which HUD mods Loom works with, and how to set it up.")
+        self.about_button.setToolTip(wrapped(
+            "Which HUD mods Loom works with, and how to set it up."))
         self.about_button.clicked.connect(self._open_about)
 
         toggles = flow_row([self.dev_toggle, self.browser_toggle,
@@ -1556,6 +1839,16 @@ class LauncherWindow(QWidget):
         self._register_launcher_hotkeys()
         self.hotkeys_box.bindings_changed.connect(
             self._register_launcher_hotkeys)
+        # While a binding field is listening, the launcher must not be
+        # holding any global combination: a registered hotkey is swallowed
+        # by the OS and delivered to the registering window, so the one
+        # combination a player is most likely to press into a capture field -
+        # the one already bound - is precisely the one it could not see, and
+        # pressing it would start the overlay instead. _register_launcher_
+        # hotkeys is already stop-then-listen, so taking them back is the
+        # same call the rest of this class makes.
+        self.hotkeys_box.capture_started.connect(self._release_launcher_hotkeys)
+        self.hotkeys_box.capture_ended.connect(self._register_launcher_hotkeys)
         # The Preview tab reaches the open preview instantly - both live in
         # this process, which is what the tab's own hint promises.
         self.preview_appearance.changed.connect(
@@ -1633,6 +1926,17 @@ class LauncherWindow(QWidget):
 
     # ---- the launcher's own hotkey --------------------------------------
 
+    def _release_launcher_hotkeys(self):
+        """Hand every global combination back, for as long as a field listens.
+
+        Quiet on purpose - no output-pane line. This happens on every click
+        into a binding field and comes straight back afterwards; narrating it
+        would bury the lines that report a registration that actually failed.
+        """
+        if self._launcher_hotkeys is not None:
+            hotkeys.stop(self._launcher_hotkeys)
+            self._launcher_hotkeys = None
+
     def _register_launcher_hotkeys(self):
         """(Re)register the start/stop key from the current settings.
 
@@ -1686,15 +1990,16 @@ class LauncherWindow(QWidget):
     def start_overlay(self):
         if self.overlay_process is not None and self.overlay_process.is_running():
             return
+        mode = self.picker.selected_mode()
         stem = self.picker.selected_stem()
-        if stem is None:
+        if stem is None and mode == config.BUILD_MODE:
             self.output.append_line(
                 "[launcher] no build orders found. Put RTS Overlay JSON "
-                f"files in {paths.DATA_DIR / 'builds'}")
+                f"files in {paths.DATA_DIR / 'builds'} — or pick one of the "
+                "NO BUILD ORDER modes, which need no library at all")
             return
         self.overlay_process = self._spawn(
-            "overlay", ["loom_overlay.py", "--build", stem],
-            self._overlay_finished)
+            "overlay", overlay_argv(mode, stem), self._overlay_finished)
         # The APM counter rides along, collecting buckets the whole session;
         # they are joined to game time and written after the overlay ends.
         self._apm_buckets = []
@@ -1777,8 +2082,13 @@ class LauncherWindow(QWidget):
             self.output.append_line(
                 "[launcher] placement closed — nothing saved")
             return
-        self.run_dev_command(prefix,
-                             lambda stem, _scenario: build_argv(stem))
+        # Placement shows the panel the player will ACTUALLY play with, so
+        # it carries the mode. A tracking mode placed against a build panel
+        # would be positioning a window that never appears.
+        mode = self.picker.selected_mode()
+        self.run_dev_command(
+            prefix,
+            lambda stem, _scenario: overlay_argv(mode, stem, place=True))
         # Asked, not assumed: run_dev_command refuses while another dev task
         # holds the slot, and a button that said "Close placement" over a
         # panel that never opened would be a lie about what pressing it does.
@@ -1862,6 +2172,12 @@ class LauncherWindow(QWidget):
           exactly as it was and say so in the output pane.
         * Off is a real setting. Some people will not want Loom opening
           files in their savegame folder at all.
+
+        The stats file is chosen ONCE, here, and carried into the retry.
+        Picking "newest by mtime" a second time would be answering a
+        different question: attaching a record rewrites a stats file, so a
+        manual attach in the statistics window moves an mtime and "newest"
+        quietly stops meaning "the game that just ended".
         """
         if not config.attach_recorded_game():
             return
@@ -1869,17 +2185,59 @@ class LauncherWindow(QWidget):
                      key=lambda p: p.stat().st_mtime)
         if newest is None:
             return
+        self._try_attaching(newest, retry=True)
+
+    def _try_attaching(self, stats_path, retry):
+        """One attempt at attaching a record, with at most one more.
+
+        The retry exists because the first attempt cannot win. Measured on
+        this machine: the game finished writing its record at 12:13:50 and
+        the stats file landed at 12:13:59 - NINE seconds, against the
+        thirty-second window `replay.refusal_reason` insists on before it
+        will read a file the game may still be writing. So the normal path
+        was refused every single time, and nothing ever asked again.
+
+        One retry rather than a loop. If the record is still unreadable
+        thirty seconds after the match ended, something other than the
+        write is wrong, and the banner and the scan button in the
+        statistics window are both better places for a person to take over
+        than a launcher quietly polling their savegame folder.
+
+        The first attempt says nothing final when a retry is coming. Two
+        lines for one question, the first of them wrong, is exactly how
+        this looked like a missing record rather than a race.
+        """
         try:
-            said = statsview.enrich_with_record(newest)
+            said = statsview.enrich_with_record(stats_path)
         except Exception as error:          # never worth losing a game over
             self.output.append_line(
                 f"[launcher] could not attach the recorded game: {error}")
             return
         if said.startswith("added"):
             self.output.append_line(
-                f"[launcher] recorded game attached to {newest.name} - {said}")
-        else:
-            self.output.append_line(f"[launcher] no recorded game: {said}")
+                f"[launcher] recorded game attached to {stats_path.name}"
+                f" - {said}")
+            self._record_attached(stats_path)
+            return
+        if retry:
+            self.output.append_line(
+                f"[launcher] no recorded game yet ({said}) - trying once"
+                f" more in {RETRY_ATTACH_AFTER_MS // 1000}s")
+            QTimer.singleShot(
+                RETRY_ATTACH_AFTER_MS,
+                lambda: self._try_attaching(stats_path, retry=False))
+            return
+        self.output.append_line(f"[launcher] no recorded game: {said}")
+
+    def _record_attached(self, stats_path):
+        """Show it, if the window that would show it is open.
+
+        The statistics window reads these files when a game is selected,
+        so one enriched behind its back is a view that has quietly stopped
+        matching the disk.
+        """
+        if self.stats_window.isVisible():
+            self.stats_window.reload(stats_path)
 
 
     def _show_overlay_state(self, running, hidden=False):
@@ -1919,6 +2277,10 @@ class LauncherWindow(QWidget):
                 "[launcher] this starts its own overlay — stop the running "
                 "one first, or you get two sets of statistics")
             return
+        # selected_stem() is None in a tracking mode, so the fallback fires
+        # and the dev tools keep working on a real build. That is why
+        # selected_stem narrows rather than returning the raw row: a mode
+        # string is truthy and would have sailed into --build.
         argv = build_args(self.picker.selected_stem() or "fast_castle",
                           self.dev_panel.scenario.currentText())
         self.output.append_line(f"[launcher] running: {' '.join(argv)}")

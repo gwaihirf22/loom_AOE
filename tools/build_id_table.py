@@ -42,12 +42,13 @@ perfectly-read lines and nothing anywhere reports it. This reports it.
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loom import glyphs, paths  # noqa: E402
+from loom import glyphs, paths, queue  # noqa: E402
 
 DATASET_URL = ("https://raw.githubusercontent.com/SiegeEngineers/"
                "aoc-reference-data/master/data/datasets/100.json")
@@ -60,6 +61,116 @@ OUT_PATH = paths.PROJECT_ROOT / "loom" / "replay_ids.py"
 # is not one this table should carry.
 BUILT = "--{} Built--"
 RESEARCHED = "--{} Research Complete--"
+
+# The SECOND vocabulary, and it is not the same one.
+#
+# BUILDINGS and TECHNOLOGIES above are filtered by what the NOTIFICATION
+# reader can say, because that is what they are compared against. The queue
+# reader has its own vocabulary - one icon template per identity, named by
+# filename - and the two only partly overlap. A table filtered for one and
+# used for the other measures the wrong thing, which is the mistake
+# `lines.subjects()` invited when it was tried as a filter and dropped
+# `pikeman`, a subject Loom demonstrably reads.
+#
+# So these tables answer a different question: given a numeric id in a
+# recorded game, what would the QUEUE reader call that thing if it were in
+# a slot? An id with no icon template is left out, because the reader can
+# never name it and an absence there is a fact about the template set
+# rather than about a reading.
+
+
+def queue_identities():
+    """Every identity the queue reader can name, plus its family.
+
+    FAMILY exists because the game draws one villager two ways. The record
+    only ever says "Villager", so a comparison against the reader has to
+    happen at the family level or every villager in every game reads as an
+    identity nobody ordered.
+    """
+    found = {}
+    for name in queue.load_icon_templates():
+        found[name] = queue.FAMILY.get(name, name)
+    return found
+
+
+def normalised(name):
+    """Every spelling of a dataset name worth trying against a template.
+
+    Two forms, because the template set uses both: `cavalry_archer` and
+    `cavalryarcher` are the same unit, and the difference is a filename
+    convention that drifted rather than anything meaningful. Generated
+    rather than listed, so a third naming accident costs nothing.
+    """
+    lowered = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    return (lowered, lowered.replace("_", ""))
+
+
+def upgraded_forms(objects, technologies):
+    """Unit identities that are an UPGRADED rung of a line, not a base unit.
+
+    The record says what was ORDERED; the queue draws what will EMERGE, and
+    those differ the moment an upgrade lands. Measured on a Turkish game:
+    the player ordered Scout Cavalry 42 times and the reader never once said
+    scout_cavalry - it said light_cavalry from 32:51 to 42:00 and hussar
+    from 42:04 to 47:09, and Imperial Age completed at about 41:40. That is
+    not a misread, it is the reader tracking a free civilisation upgrade to
+    the second, and it was being scored as 455 faults.
+
+    Free is the word that makes this unfixable by looking for the research:
+    Turks get Light Cavalry and Hussar with no command at all, so the record
+    is silent and its silence means nothing here. The dataset carries no
+    civilisation bonuses to consult - `civilizations` is id and name only.
+
+    What CAN be derived is which units are upgraded forms, because the game
+    names an upgrade technology exactly like the unit it produces. `Hussar`
+    is both; `Knight` is not, its upgrade being `Cavalier`. So a unit whose
+    name is also a technology name may have arrived by research or by
+    civilisation bonus, and the record cannot rule it out either way - which
+    makes it UNVERIFIABLE rather than wrong. Structural, from the dataset,
+    rather than a hand-written list of civ bonuses that would fail silently
+    the first time one was missed.
+    """
+    tech_spellings = set()
+    for name in technologies.values():
+        if name and name.strip():
+            tech_spellings.update(normalised(name.strip()))
+    upgraded = set()
+    for ident, name in objects.items():
+        if not name or not name.strip():
+            continue
+        for spelling in normalised(name.strip()):
+            if spelling in tech_spellings:
+                upgraded.add(spelling)
+    return upgraded
+
+
+def queue_table_for(named):
+    """(id -> queue identity family) for what the queue reader can name."""
+    identities = queue_identities()
+    families = {}
+    for identity, family in identities.items():
+        families.setdefault(identity, family)
+    keep, refused = {}, {}
+    for ident, name in named.items():
+        if not name or not name.strip():
+            continue
+        hit = None
+        for spelling in normalised(name.strip()):
+            if spelling in families:
+                hit = families[spelling]
+                break
+            # A family name the record uses but no template is called: the
+            # record says "Villager", the templates say villager_male and
+            # villager_female, and the family is the only place they meet.
+            shared = [f for f in families.values() if f == spelling]
+            if shared:
+                hit = spelling
+                break
+        if hit:
+            keep[int(ident)] = hit
+        else:
+            refused.setdefault(name.strip(), []).append(int(ident))
+    return keep, refused
 
 
 def fetch_dataset(url=DATASET_URL):
@@ -106,7 +217,8 @@ def table_for(named, template):
     return keep, refused
 
 
-def render(objects, technologies, version):
+def render(objects, technologies, queue_objects, queue_techs, upgraded,
+           version):
     lines = [
         '"""Recorded game ids, and what Loom calls the thing each one is.',
         "",
@@ -127,7 +239,37 @@ def render(objects, technologies, version):
     lines += ["}", "", "TECHNOLOGIES = {"]
     for ident in sorted(technologies):
         lines.append(f"    {ident}: {technologies[ident]!r},")
-    lines += ["}", ""]
+    lines += [
+        "}",
+        "",
+        "# The same ids against the QUEUE reader's vocabulary instead of the",
+        "# notification reader's. The two overlap but are not the same set, and",
+        "# a table filtered for one and used for the other measures the wrong",
+        "# thing. Values are icon FAMILIES: the record only ever says",
+        '# "Villager" while the templates say villager_male and',
+        "# villager_female, so the family is the only level the two meet on.",
+        "QUEUE_UNITS = {",
+    ]
+    for ident in sorted(queue_objects):
+        lines.append(f"    {ident}: {queue_objects[ident]!r},")
+    lines += ["}", "", "QUEUE_TECHS = {"]
+    for ident in sorted(queue_techs):
+        lines.append(f"    {ident}: {queue_techs[ident]!r},")
+    lines += [
+        "}",
+        "",
+        "# Unit identities that are an UPGRADED rung rather than a base unit,",
+        "# spotted by the game naming an upgrade technology exactly like the",
+        "# unit it produces - Hussar is both, Knight is not. The record says",
+        "# what was ORDERED and the queue draws what will EMERGE, so one of",
+        "# these on screen may have arrived by research or free from a",
+        "# civilisation bonus, and the record can rule out neither. Turks get",
+        "# Light Cavalry and Hussar for nothing, with no command to find.",
+        "QUEUE_UPGRADED = frozenset({",
+    ]
+    for name in sorted(upgraded):
+        lines.append(f"    {name!r},")
+    lines += ["})", ""]
     return "\n".join(lines)
 
 
@@ -141,12 +283,25 @@ def main():
     version = (data.get("dataset") or {}).get("version", "?")
     objects, no_object = table_for(data["objects"], BUILT)
     technologies, no_tech = table_for(data["technologies"], RESEARCHED)
+    queue_objects, _ = queue_table_for(data["objects"])
+    queue_techs, _ = queue_table_for(data["technologies"])
+    all_upgraded = upgraded_forms(data["objects"], data["technologies"])
+    upgraded = {name for name in all_upgraded
+                if name in set(queue_objects.values())}
 
     print(f"dataset 100, game data {version}")
     print(f"  objects      {len(data['objects']):>5} -> {len(objects):>4} "
           f"Loom can name")
     print(f"  technologies {len(data['technologies']):>5} -> "
           f"{len(technologies):>4} Loom can name")
+    print(f"  and against the QUEUE reader's icons instead:")
+    print(f"    objects      {len(data['objects']):>5} -> "
+          f"{len(queue_objects):>4} the queue reader can name")
+    print(f"    technologies {len(data['technologies']):>5} -> "
+          f"{len(queue_techs):>4} the queue reader can name")
+    print(f"    of those units, {len(upgraded)} are an UPGRADED rung whose "
+          f"arrival\n      the record cannot confirm or deny - research or a "
+          f"free civ bonus")
 
     # The audit. A name here is a line the game can print and Loom would
     # refuse, which is a hole in KNOWN_WORDS - and that list fails silently.
@@ -159,8 +314,10 @@ def main():
         print(f"      ... and {len(refused) - 40} more")
 
     if arguments.write:
-        OUT_PATH.write_text(render(objects, technologies, version),
-                            encoding="utf-8")
+        OUT_PATH.write_text(
+            render(objects, technologies, queue_objects, queue_techs,
+                   upgraded, version),
+            encoding="utf-8")
         print(f"\nwrote {OUT_PATH}")
     else:
         print("\n(nothing written - pass --write)")

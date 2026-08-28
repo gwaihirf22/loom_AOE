@@ -45,6 +45,7 @@ from . import alerts as alerts_module
 from . import checklist as checklist_module
 from . import config, placement, steplayout
 from .flowlayout import flow_row
+from .tooltips import wrapped
 from .build_order import format_time
 from .overlay import (draw_items, item_indent, measure_segments,
                       AHEAD_COLOR, ALERT_BAND_HEIGHT, ALERT_FULL_BRIGHT,
@@ -838,7 +839,7 @@ class ChromeBar(QWidget):
         self.close_button = QPushButton("✕")
         self.close_button.setFixedWidth(ZOOM_BUTTON_WIDTH)
         self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.close_button.setToolTip("Close the preview.")
+        self.close_button.setToolTip(wrapped("Close the preview."))
 
         strip = QHBoxLayout()
         strip.setContentsMargins(0, 0, 0, 0)
@@ -1019,14 +1020,14 @@ class BuildBrowser(QWidget):
         # Zoom, top left. The buttons resize the CARDS and nothing else; the
         # window is the player's own business.
         self.zoom_out = QPushButton("−")
-        self.zoom_out.setToolTip("Smaller cards.")
+        self.zoom_out.setToolTip(wrapped("Smaller cards."))
         self.zoom_out.clicked.connect(lambda: self._zoom(-ZOOM_STEP))
         self.zoom_in = QPushButton("+")
-        self.zoom_in.setToolTip("Bigger cards.")
+        self.zoom_in.setToolTip(wrapped("Bigger cards."))
         self.zoom_in.clicked.connect(lambda: self._zoom(ZOOM_STEP))
         self.zoom_auto = QPushButton("↺")
-        self.zoom_auto.setToolTip(
-            "Back to fitting the cards to the window automatically.")
+        self.zoom_auto.setToolTip(wrapped(
+            "Back to fitting the cards to the window automatically."))
         self.zoom_auto.clicked.connect(self._zoom_auto)
         self.zoom_label = QLabel()
         self.zoom_label.setStyleSheet(f"color: rgb({DIM_TEXT.red()},"
@@ -1040,21 +1041,21 @@ class BuildBrowser(QWidget):
         # put in the window they are about: reaching across to the launcher
         # on another screen to turn on alerts HERE was the wrong shape.
         self.alerts_toggle = QCheckBox("Alerts here")
-        self.alerts_toggle.setToolTip(
+        self.alerts_toggle.setToolTip(wrapped(
             "Show the overlay's TC IDLE and HOUSE SOON bands in this window,"
-            " so it can be played from on a second monitor.")
+            " so it can be played from on a second monitor."))
         self.alerts_toggle.setChecked(config.preview_alerts())
         self.alerts_toggle.toggled.connect(self._set_alerts_enabled)
 
         self.disable_overlay_toggle = QCheckBox("No overlay")
-        self.disable_overlay_toggle.setToolTip(
+        self.disable_overlay_toggle.setToolTip(wrapped(
             "Keep the overlay panel off the game permanently: it will not"
             " appear when you press Start overlay, and stays away until this"
             " is unticked. Loom still reads the game, records the match and"
             " feeds this window - only the panel over the game is gone.\n\n"
             "This is the REMEMBERED setting. The launcher's Hide overlay"
-            " button and Ctrl+Shift+0 are the temporary version and are"
-            " forgotten when Loom closes.")
+            " button and Ctrl+Shift+Minus are the temporary version and are"
+            " forgotten when Loom closes."))
         self.disable_overlay_toggle.setChecked(config.overlay_disabled())
         self.disable_overlay_toggle.toggled.connect(self._set_overlay_disabled)
 
@@ -1106,9 +1107,9 @@ class BuildBrowser(QWidget):
         # viewport, and with the horizontal bar off that is not a scroll, it
         # is content that has simply gone.
         self.scroll.viewport().installEventFilter(self)
-        self.scroll.setToolTip(
+        self.scroll.setToolTip(wrapped(
             "Click a step, scroll, or use the arrow keys to browse. Follows"
-            " the game automatically while the overlay runs.")
+            " the game automatically while the overlay runs."))
 
         # A scrollbar that means WHERE AM I IN THE BUILD, which is the only
         # thing scrolling has ever meant in this window.
@@ -1123,7 +1124,7 @@ class BuildBrowser(QWidget):
         # always fits and the scroll area has nothing of its own to scroll -
         # leaving this bar as the single meaning.
         self.position = QScrollBar(Qt.Orientation.Vertical, self)
-        self.position.setToolTip("Where you are in the build.")
+        self.position.setToolTip(wrapped("Where you are in the build."))
         self.position.valueChanged.connect(self._position_moved)
         self.position.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 

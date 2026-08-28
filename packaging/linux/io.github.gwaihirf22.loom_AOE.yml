@@ -1,0 +1,173 @@
+# Loom as a Flatpak.
+#
+# WHY THIS IS NOT A FROZEN BUILD. The roadmap's packaging plan says freezing
+# is the common substrate and every platform starts there. That is right for
+# the .exe and the .app and wrong here: a Flatpak's runtime brings a real
+# Python, so Loom is installed FROM SOURCE and PyInstaller is not involved on
+# Linux at all. Three things follow, and all three are why this file is short:
+#
+#   * No Linux loom.spec. The capture and hotkey backends load through
+#     importlib, which static analysis cannot see - the reason loom.spec has
+#     to name them as hiddenimports. Unfrozen, that problem does not exist.
+#   * sys.frozen stays unset, so loom/entry.py takes its interpreter branch
+#     and `-m tools.apm_counter` runs. APM on Linux is a child process, and
+#     it is the one thing a frozen Linux build could not have started.
+#   * paths.installed() still moves writable data out of the tree, because it
+#     asks whether PROJECT_ROOT is writable rather than whether PyInstaller
+#     built this. /app is read-only, so captures go to the data directory.
+app-id: io.github.gwaihirf22.loom_AOE
+
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+
+# PyQt6 already built against this exact Qt. Loom pins PyQt6==6.11.0 and
+# PyQt6-Qt6==6.11.1, so the 6.11 branch is a straight match - and installing
+# the PyPI wheels instead would ship a second copy of Qt inside a runtime
+# that already has one.
+base: com.riverbankcomputing.PyQt.BaseApp
+base-version: '6.11'
+
+command: loom
+
+build-options:
+  env:
+    # Loom imports QtCore, QtWidgets and QtGui and nothing else. WebEngine is
+    # the largest thing the BaseApp carries and none of it is reachable.
+    BASEAPP_REMOVE_WEBENGINE: '1'
+
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+finish-args:
+  # THE hole, and the only contentious one. Every OS-facing thing Loom does
+  # goes through the X server the game already lives on:
+  #   XGetImage on the game's window ......... loom/capture/x11.py
+  #   XQueryTree to find that window ......... loom/capture/x11.py
+  #   XGrabKey for global hotkeys ............ loom/hotkeys/x11.py
+  #   XISelectEvents for APM ................. tools/apm_counter.py
+  #   XShapeGetRectangles, click-through ..... loom/passthrough.py
+  #   QT_QPA_PLATFORM=xcb for the overlay .... loom_overlay.py
+  # Wayland has no API for reading another window's pixels or grabbing a key
+  # globally - by design - so there is no portal route to any of this. The
+  # game runs under XWayland and Loom has to be on the same X server, which
+  # is also why fallback-x11 will not do: a nested display finds no game.
+  - --socket=x11
+  - --share=ipc
+  # The LAUNCHER only, which is an ordinary window and runs as a native
+  # Wayland client on purpose (loom_app.py deliberately does not set
+  # QT_QPA_PLATFORM). The overlay child sets xcb for itself.
+  - --socket=wayland
+  # The overlay is translucent (WA_TranslucentBackground), which needs a
+  # compositor and an ARGB visual.
+  - --device=dri
+  # NOT --device=input. Nothing in Loom reads /dev/input, evdev or uinput;
+  # APM is XInput2 raw events on the root window, already covered above.
+  # Stated here because its absence is the interesting part.
+
+  # Recorded games, read ONLY after a match has ended (loom/replay.py refuses
+  # rec.aoe2record by name and refuses any file the game is still writing).
+  # Scoped to AoE2 DE's app id rather than to Steam, and read-only: Loom
+  # opens one save folder and never writes to it. The three roots are Steam
+  # installed natively, Steam installed the older way, and Steam installed as
+  # a Flatpak - which is how a large share of Bazzite players have it.
+  #
+  # A Steam library on a second drive is not covered and cannot be: it lives
+  # wherever the player put it. That is what LOOM_RECORDS_DIR and
+  # `flatpak override --filesystem=...` are for - see docs/install-linux.md.
+  - --filesystem=~/.steam/steam/steamapps/compatdata/813780:ro
+  - --filesystem=xdg-data/Steam/steamapps/compatdata/813780:ro
+  - --filesystem=~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/813780:ro
+
+modules:
+  # Generated, never hand-edited: see generate-deps.sh. Flathub builds have
+  # no network, so every wheel is pinned with a sha256.
+  #
+  # PyQt6 and PyQt6-Qt6 are deliberately NOT in here - the BaseApp above
+  # provides them.
+  - python3-deps.yml
+
+  - name: python3-mgz
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --no-build-isolation
+        --prefix=${FLATPAK_DEST} --no-deps .
+    sources:
+      # A git source with an explicit commit, not a branch: a branch name is
+      # not reproducible and Flathub rejects one.
+      #
+      # This is a fork, and temporarily so. Save version 67.2 moved two
+      # header fields and nothing on PyPI reads them; the fix is upstream as
+      # happyleavesaoc/aoc-mgz#147. When it lands, this whole module
+      # collapses into an ordinary pinned entry in python3-deps.yml.
+      #
+      # Loom imports mgz LAZILY, inside the function that parses a record,
+      # and only mgz.fast - which pulls `construct` and nothing else.
+      - type: git
+        url: https://github.com/gwaihirf22/aoc-mgz.git
+        commit: def94dd63a23b65435813e5acc8a0b3defafda03
+
+  - name: loom
+    buildsystem: simple
+    build-commands:
+      # The whole tree, because Loom is four programs that start each other
+      # by path, and a hand-listed file manifest would be a second answer to
+      # a question loom/entry.py already answers.
+      #
+      # tools/ is NOT optional on Linux: APM is tools/apm_counter.py, spawned
+      # as a child by the launcher. tests/ rides along so the developer-mode
+      # tab is not a set of half-working buttons; it defaults off
+      # (loom/config.py), so nobody sees it who did not ask for it.
+      - install -Dm755 packaging/linux/loom.sh /app/bin/loom
+      - mkdir -p /app/share/loom
+      - cp -r loom tools tests templates builds icons images master_aoe2_images
+        loom_app.py loom_overlay.py loom_coach.py loom_read.py
+        requirements.txt /app/share/loom/
+
+      # Flathub requires each module's licence under this path, and
+      # tools/package_windows.py already refuses to build a Windows zip
+      # without these two. Same rule, same reason: PyQt6 is GPL-3.0-only and
+      # a distributed bundle of it is a combined work.
+      - install -Dm644 LICENSE /app/share/licenses/${FLATPAK_ID}/LICENSE
+      - install -Dm644 NOTICE /app/share/licenses/${FLATPAK_ID}/NOTICE
+      - install -Dm644 LICENSE /app/share/loom/LICENSE
+      - install -Dm644 NOTICE /app/share/loom/NOTICE
+
+      - install -Dm644 packaging/linux/io.github.gwaihirf22.loom_AOE.desktop
+        /app/share/applications/io.github.gwaihirf22.loom_AOE.desktop
+      - install -Dm644 packaging/linux/io.github.gwaihirf22.loom_AOE.metainfo.xml
+        /app/share/metainfo/io.github.gwaihirf22.loom_AOE.metainfo.xml
+      - install -Dm644 packaging/linux/io.github.gwaihirf22.loom_AOE.png
+        /app/share/icons/hicolor/256x256/apps/io.github.gwaihirf22.loom_AOE.png
+    sources:
+      # For a Flathub submission this becomes an `archive` source pointing at
+      # the release tarball with a sha256 - see README.md in this folder.
+      # `dir` is what makes a local build from a working tree possible.
+      - type: dir
+        path: ../..
+        # A `dir` source copies the WHOLE tree into the build directory
+        # before any build command runs, so this list is about what
+        # flatpak-builder has to carry, not about what gets installed - the
+        # cp above is explicit and could not pick these up anyway.
+        #
+        # captures/ is the one that matters in practice: it is development
+        # scratch and runs to gigabytes on this machine, and copying it is
+        # pure wall-clock. reference/ is here for a different reason - it
+        # is the game's own design transcribed, it is private, and
+        # tools/release.py strips it from every public snapshot. Naming it
+        # here means a LOCAL build from the private working tree matches
+        # what a Flathub build from the public tarball would see.
+        skip:
+          - .git
+          - .venv
+          - build
+          - dist
+          - captures
+          - reference

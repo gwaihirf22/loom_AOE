@@ -15,7 +15,10 @@ distributed binary that bundles PyQt6 is a combined work, and GPL v3 is
 what that combination requires. This is not a position taken on software
 freedom - it is the licence the dependency already imposes, and choosing a
 permissive licence for Loom while shipping PyQt6 inside the .exe would be a
-violation rather than a choice.
+violation rather than a choice. The same holds for the Linux Flatpak, by a
+slightly different route: PyQt6 is not vendored there but comes from the
+runtime's own PyQt extension, and a combined work is a combined work however
+the parts were delivered.
 
 Two things GPL v3 does NOT prevent, since both are commonly assumed:
 donations are entirely unaffected, and selling copies is expressly
@@ -37,7 +40,9 @@ Bundled in the distributed application:
   PyQt6-Qt6                LGPL v3
   NumPy                    BSD-3-Clause (and 0BSD, MIT, Zlib, CC0-1.0)
   OpenCV (headless)        Apache License 2.0
-  mss                      MIT
+  mgz                      MIT                   reads recorded games
+  construct                MIT                   a dependency of mgz
+  pytest                   MIT                   ships in requirements.txt
 
 Per platform:
 
@@ -46,11 +51,25 @@ Per platform:
   python-xlib              LGPL v2.1 or later    Linux only
   pyobjc                   MIT                   macOS only
 
+On Linux the Flatpak vendors neither Qt nor PyQt6. Qt comes from the KDE
+runtime (org.kde.Platform 6.11) and PyQt6 from Riverbank's own base app
+(com.riverbankcomputing.PyQt.BaseApp 6.11), redistributed under the same
+LGPL v3 / GPL-3.0-only terms listed above.
+
 Development only, not distributed:
 
-  mgz                      MIT                   reads recorded games
-  construct                MIT                   a dependency of mgz
-  pytest, PyInstaller, Pillow
+  mss                      MIT                   only tools/capture_smoketest
+  PyInstaller, Pillow
+
+The line between those two blocks is drawn from requirements.txt, not from
+memory, and it has been wrong in both directions. mss sat in the distributed
+list for the life of the project while nothing under loom/ ever imported it;
+mgz and construct sat in the development list while mgz had its own module
+in the Flatpak manifest and its own entry in loom.spec's hiddenimports.
+pytest is likewise in requirements.txt and so ships. Re-derive this block
+whenever requirements.txt moves - the Flatpak manifest installs this file
+into the package as its licence disclosure, so an error here is published
+rather than merely written down.
 
 A note for anyone auditing this: Apache License 2.0 is compatible with GPL
 version 3 but NOT with version 2, which is one of the reasons this project

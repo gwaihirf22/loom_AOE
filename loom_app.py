@@ -78,7 +78,7 @@ def main():
     for note in paths.migrate_legacy_writables():
         print(note)
 
-    entry.windows_app_identity()
+    entry.app_identity()
     app = QApplication(sys.argv)
     # The application-wide icon: every window this process opens - launcher,
     # preview, statistics, How-to-use - inherits it. The .ico carries seven

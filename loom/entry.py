@@ -39,22 +39,48 @@ SCRIPTS = {script: mode for mode, (_module, script) in MODES.items()}
 MODE_FLAG = "--mode"
 
 
-def windows_app_identity():
-    """Tell Windows these processes are Loom, not python.exe.
+# The reverse-DNS name the Linux desktop knows Loom by. It is the app id of
+# the Flatpak and the basename of the .desktop file, and the three have to
+# agree or the shell cannot match a running window to its launcher entry.
+# See packaging/linux/.
+DESKTOP_ID = "io.github.gwaihirf22.loom_AOE"
 
-    The taskbar groups windows and picks their icon by AppUserModelID, and
-    a script's default identity is the interpreter's - so without this the
-    taskbar shows the Python icon however thoroughly the windows set their
-    own. Harmless everywhere else: off Windows there is no windll and this
-    quietly does nothing. Call it before any window exists.
+
+def app_identity():
+    """Tell the desktop shell these processes are Loom, not python.
+
+    The same problem on both platforms, so it is answered in one place: a
+    script's window inherits the INTERPRETER's identity, and the taskbar
+    picks an icon and groups windows by that identity rather than by
+    anything the window itself sets. Without this the shell shows the
+    Python icon however thoroughly the windows set their own.
+
+    Call it before any window exists.
+
+    Windows names it an AppUserModelID; the desktop-file name is the Linux
+    equivalent, and it is what associates the window with the .desktop
+    entry that carries the icon - so in a Flatpak this is the difference
+    between Loom's logo in the taskbar and a grey placeholder. macOS needs
+    neither: a .app bundle carries its identity in Info.plist.
     """
-    if sys.platform != "win32":
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Loom")
+        except (AttributeError, OSError):
+            pass
         return
-    try:
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Loom")
-    except (AttributeError, OSError):
-        pass
+
+    if sys.platform.startswith("linux"):
+        # Imported here rather than at module scope: entry.py is imported
+        # by the coach and the readout, which have no Qt and should not
+        # start paying for it now.
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            QGuiApplication.setDesktopFileName(DESKTOP_ID)
+        except ImportError:
+            pass
 
 
 def frozen():

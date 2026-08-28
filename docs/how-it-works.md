@@ -36,7 +36,9 @@ window sits never matter — a real problem on this two-monitor setup, solved fo
 free.
 
 `capture_smoketest.py` (in `tools/`) is kept in the repo as a record: it is the
-script that returned black, and it documents *why* `mss` is not used.
+script that returned black, and it documents *why* `mss` is not used. It is
+also the only thing in the tree that imports `mss`, which is why that library
+is a development dependency and is not shipped in either package.
 
 ### Finding the numbers (`anchor.py`)
 

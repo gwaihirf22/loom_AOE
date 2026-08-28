@@ -203,6 +203,7 @@ flowchart LR
     checklist --> browser
     config --> browser
     flowlayout --> browser
+    tooltips --> browser
     overlay --> browser
     placement --> browser
     steplayout --> browser
@@ -217,6 +218,7 @@ flowchart LR
     queue --> statsview
     replay_ids --> replay
     replay --> statsview
+    tooltips --> statsview
     report --> statsview
     about --> launcher
     apm --> launcher
@@ -226,6 +228,7 @@ flowchart LR
     config --> launcher
     entry --> launcher
     flowlayout --> launcher
+    tooltips --> launcher
     hotkeys --> launcher
     overlay --> launcher
     placement --> launcher
