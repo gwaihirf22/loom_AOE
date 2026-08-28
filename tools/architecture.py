@@ -254,8 +254,17 @@ LAYOUT_DOC = paths.PROJECT_ROOT / "CLAUDE.md"
 
 
 def layout_block(markdown=None):
-    """The fenced block under CLAUDE.md's "## Layout" heading."""
+    """The fenced block under CLAUDE.md's "## Layout" heading, or None.
+
+    None means the document is not here to be read. That is not a fault:
+    CLAUDE.md is the project's working agreement and tools/release.py
+    strips it from the published snapshot, so the released tree runs this
+    suite without it. Raising there took the whole test session down with a
+    FileNotFoundError.
+    """
     if markdown is None:
+        if not LAYOUT_DOC.exists():
+            return None
         with open(LAYOUT_DOC, encoding="utf-8") as handle:
             markdown = handle.read()
     start = markdown.index("```", markdown.index("## Layout"))
@@ -278,6 +287,13 @@ def unlisted_modules(block=None, imports=None):
     """
     imports = module_imports() if imports is None else imports
     block = layout_block() if block is None else block
+    if block is None:
+        # No Layout to check against - see layout_block. Empty here would be
+        # a gate turned into decoration if anything ASSERTED on it, so the
+        # two tests that do are skipped when LAYOUT_DOC is missing rather
+        # than passing vacuously. The halves live in different files and
+        # only make sense together, which is why each says so.
+        return []
     return sorted(name for name in imports
                   if f"{name}.py" not in block and f"{name}/" not in block)
 

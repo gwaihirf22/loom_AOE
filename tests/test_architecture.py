@@ -14,9 +14,28 @@ false fact, and a module on no diagram is a part of the system the map denies
 exists.
 """
 
+import pytest
+
 from tools import architecture
 
+# Two of the checks below read CLAUDE.md, which is the project's working
+# agreement and is deliberately NOT published: tools/release.py strips it,
+# so the released snapshot runs this suite without it. unlisted_modules
+# answers "nothing unlisted" when it has no Layout to check against, and
+# these are the tests that would otherwise ASSERT on that empty answer and
+# pass for having checked nothing. A skip is honest and a passing count is
+# not - the same reasoning the offscreen font tests are written under.
+#
+# Everything else in this file supplies its own document and needs no file
+# on disk, which is a property worth keeping: it means the map's own rules
+# stay tested wherever the code goes.
+needs_layout = pytest.mark.skipif(
+    not architecture.LAYOUT_DOC.exists(),
+    reason="CLAUDE.md carries the Layout list and is not published in the "
+           "release snapshot, so there is nothing here to check against")
 
+
+@needs_layout
 def test_the_drawing_agrees_with_the_code():
     problems = architecture.complaints()
     assert problems == [], "\n".join(problems)
@@ -116,13 +135,13 @@ def test_a_neighbourhood_is_true_by_construction():
 
 
 def test_asking_about_a_module_that_does_not_exist_is_an_error():
-    import pytest
     with pytest.raises(KeyError):
         architecture.neighbourhood("no_such_module")
 
 
 # ---- CLAUDE.md's Layout list is gated too -------------------------------
 
+@needs_layout
 def test_the_layout_list_names_every_module():
     """The map and the Layout do different jobs and both must be complete.
 
