@@ -1,0 +1,37 @@
+# Queue reader scores. Written deliberately with
+# --write-baseline; --check compares against these.
+# identity 0.9478 over 35363 readings
+run_20260819_212859_stock	1.0000	4
+run_20260819_212954_unknown	0.9943	7
+run_20260819_213700_stock	1.0000	1
+run_20260819_214016_unknown	0.9352	9
+run_20260819_215449_stock	0.9875	0
+run_20260819_225212_unknown	0.8954	3
+run_20260820_004140_annehk	1.0000	3
+run_20260820_195115_unknown	0.9206	40
+run_20260821_133330_unknown	0.9771	7
+run_20260821_141248_unknown	1.0000	1
+run_20260821_154249_annehk	0.9674	4
+run_20260822_100437_annehk	1.0000	3
+run_20260822_101106_annehk	0.9637	11
+run_20260822_174930_annehk	0.8237	14
+run_20260822_175438_unknown	0.8471	12
+run_20260822_181751_unknown	0.8596	57
+run_20260822_213718_annehk	1.0000	2
+run_20260822_222153_annehk	1.0000	9
+run_20260822_223224_annehk	1.0000	2
+run_20260822_225620_annehk_eco-all-3-mods-rewatch-clean	0.8964	12
+run_20260822_231418_unknown_scouts-build-all-3-mods-two-discrepancies	1.0000	17
+run_20260822_233710_annehk_mongol-scouts-works-fine	0.9474	23
+run_20260822_235858_annehk_mongol-knight-rush-eco-boom-missed-items	0.9456	60
+run_20260823_080106_annehk_1080p-postfix-b	1.0000	1
+run_20260824_131553_stock	0.9496	20
+run_20260824_140510_unknown	0.9803	18
+run_20260824_235440_annehk 1440p-bul-man-at-arms	0.9591	176
+run_20260825_010702_unknown	0.9625	49
+run_20260825_134104_annehk_bul20popmanatarms	0.9685	19
+run_20260825_155404_stock_bul20popmanatarms	0.9743	16
+run_20260825_223807_unknown_archers19pop	1.0000	0
+run_20260825_224051_annehk	1.0000	2
+run_20260826_080120_unknown_archers19pop	0.9709	146
+run_20260826_142630_annehk	0.9770	40

@@ -19,8 +19,14 @@ def test_yellow_mask_keeps_yellow_and_drops_white():
     """The whole reason for a colour mask: the wooden bar's white highlights
     must not be read as digits, only the yellow numbers."""
     crop = np.zeros((20, 30, 3), dtype=np.uint8)
-    # A yellow blob (BGR: low blue, high green, high red).
-    crop[4:16, 4:12] = (40, 220, 250)
+    # A yellow blob (BGR: low blue, high green, high red). Blue was 40 here
+    # for years, as a stand-in for "low"; it is 4 now because that is what
+    # the game DRAWS - measured across every digit in a live frame, the blue
+    # channel is exactly 0, min median and max alike. The old value was never
+    # wrong, it was never checked, and it sat close enough to the resource
+    # bar's own brown chrome (blue 61) to make the gate between them look
+    # like a free choice. See resources.MAX_DIGIT_BLUE.
+    crop[4:16, 4:12] = (4, 220, 250)
     # A white blob right next to it.
     crop[4:16, 18:26] = (245, 245, 245)
 

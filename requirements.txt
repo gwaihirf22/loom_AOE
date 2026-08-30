@@ -1,4 +1,3 @@
-mss==10.2.0
 numpy==2.5.1
 # Headless on purpose: Loom draws with Qt and never calls a cv2 GUI
 # function (no imshow, no waitKey - checked), and the headless wheel keeps

@@ -558,6 +558,13 @@ def test_hiding_the_panel_is_the_overlays_own_key():
     assert "toggle_hidden" not in config.LAUNCHER_HOTKEY_ACTIONS
 
 
+# Combinations the operating system eats, so no capture field can ever see
+# them and no player can type one back in. Only one is known; it is a list
+# because the shape of the fault is not special to it, and a second would
+# otherwise be found the same slow way.
+UNREACHABLE_ON_WINDOWS = frozenset({"Ctrl+Shift+0"})
+
+
 def test_every_default_binding_is_usable_and_unique():
     """A default that does not parse, or that collides with another
     default, would ship as a key that silently does nothing."""
@@ -577,4 +584,83 @@ def test_the_hide_key_has_a_modifier_like_every_other_one():
 
     spec = keyspec.parse(config.DEFAULT_HOTKEYS["toggle_hidden"])
     assert spec.modifiers, "a global hotkey without a modifier is a bug"
-    assert spec.key == "0"
+
+
+def test_no_default_is_a_combination_windows_swallows():
+    """Ctrl+Shift+0 shipped as the hide key and had to be replaced.
+
+    Windows consumes it before any program sees it - measured, Shift+0
+    arrives as ParenRight and Ctrl+Shift+1 as Exclam while Ctrl+Shift+0
+    produces no key event at all - so the settings window cannot capture it
+    and a player who cleared it could not put it back. RegisterHotKey still
+    reports the combination free, which is why it worked as a binding all
+    the while: the OS hands the hotkey to whoever asked and never routes the
+    keystrokes to a focused widget.
+
+    This replaces an assertion that the hide key WAS Ctrl+Shift+0 - a test
+    pinning today's value rather than a rule, which passed right up to the
+    day the value had to change and said nothing useful when it did. The
+    rule that survives is the one about the key being reachable, so it is
+    stated over every default rather than over the one that happened to be
+    wrong.
+    """
+    from loom.hotkeys import keyspec
+
+    unreachable = [f"{action}: {binding}"
+                   for action, binding in config.DEFAULT_HOTKEYS.items()
+                   if keyspec.normalise(binding) in UNREACHABLE_ON_WINDOWS]
+
+    assert not unreachable, (
+        "a default nobody can press back in once they clear it: "
+        + ", ".join(unreachable))
+
+
+# ---- which of the three things the overlay should be --------------------
+
+
+def test_the_default_mode_is_the_build_panel():
+    assert config.overlay_mode() == config.BUILD_MODE
+
+
+def test_a_mode_round_trips():
+    config.set_overlay_mode(config.TRACKING_MODE)
+    assert config.overlay_mode() == config.TRACKING_MODE
+    config.set_overlay_mode(config.TRACKING_PANEL_MODE)
+    assert config.overlay_mode() == config.TRACKING_PANEL_MODE
+
+
+def test_an_unrecognised_mode_reads_as_the_build_panel():
+    """A file edited by hand, or written by a newer Loom, must not leave the
+    launcher holding a mode nothing knows how to start."""
+    config.save({"overlay_mode": "dashboard_deluxe"})
+    assert config.overlay_mode() == config.BUILD_MODE
+
+    config.set_overlay_mode("dashboard_deluxe")
+    assert config.overlay_mode() == config.BUILD_MODE
+
+
+def test_choosing_a_tracking_mode_does_not_forget_the_build():
+    """The reason the mode has its OWN key rather than being a sentinel
+    written into active_build.
+
+    active_build is a build FILE STEM, and tools/replay_queue.py hands it
+    straight to BuildOrder.load_by_name. A sentinel there would raise
+    FileNotFoundError in a tool that has nothing to do with this feature -
+    and the player would lose their build every time they tried the
+    tracking modes.
+    """
+    config.set_active_build("archers19pop")
+    config.set_overlay_mode(config.TRACKING_MODE)
+
+    assert config.active_build() == "archers19pop"
+
+    config.set_overlay_mode(config.BUILD_MODE)
+    assert config.active_build() == "archers19pop"
+
+
+def test_tracking_only_names_both_build_free_modes_and_no_others():
+    """One place to ask, so the two cannot drift apart in the callers that
+    only care whether there is a build."""
+    assert config.tracking_only(config.TRACKING_MODE)
+    assert config.tracking_only(config.TRACKING_PANEL_MODE)
+    assert not config.tracking_only(config.BUILD_MODE)

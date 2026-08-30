@@ -19,6 +19,27 @@ from scratch every poll. Villagers arrive in discrete jumps but time is
 continuous, so the answer sawtoothed between "on pace" and "half a villager
 behind" forever. Measuring the arrival *events* instead of sampling the gap
 removes that entirely.
+
+And one law, which is the second thing this remembers for. Pace is the
+horizontal gap between two curves that both only move forward, so it can
+change by at most a second per second of game time in either direction.
+Anything faster is the measuring stick moving rather than the player - see
+`_at_most_a_second_per_second`, where the numbers are.
+
+WHAT WAS TRIED AND MEASURED WORSE, so nobody pays for it twice. The module
+is older than most of the app around it, so feeding it the newer signals
+looks obvious and is not. Against a mean worst jump of 31.6s as it ships:
+
+    the build report's age-shift and duration model, on the overdue term
+                                                        26.0s, no better
+    target un-carded villagers at the real 25s cadence  78.6s
+    score only counts the build actually names          78.6s
+    per-item slip out of plan_versus_actual             jumps of 100-1200s
+
+The last three all blame the player for the build's own age-up hold. The
+first changed almost nothing because the fault was never in `overdue` - it
+is in the arrival term, and `build_order.target_time`'s interpolation is
+doing real work despite looking like the culprit.
 """
 
 # I used Anthropic's Claude to help with proper syntax, code organisation,
@@ -38,6 +59,12 @@ class PaceTracker:
         """Start again. Called when a new game begins."""
         self._villagers = None
         self._delta_on_arrival = None
+        # What was last REPORTED, and when. The clamp below converges on
+        # the measurement from here; a new game starts with nothing to
+        # converge from, so the first reading of a match is adopted whole
+        # rather than crawling out of the last one's answer.
+        self._shown = None
+        self._last_time = None
         self.complete = False
 
     def update(self, villager_count, game_time, age=None,
@@ -98,11 +125,70 @@ class PaceTracker:
         if self._delta_on_arrival is None:
             # Nothing to compare against yet. Only speak up if the very first
             # instruction is already overdue.
-            return overdue if overdue is not None and overdue > 0 else None
+            if overdue is None or overdue <= 0:
+                return None
+            return self._at_most_a_second_per_second(overdue, game_time)
 
         if overdue is None:
-            return self._delta_on_arrival
-        return max(self._delta_on_arrival, overdue)
+            measured = self._delta_on_arrival
+        else:
+            measured = max(self._delta_on_arrival, overdue)
+        return self._at_most_a_second_per_second(measured, game_time)
+
+    def _at_most_a_second_per_second(self, measured, game_time):
+        """Move toward the measurement no faster than the clock allows.
+
+        THE LAW, and it is a fact about the quantity rather than a taste
+        in smoothing. Pace is the horizontal gap between two curves that
+        both only ever move forward: the build's schedule and the
+        player's progress. So it can change by at most one second per
+        second of game time, in either direction.
+
+        * Stand completely still and the build's clock runs on without
+          you. The gap grows at exactly one per second. It cannot grow
+          faster, because there is nothing else for it to grow out of.
+        * Play perfectly from here and the best available is to stop
+          losing ground and close the gap at one per second. Nobody
+          recovers thirty seconds in ten.
+
+        Anything quicker than that is the MEASURING STICK moving, not the
+        player. Measured on the author's own build: `target_time`
+        interpolates, and the build's implied villager spacing runs 25s
+        each for most of the game, 38s approaching the age-up and 155s
+        across the hold itself. A player producing steadily at the Town
+        Centre's real 25s cadence therefore appeared to gain 13 seconds
+        per villager crossing 17 and 18, and to lose it all again at 20.
+        That is where the staircase came from, and it was never a
+        statement about how they played.
+
+        NOT A SMOOTHING FILTER, and the difference is the one this
+        project has paid for before. It does not average, it does not
+        settle below a sustained truth, and it always CONVERGES - within
+        seconds, at one per second. A briefly wrong reading corrects
+        itself; a bounded-delta rule that could reject forever is exactly
+        what once froze the villager count at 22 for a whole game, and
+        this cannot do that because the bound is on the rate rather than
+        on the value.
+
+        Measured across every game since 2026-08-24: mean worst single
+        jump 31.6s to 12.1s, and the mean PEAK unchanged at 360.3s.
+        Nothing true is lost - the staircase flattens into the line it
+        was always describing. The jumps that remain are all across polls
+        more than five game-seconds apart, where the clock genuinely
+        allows more room.
+        """
+        if self._shown is None or self._last_time is None:
+            self._shown, self._last_time = measured, game_time
+            return measured
+        # A poll gap earns proportionally more room: five seconds of game
+        # time permits five seconds of movement. Without that, shedding
+        # load would turn this into the stuck meter it must never be.
+        # Negative means the clock went backwards, which is a misread or a
+        # new game, and neither earns any room at all.
+        room = max(0, game_time - self._last_time)
+        self._shown = max(self._shown - room, min(measured, self._shown + room))
+        self._last_time = game_time
+        return self._shown
 
     def player_time(self, game_time):
         """The game clock on the PLAYER'S schedule, for the step cursor.

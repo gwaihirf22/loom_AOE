@@ -11,11 +11,17 @@ the table is plain data, which is exactly why it is a table.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
-from loom import entry
-from loom.launcher import (COACH_SCENARIOS, DEV_COMMANDS, MINIMUM_SIZE,
+import pytest
+
+from loom import config, entry
+from loom.hotkeys import keyspec
+from loom.launcher import (COACH_SCENARIOS, CONTROL_BUTTON_STYLE,
+                           DEV_COMMANDS, GO_BUTTON_STYLE, MINIMUM_SIZE,
                            PLACE_COMMAND, PREFERRED_SIZE, SETTINGS_TABS,
-                           WINDOW_GAP, LauncherWindow, beside,
-                           clamped_position, fitted_size, overlay_status_text)
+                           STOP_BUTTON_STYLE, WINDOW_GAP, LauncherWindow,
+                           TRACKING_FLAGS, TRACKING_ROWS, beside,
+                           clamped_position, fitted_size, overlay_argv,
+                           overlay_status_text)
 
 
 def argv_for(label, stem="scoutsrush18pop", scenario="behind"):
@@ -352,14 +358,29 @@ class FakeOutput:
         self.lines.append(line)
 
 
+class FakePicker:
+    """Enough of BuildPicker for the placement toggle to ask what it needs."""
+
+    def __init__(self, mode=config.BUILD_MODE, stem="scoutsrush18pop"):
+        self.mode = mode
+        self.stem = stem
+
+    def selected_mode(self):
+        return self.mode
+
+    def selected_stem(self):
+        return None if self.mode in config.OVERLAY_MODES else self.stem
+
+
 class FakeLauncher:
     """Enough of LauncherWindow to exercise the toggle's decisions."""
 
-    def __init__(self, dev_process=None):
+    def __init__(self, dev_process=None, mode=config.BUILD_MODE):
         self.dev_process = dev_process
         self.output = FakeOutput()
         self.ran = []
         self.place_state = None
+        self.picker = FakePicker(mode)
 
     def run_dev_command(self, prefix, build_args):
         self.ran.append(prefix)
@@ -431,3 +452,701 @@ def test_a_refused_start_does_not_claim_to_be_placing():
     launcher.place_overlay()
 
     assert launcher.place_state is False
+
+
+# ---- the control buttons never shed their stylesheet --------------------
+#
+# Setting any stylesheet on a widget moves its rendering to Qt's stylesheet
+# style; an unstyled widget draws with the platform's native one, and on
+# macOS the two disagree about a button's size. The fix was one base rule
+# on all five overlay controls that is never removed, with the coloured
+# variants CONTAINING it - so the thing to pin is that containment, and
+# that the one runtime style change (the hide button's green) never goes
+# back to a bare string. The style engine disengaging is the mechanism the
+# original bug rode in on.
+
+
+def test_the_coloured_button_styles_contain_the_base_rule():
+    assert GO_BUTTON_STYLE.startswith(CONTROL_BUTTON_STYLE)
+    assert STOP_BUTTON_STYLE.startswith(CONTROL_BUTTON_STYLE)
+
+
+class FakeButton:
+    """Records what _show_overlay_state does to a button, stylesheet
+    included - construction-time state matching the real buttons'."""
+
+    def __init__(self, style=CONTROL_BUTTON_STYLE):
+        self.style = style
+        self.enabled = True
+        self.text = ""
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+    def setText(self, text):
+        self.text = text
+
+    def setStyleSheet(self, style):
+        self.style = style
+
+
+class FakeStatus:
+    def setText(self, text):
+        self.text = text
+
+
+class FakeHotkeysBox:
+    def set_overlay_running(self, running):
+        self.overlay_running = running
+
+
+class FakeStateLauncher:
+    """Enough of LauncherWindow for _show_overlay_state to run unbound."""
+
+    def __init__(self):
+        self.start_button = FakeButton(GO_BUTTON_STYLE)
+        self.stop_button = FakeButton(STOP_BUTTON_STYLE)
+        self.place_button = FakeButton()
+        self.reset_place_button = FakeButton()
+        self.hide_button = FakeButton()
+        self.status = FakeStatus()
+        self.hotkeys_box = FakeHotkeysBox()
+        self.dev_process = None
+
+    placing_now = LauncherWindow.placing_now
+    _show_overlay_state = LauncherWindow._show_overlay_state
+
+    def buttons(self):
+        return [self.start_button, self.stop_button, self.place_button,
+                self.reset_place_button, self.hide_button]
+
+
+@pytest.mark.parametrize("running,hidden",
+                         [(False, False), (True, False), (True, True)])
+def test_every_state_leaves_every_button_on_the_stylesheet_path(
+        running, hidden):
+    launcher = FakeStateLauncher()
+
+    launcher._show_overlay_state(running, hidden)
+
+    for button in launcher.buttons():
+        assert button.style.startswith(CONTROL_BUTTON_STYLE), (
+            "a button shed its base style, so its rendering engine - and "
+            "its size metrics - just changed under the layout")
+
+
+def test_a_hidden_overlay_greens_the_hide_button_and_showing_ungreens_it():
+    launcher = FakeStateLauncher()
+
+    launcher._show_overlay_state(running=True, hidden=True)
+    assert launcher.hide_button.style == GO_BUTTON_STYLE
+
+    launcher._show_overlay_state(running=True, hidden=False)
+    assert launcher.hide_button.style == CONTROL_BUTTON_STYLE
+
+
+# ---- the two build-free modes ------------------------------------------
+#
+# Loom can run with no build order at all: every reader, every production
+# alert and a statistics file, with either the alert bands alone or a live
+# dashboard. The argv is module data for the same reason DEV_COMMANDS is -
+# it can be checked here with no Qt and no launcher window.
+
+
+def test_a_build_mode_still_runs_a_build():
+    assert overlay_argv(config.BUILD_MODE, "scoutsrush18pop") == [
+        "loom_overlay.py", "--build", "scoutsrush18pop"]
+
+
+def test_each_tracking_mode_asks_for_its_own_panel():
+    assert overlay_argv(config.TRACKING_MODE, "ignored") == [
+        "loom_overlay.py", "--no-build", "bands"]
+    assert overlay_argv(config.TRACKING_PANEL_MODE, "ignored") == [
+        "loom_overlay.py", "--no-build", "panel"]
+
+
+def test_a_tracking_mode_never_carries_a_build():
+    """The whole reason the wire uses a flag rather than a sentinel stem.
+
+    A stem that is not a stem would be a token loom_overlay, the coach,
+    replay_queue and a hand-typed command line could all be handed, and
+    every one of them calls BuildOrder.load_by_name. A flag cannot be
+    mistaken for a build by anything.
+    """
+    for mode in TRACKING_FLAGS:
+        assert "--build" not in overlay_argv(mode, "scoutsrush18pop")
+
+
+def test_placement_places_the_panel_the_mode_actually_draws():
+    """Placing a tracking mode against the build panel would be positioning
+    a window that never appears."""
+    for mode in TRACKING_FLAGS:
+        argv = overlay_argv(mode, "scoutsrush18pop", place=True)
+        assert "--place" in argv
+        assert "--no-build" in argv
+        assert "--build" not in argv
+
+    build_place = overlay_argv(config.BUILD_MODE, "scoutsrush18pop",
+                               place=True)
+    assert build_place == ["loom_overlay.py", "--place",
+                           "--build", "scoutsrush18pop"]
+
+
+def test_every_pinned_row_is_a_real_mode_with_a_flag():
+    """A row whose mode config does not recognise would be selectable,
+    persisted, and then silently read back as "build"."""
+    for mode, label in TRACKING_ROWS:
+        assert mode in config.OVERLAY_MODES
+        assert mode in TRACKING_FLAGS
+        assert "NO BUILD ORDER" in label
+
+
+def test_the_pinned_rows_lead_with_the_quieter_one():
+    """Order is not cosmetic: the first row is what an accidental Enter or
+    a fallback would land on, so the one that draws LESS goes first."""
+    assert TRACKING_ROWS[0][0] == config.TRACKING_MODE
+
+
+def _relative_luminance(colour):
+    """WCAG relative luminance, so contrast can be measured rather than
+    judged by eye on one person's monitor."""
+    def channel(value):
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else \
+            ((value + 0.055) / 1.055) ** 2.4
+    return (0.2126 * channel(colour.red())
+            + 0.7152 * channel(colour.green())
+            + 0.0722 * channel(colour.blue()))
+
+
+def _contrast(one, two):
+    first, second = _relative_luminance(one), _relative_luminance(two)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_the_statistics_button_stays_readable_however_violet_gets_retuned():
+    """The RULE, not today's hex code.
+
+    The record's chart colour is tuned to read as a thin line on a dark
+    ground, which is a different job from sitting behind white text -
+    measured, white on it is 2.58:1, well under the 4.5:1 a person can
+    comfortably read. The button darkens it, and this is what stops a
+    later retune of RECORD_COLOR from quietly producing an unreadable
+    button: it asks whether the text can be READ, not what colour it is.
+    """
+    from PyQt6.QtGui import QColor
+    from loom.launcher import STATS_BUTTON_DARKEN, STATS_BUTTON_HOVER_DARKEN
+    from loom.statsview import RECORD_COLOR
+
+    white = QColor(255, 255, 255)
+    for darken in (STATS_BUTTON_DARKEN, STATS_BUTTON_HOVER_DARKEN):
+        fill = RECORD_COLOR.darker(darken)
+        assert _contrast(fill, white) >= 4.5, (
+            f"white on {fill.name()} is unreadable at darker({darken})")
+    # And it must still BE the record's colour, not a violet of its own:
+    # the same hue, only darker.
+    assert abs(RECORD_COLOR.hue()
+               - RECORD_COLOR.darker(STATS_BUTTON_DARKEN).hue()) <= 2
+
+
+# ---- setting a hotkey by pressing it -----------------------------------
+#
+# The field used to be typed into, and saved on every keystroke - so
+# "Ctrl+Shift+W" wrote settings.json twelve times, eleven of them through
+# invalid intermediate states, each one re-running the launcher's global
+# unregister/register cycle. Now the player presses the combination.
+#
+# HotkeysBox had no coverage at all before this: one test asserted every
+# action has a label and never built the widget. These are the first that
+# construct it.
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+
+
+@pytest.fixture(scope="module")
+def app():
+    from PyQt6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def press(field, key, modifiers=None):
+    """One key press into a capture field, as Qt would deliver it."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent as _QEvent
+    if modifiers is None:
+        modifiers = Qt.KeyboardModifier.NoModifier
+    field.keyPressEvent(
+        QKeyEvent(_QEvent.Type.KeyPress, key.value, modifiers))
+
+
+def box_and_field(action="next_step"):
+    from loom.launcher import HotkeysBox
+    box = HotkeysBox()
+    field = box.fields[action]
+    field._capturing = True          # what focusInEvent does
+    field._settled = field.text()
+    return box, field
+
+
+def test_a_captured_combination_is_saved_once(app):
+    """Not once per key. The old field wrote on textChanged, so a binding
+    reached disk through every partial spelling on the way."""
+    from PyQt6.QtCore import Qt
+    writes = []
+    box, field = box_and_field()
+    real = config.set_hotkey
+    try:
+        config.set_hotkey = lambda a, b: (writes.append((a, b)), real(a, b))[1]
+        press(field, Qt.Key.Key_Control, Qt.KeyboardModifier.ControlModifier)
+        press(field, Qt.Key.Key_P,
+              Qt.KeyboardModifier.ControlModifier
+              | Qt.KeyboardModifier.ShiftModifier)
+    finally:
+        config.set_hotkey = real
+
+    assert writes == [("next_step", "Ctrl+Shift+P")]
+    assert config.hotkeys()["next_step"] == "Ctrl+Shift+P"
+
+
+def test_holding_modifiers_shows_them_gathering(app):
+    """The must-have-a-modifier rule becomes a state you watch assemble
+    rather than an error you read afterwards."""
+    from PyQt6.QtCore import Qt
+    _box, field = box_and_field()
+
+    press(field, Qt.Key.Key_Shift,
+          Qt.KeyboardModifier.ControlModifier
+          | Qt.KeyboardModifier.ShiftModifier)
+
+    assert field.text() == "Ctrl+Shift+..."
+
+
+def test_escape_leaves_the_binding_alone(app):
+    """Bare Escape can never be a binding - keyspec refuses a modifier-less
+    one - so it is free to mean cancel."""
+    from PyQt6.QtCore import Qt
+    _box, field = box_and_field()
+    before = field._settled
+
+    press(field, Qt.Key.Key_Escape)
+
+    assert field.text() == before
+    assert config.hotkeys()["next_step"] == before
+
+
+def test_delete_clears_it_to_off(app):
+    """Every binding must be emptyable - the design rule - and with typing
+    that was obvious. With capture it needs a key of its own."""
+    from PyQt6.QtCore import Qt
+    _box, field = box_and_field()
+
+    press(field, Qt.Key.Key_Delete)
+
+    assert field.text() == ""
+    assert config.hotkeys()["next_step"] == ""
+
+
+def test_keys_already_owned_by_another_action_are_refused(app):
+    """Detected before, warned about before - refused now. Two actions on
+    one combination means whichever registers first wins and the other
+    silently never fires."""
+    from PyQt6.QtCore import Qt
+    box, field = box_and_field("next_step")
+    taken = box.fields["previous_step"].text()
+    assert taken, "expected previous_step to ship with a binding"
+    spec = keyspec.parse(taken)
+
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent as _QEvent
+    modifiers = Qt.KeyboardModifier.NoModifier
+    for name in spec.modifiers:
+        modifiers |= {"Ctrl": Qt.KeyboardModifier.ControlModifier,
+                      "Shift": Qt.KeyboardModifier.ShiftModifier,
+                      "Alt": Qt.KeyboardModifier.AltModifier,
+                      "Win": Qt.KeyboardModifier.MetaModifier}[name]
+    code = getattr(Qt.Key, f"Key_{spec.key}")
+    field.keyPressEvent(QKeyEvent(_QEvent.Type.KeyPress, code.value, modifiers))
+
+    assert config.hotkeys()["next_step"] != taken, "the clash was saved"
+    assert "Previous step" in box.warning.text()
+
+
+def test_a_key_the_grammar_has_no_name_for_says_so(app):
+    """CapsLock has no entry in either OS backend's table, so a binding
+    naming it would save and then never fire."""
+    from PyQt6.QtCore import Qt
+    box, field = box_and_field()
+
+    press(field, Qt.Key.Key_CapsLock, Qt.KeyboardModifier.ControlModifier)
+
+    assert "cannot be bound" in box.warning.text()
+    assert config.hotkeys()["next_step"] == field._settled
+
+
+def test_a_bare_key_is_refused_with_the_grammars_own_reason(app):
+    """The message explains what binding it would cost the player in-game,
+    which is worth showing rather than replacing."""
+    from PyQt6.QtCore import Qt
+    box, field = box_and_field()
+
+    press(field, Qt.Key.Key_J)
+
+    assert "no modifier" in box.warning.text()
+    assert config.hotkeys()["next_step"] == field._settled
+
+
+def test_tab_is_captured_rather_than_moving_focus(app):
+    """Qt spends Tab on focus navigation before keyPressEvent runs, and Tab
+    is in keyspec.KEYS - so without the event() override it is a binding the
+    grammar accepts and the window cannot capture."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent as _QEvent
+    _box, field = box_and_field()
+    modifiers = (Qt.KeyboardModifier.ControlModifier
+                 | Qt.KeyboardModifier.ShiftModifier)
+    # Key_Backtab, not Key_Tab, and that is the whole point of the case.
+    # Shift renames the key: a real Ctrl+Shift+Tab arrives as Backtab, so a
+    # test pressing Key_Tab with Shift held was checking a press the game
+    # can never produce - and passed all the while the real one was refused.
+    event = QKeyEvent(_QEvent.Type.KeyPress, Qt.Key.Key_Backtab.value,
+                      modifiers)
+
+    assert field.event(event) is True, "Tab was not taken before focus"
+    assert config.hotkeys()["next_step"] == "Ctrl+Shift+Tab"
+
+
+def test_shift_does_not_stop_a_key_being_captured(app):
+    """The bug the shifted row exists for, at the widget rather than in the
+    translation: Qt reports the character a key PRODUCES, so Ctrl+Shift+9
+    arrives as Key_ParenLeft and was declined.
+    """
+    from PyQt6.QtCore import Qt
+    _box, field = box_and_field()
+    modifiers = (Qt.KeyboardModifier.ControlModifier
+                 | Qt.KeyboardModifier.ShiftModifier)
+
+    press(field, Qt.Key.Key_ParenLeft, modifiers)
+
+    assert config.hotkeys()["next_step"] == "Ctrl+Shift+9"
+
+
+def test_the_shipped_default_can_be_pressed_back_into_its_own_field(app):
+    """The hide key, cleared and put back - the thing that could not be done,
+    and the reason the default is Ctrl+Shift+Minus rather than Ctrl+Shift+0.
+    Windows consumes Ctrl+Shift+0 entirely; the replacement is a shifted key
+    too, so it needs the row this fix added.
+
+    Read from DEFAULT_HOTKEYS rather than written out, so it follows the
+    default if that moves again. It goes in ITS OWN field on purpose: pressed
+    into any other, the conflict rule refuses it and rightly so, which is a
+    second and honest reason the same press can fail.
+    """
+    from PyQt6.QtCore import Qt
+    from tests.test_qtkeys import SHIFT_PRESS
+
+    box, field = box_and_field("toggle_hidden")
+    binding = config.DEFAULT_HOTKEYS["toggle_hidden"]
+    spec = keyspec.parse(binding)
+    assert "Shift" in spec.modifiers and spec.key in SHIFT_PRESS, (
+        f"{binding} is no longer a key Shift renames, so this test is"
+        " measuring nothing - point it at whatever the default became")
+    modifiers = (Qt.KeyboardModifier.ControlModifier
+                 | Qt.KeyboardModifier.ShiftModifier)
+    config.set_hotkey("toggle_hidden", "")           # cleared, as the player did
+    field._settled = ""
+
+    press(field, SHIFT_PRESS[spec.key][0], modifiers)
+
+    assert config.hotkeys()["toggle_hidden"] == binding
+    assert not box.warning.text(), box.warning.text()
+
+
+def test_the_shifted_press_is_saved_once_not_declined_then_saved(app):
+    """A refusal writes nothing and leaves the field listening, so a press
+    that is quietly declined looks identical to one that has not landed yet.
+    Checking the warning stays empty is what tells the two apart.
+
+    Semicolon rather than Minus, and the assertion below says why: a press
+    that clashes with another action's binding is refused for a completely
+    good reason, and a test using one would go red the day a default moved
+    while reporting a fault in the shifted row. This one caught exactly that
+    when toggle_hidden took Ctrl+Shift+Minus.
+    """
+    from PyQt6.QtCore import Qt
+    box, field = box_and_field()
+    modifiers = (Qt.KeyboardModifier.ControlModifier
+                 | Qt.KeyboardModifier.ShiftModifier)
+    assert "Ctrl+Shift+Semicolon" not in config.DEFAULT_HOTKEYS.values(), (
+        "this test needs a combination no other action owns, or the refusal"
+        " it measures is the conflict rule doing its job")
+
+    press(field, Qt.Key.Key_Colon, modifiers)
+
+    assert config.hotkeys()["next_step"] == "Ctrl+Shift+Semicolon"
+    assert not box.warning.text(), box.warning.text()
+
+
+def test_the_native_key_code_reaches_the_translation(app):
+    """The Windows half of the wiring, which every other test here misses.
+
+    QKeyEvent's short constructor leaves nativeVirtualKey at 0, so those
+    presses exercise the US shifted row and never the native table - the
+    exact shape of gap that lets a parameter be dropped from a call and
+    nothing go red. Here the event carries a virtual key that DISAGREES
+    with the Qt key, so only the native path can produce the answer.
+    """
+    import sys
+
+    from PyQt6.QtCore import Qt, QEvent as _QEvent
+    from PyQt6.QtGui import QKeyEvent
+    from loom.hotkeys import qtkeys
+
+    if not qtkeys.native_names():
+        pytest.skip("no native key table off Windows - by design, so that an"
+                    " X keysym is never read as a virtual key")
+
+    _box, field = box_and_field()
+    modifiers = (Qt.KeyboardModifier.ControlModifier
+                 | Qt.KeyboardModifier.ShiftModifier)
+    # Qt says ParenLeft, which the US row reads as "9"; the native code says
+    # the 8 key. A German keyboard really does deliver this pair.
+    event = QKeyEvent(_QEvent.Type.KeyPress, Qt.Key.Key_ParenLeft.value,
+                      modifiers, 0, 0x38, 0, "(", False, 1)
+
+    field.keyPressEvent(event)
+
+    assert config.hotkeys()["next_step"] == "Ctrl+Shift+8", (
+        "the native virtual key never reached qtkeys")
+
+
+# ---- the way back from an unbind ---------------------------------------
+
+def _hotkeys_box(app, monkeypatch, tmp_path):
+    """A settings box over a throwaway config."""
+    from loom import config, paths
+    monkeypatch.setattr(paths, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json",
+                        raising=False)
+    from loom.launcher import HotkeysBox
+    return HotkeysBox()
+
+
+def test_a_cleared_binding_can_be_restored_without_pressing_it(app, monkeypatch,
+                                                               tmp_path):
+    """The fault this exists for, and it was measured rather than imagined.
+
+    Ctrl+Shift+0 shipped as a default, registered perfectly, and produced
+    NO Qt key event at all when typed - so a player who cleared it could
+    never press it back in, however correct every line of the capture
+    path was. Any key the operating system swallows has that shape, Loom
+    cannot detect it, and an unbind was one-way whenever it happened.
+
+    So this path must never touch the capture field.
+    """
+    from loom import config
+    box = _hotkeys_box(app, monkeypatch, tmp_path)
+    action = "previous_step"
+    default = config.DEFAULT_HOTKEYS[action]
+
+    box._captured(action, "")
+    assert box.fields[action].text() == "", "the binding was not given back"
+    assert box.resets[action].isVisibleTo(box), "no way back was offered"
+
+    box.resets[action].click()
+    assert box.fields[action].text() == default
+    assert config.hotkeys()[action] == default, "restored on screen only"
+
+
+def test_no_way_back_is_offered_where_there_is_nothing_to_go_back_to(
+        app, monkeypatch, tmp_path):
+    """A control that would do nothing is one worth reading and then not
+    pressing."""
+    from loom import config
+    box = _hotkeys_box(app, monkeypatch, tmp_path)
+    assert not any(button.isVisibleTo(box)
+                   for button in box.resets.values()), \
+        "a fresh config is all defaults and needs no restoring"
+
+    box._captured("next_step", "Ctrl+Shift+K")
+    assert box.resets["next_step"].isVisibleTo(box)
+    assert not box.resets["previous_step"].isVisibleTo(box), \
+        "an untouched row grew a button"
+
+
+def test_restoring_a_default_obeys_the_same_clash_rule_as_a_keypress(
+        app, monkeypatch, tmp_path):
+    """One question, one place. A default can collide with a key the
+    player has since moved onto that combination, and refusing it with
+    the message a keypress gets beats a second copy of the rule."""
+    from loom import config
+    box = _hotkeys_box(app, monkeypatch, tmp_path)
+    taken = config.DEFAULT_HOTKEYS["previous_step"]
+
+    box._captured("previous_step", "")
+    box._captured("toggle_follow", taken)
+    assert box.fields["toggle_follow"].text() == taken
+
+    box.resets["previous_step"].click()
+    assert box.fields["previous_step"].text() == "", \
+        "a restore walked over another action's keys"
+    assert "already on those keys" in box.warning.text()
+
+
+def test_every_action_has_a_default_to_restore():
+    """Walked rather than listed: an action added to HOTKEY_ACTIONS with
+    no default would raise a KeyError the first time somebody pressed its
+    restore button, which is a poor place to find out."""
+    from loom import config
+    missing = [a for a in config.HOTKEY_ACTIONS
+               if a not in config.DEFAULT_HOTKEYS]
+    assert missing == [], f"no shipped default for {missing}"
+
+
+def test_a_findings_list_does_not_open_with_qt_default_spacing():
+    """Issue #11: excess whitespace on the import pop-ups.
+
+    Two Qt defaults stacked. The list took a top margin of its own under
+    the caller's `<br>`, and the default bullet indent pushed the text so
+    far right that the dialog sized itself around it.
+    """
+    from loom.launcher import _as_list, LIST_STYLE
+
+    class Finding:
+        message = "no step has a time"
+
+    html = _as_list([Finding()])
+    assert html.startswith(LIST_STYLE), "the list opened unstyled"
+    assert "margin-top: 0" in html
+    assert html.endswith("</ul>")
+    # The indent is deliberately NOT touched - zeroing it takes the bullet
+    # markers with it. See LIST_STYLE for the measurements.
+    assert "-qt-list-indent" not in html
+
+
+def test_no_import_message_puts_two_breaks_straight_before_a_list():
+    """The doubled gap was half the report, and it lived at the call
+    sites rather than in the helper - so the helper alone cannot hold the
+    rule. Read out of the source, which is where it can actually drift."""
+    import inspect
+    from loom import launcher
+
+    source = inspect.getsource(launcher.BuildPicker._import)
+    for line in source.splitlines():
+        if "_as_list(" in line:
+            continue
+        assert not line.rstrip().endswith('<br><br>"') or "b>" in line, (
+            f"a doubled break sits above a findings list: {line.strip()}")
+
+
+def test_the_findings_list_actually_indents_less_than_a_plain_one(app):
+    """The test my first attempt needed and did not have.
+
+    I wrote `-qt-list-indent: 1` believing it meant "one small step". It
+    is Qt's DEFAULT, so the style was a no-op on exactly the half of the
+    report it was written for, and every string assertion still passed
+    because the property was present. Asking whether the property is
+    there is not asking whether it did anything.
+
+    So this RENDERS both and compares. Relative, never absolute: the
+    offscreen platform's font metrics are its own, but whether Qt honours
+    the property is not a font question, and the comparison holds under
+    any font database.
+    """
+    from PyQt6.QtGui import QTextDocument, QImage, QPainter, QColor
+    from loom.launcher import LIST_STYLE
+
+    items = "<li>no step has a time</li><li>two icons are missing</li>"
+    width = 560
+
+    def leftmost_ink(open_tag):
+        doc = QTextDocument()
+        doc.setHtml("Worth knowing first:<br>" + open_tag + items + "</ul>")
+        doc.setTextWidth(width)
+        height = int(doc.size().height()) + 4
+        image = QImage(width, height, QImage.Format.Format_RGB32)
+        image.fill(QColor("white"))
+        painter = QPainter(image)
+        doc.drawContents(painter)
+        painter.end()
+        found = width
+        for y in range(26, height):          # below the intro line
+            for x in range(width):
+                if image.pixelColor(x, y).lightness() < 160:
+                    found = min(found, x)
+                    break
+        return found, height
+
+    plain, plain_height = leftmost_ink("<ul>")
+    styled, styled_height = leftmost_ink(LIST_STYLE)
+
+    assert styled_height < plain_height, "the margins were not closed"
+    # And the markers SURVIVE. Zeroing the indent closed the gutter and
+    # deleted the bullets with it, which reads as a paragraph - the exact
+    # thing _as_list exists to prevent. Equal indent means they are there.
+    assert styled == plain, (
+        f"the bullets moved ({plain}px to {styled}px), which is how they"
+        f" get dropped - see LIST_STYLE")
+
+
+# ---- the bindings are the overlay's while it holds them -----------------
+
+def test_the_hotkeys_lock_while_the_overlay_runs(app):
+    """Editing them mid-run gives half-applied results, because they ARE
+    half-applied: the overlay reads its keys once at startup while the
+    launcher re-registers its own immediately. The box has always said so
+    in grey text; locking is that note enforced."""
+    from loom.launcher import HotkeysBox, HOTKEY_HINT, HOTKEY_LOCKED
+    box = HotkeysBox()
+
+    live = [box.enabled, box.hold, *box.fields.values(), *box.resets.values()]
+    assert all(w.isEnabled() for w in live)
+    assert box.hint.text() == HOTKEY_HINT
+
+    box.set_overlay_running(True)
+    assert not any(w.isEnabled() for w in live), "something stayed editable"
+    assert box.hint.text() == HOTKEY_LOCKED
+    assert "Stop the overlay" in box.hint.text()
+
+    box.set_overlay_running(False)
+    assert all(w.isEnabled() for w in live), "the lock did not come off"
+    assert box.hint.text() == HOTKEY_HINT
+
+
+def test_locking_ends_a_capture_rather_than_stranding_it(app):
+    """The bug the lock would otherwise introduce.
+
+    A disabled widget gets no focus-out, so a field armed at the moment
+    the overlay starts would sit in capture forever - and `capture_ended`
+    would never fire, so the launcher would never take back the global
+    registration it handed over when capture began. One key silently dead
+    for the rest of the session.
+    """
+    from loom.launcher import HotkeysBox
+    box = HotkeysBox()
+    field = box.fields["next_step"]
+    ended = []
+    field.capture_ended.connect(lambda: ended.append(True))
+
+    field._capturing = True
+    box.set_overlay_running(True)
+
+    assert not field._capturing, "the field was stranded in capture"
+    assert ended, "the launcher was never told to take its hotkey back"
+
+
+def test_a_cancelled_capture_keeps_what_was_already_settled(app):
+    """Same landing as Esc. A capture interrupted by something else is
+    not an edit the player made."""
+    from loom.launcher import HotkeysBox
+    box = HotkeysBox()
+    field = box.fields["next_step"]
+    was = field.text()
+    field._capturing = True
+    field.cancel_capture()
+    assert field.text() == was

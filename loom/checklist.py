@@ -41,7 +41,7 @@ already scrolled past.
 
 import re
 
-from . import build_order, glyphs
+from . import build_order, glyphs, queue
 
 # Castle Age, numbered as the build format numbers ages. Not imported from
 # loom.age to keep this module free of cv2 - the number is the format's.
@@ -140,6 +140,38 @@ IGNORED_SUBJECTS = {"palisade_wall", "stone_wall", "fortified_wall", "wall",
 # Market with 2 Villager, Blacksmith with 1" could never complete even
 # with the market and blacksmith both read.
 AGE_SUBJECTS = {"feudal_age", "castle_age", "imperial_age"}
+
+# Buildings that do another building's job, so a build order naming the
+# ordinary one is satisfied by the substitute. Written by hand because
+# nothing else knows: the community dataset carries `Mule Cart` but has
+# neither `Settlement` nor `Folwark` in its object list, and it predates the
+# Inca rework entirely.
+#
+#   SETTLEMENT   Inca, Mapuche, Muisca, Tupi. A South American regional
+#                building: a universal dropsite for food, wood, gold and
+#                stone that also supports population. For the INCA it
+#                REPLACES Lumber Camps, Mining Camps and Mills outright -
+#                they cannot build any of the three - while for the other
+#                three it complements them.
+#   MULE CART    Armenians, Georgians. Replaces the Lumber Camp and Mining
+#                Camp only: those civilisations still build Mills and
+#                Farms, so a Mule Cart must NOT credit a Mill. The
+#                asymmetry against the Settlement is the whole reason
+#                these are three rows and not one set.
+#   FOLWARK      Poles. Replaces the Mill.
+#
+# Every one of these is civilisation-EXCLUSIVE, which is what makes an
+# unconditional table safe. Loom reads pixels and cannot see who is
+# playing; it does not need to, because nobody else can build these.
+#
+# All eleven shipped builds name a lumber camp and a mill, and six name a
+# mining camp, so before this every one of those items was unfinishable for
+# these civilisations.
+STANDS_IN_FOR = {
+    "settlement": {"lumber_camp", "mining_camp", "mill", "house"},
+    "mule_cart": {"lumber_camp", "mining_camp"},
+    "folwark": {"mill"},
+}
 
 # The same ages as the numbers the build format uses (Step.age), so a
 # card's own age can be compared against the age an item asks for. The
@@ -328,6 +360,17 @@ def _same_subject(subject, wanted):
     for name in wanted:
         if name.replace("_", "") == flat:
             return name
+    # An upgrade technology answers to the unit's own name here, and ONLY
+    # here. The queue reader had to hold "crossbowman the research" and
+    # "crossbowman the unit" apart, because they are two different pictures
+    # and calling one by the other's name is a confident wrong reading. A
+    # build order asking for Crossbowman is not asking that question: it
+    # wants to know whether that step happened, and the research happening
+    # is exactly what it meant. Two questions of one reading, two answers -
+    # and the direction matters, because a step named for the upgrade must
+    # not be ticked by merely training the unit.
+    if subject.endswith(queue.UPGRADE_SUFFIX):
+        return _same_subject(subject[:-len(queue.UPGRADE_SUFFIX)], wanted)
     return None
 
 
@@ -436,6 +479,9 @@ class Checklist:
                        for name_, count in wanted.items()):
                     self._state[key] = OBSERVED
             return
+        if subject in STANDS_IN_FOR:
+            self._credit_stand_in(subject, current_index)
+            return
         windowed = subject in COMMODITY_SUBJECTS
         for step_index, item_index, wanted in self._watchable:
             # Word boundaries are the one thing the two sides of this
@@ -469,6 +515,50 @@ class Checklist:
                    for name, count in wanted.items()):
                 self._state[key] = OBSERVED
             return
+
+    def _credit_stand_in(self, subject, current_index):
+        """Credit a building that does several buildings' jobs at once.
+
+        Some civilisations do not build the buildings a build order names.
+        An Inca player has no Lumber Camp, Mining Camp or Mill at all - a
+        SETTLEMENT is all three, and supports population besides. So every
+        one of those items in every shipped build sat unfinishable, falling
+        back to ASSUMED and drawing a faded hollow bullet where the player
+        had done the work and Loom had READ THE LINE saying so.
+
+        ONE ITEM PER SUBJECT, which is what lets the author's two rulings
+        hold together. The nearest item, not the first waiting one, exactly
+        as a house is credited. And a Settlement ticks a dropsite AND a
+        house, because it genuinely gave the player both - that is not one
+        sighting paying twice for the same instruction, which is what the
+        existing rule forbids and which this still forbids: one Settlement
+        can never tick two Houses.
+
+        No civilisation check, and none is possible - Loom reads pixels and
+        cannot see who is playing. It is safe anyway, because every
+        stand-in is civilisation-EXCLUSIVE: a player who is not South
+        American can never build a Settlement, so accepting one as a Lumber
+        Camp cannot fire wrongly for anybody else.
+        """
+        owed = set(STANDS_IN_FOR[subject])
+        for step_index, item_index, wanted in self._watchable:
+            if not owed:
+                return
+            if current_index is not None and not (
+                    current_index <= step_index
+                    <= current_index + COMMODITY_WINDOW):
+                continue
+            key = (step_index, item_index)
+            seen = self._seen.setdefault(key, {})
+            for stood_for in sorted(owed):
+                name_ = _same_subject(stood_for, wanted)
+                if name_ is None or seen.get(name_, 0) >= wanted[name_]:
+                    continue
+                seen[name_] = seen.get(name_, 0) + 1
+                owed.discard(stood_for)
+            if all(seen.get(name, 0) >= count
+                   for name, count in wanted.items()):
+                self._state[key] = OBSERVED
 
     def _assume_through(self, current_index):
         """Note how far the build has moved. Everything before it is assumed.

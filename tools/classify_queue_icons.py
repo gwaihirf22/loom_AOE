@@ -57,6 +57,7 @@ and one row of this file away from being right.
 import re
 
 from loom import paths, queue
+from tools import build_queue_templates
 
 KINDS_PATH = paths.TEMPLATES_DIR / "queue" / "KINDS.tsv"
 
@@ -102,10 +103,16 @@ def template_identities():
 def curated_units():
     """The units named in build_queue_templates.SOURCES.
 
-    Read out of the source text rather than imported, because that module
-    reaches for the game's own texture folder at import time and only
-    finds it on the machine the templates were cut on. The section is
-    marked with a "# units." comment and everything under it is one.
+    Read out of the source text rather than imported, because the answer is
+    not in the data: SOURCES maps a name to its art and says nothing about
+    kind. Only the "# units." comment marks where the units start, and
+    everything under it is one - so the comment IS the record, and parsing
+    it is reading the record rather than guessing.
+
+    (It used to be read this way for a different reason - that importing the
+    builder reached for the game's texture folder at import time. That is no
+    longer true; the lookup is lazy now. Left as a note because a stale
+    reason in a docstring is how a working parser gets "simplified" away.)
     """
     source = (paths.PROJECT_ROOT / "tools"
               / "build_queue_templates.py").read_text(encoding="utf-8")
@@ -137,18 +144,41 @@ def read_kinds():
     return known
 
 
+def split_off_the_tech_folder(identities):
+    """Identities build_queue_templates split out of a unit's name.
+
+    NOT inferred from the spelling. build_queue_templates writes that suffix
+    only when a picture came out of the game's own tech/ folder and collided
+    with an identity that was already something else - so the suffix is a
+    RECORD of where the art came from, and reading it back is reading the
+    builder's answer rather than guessing at a word. The game's tech folder
+    holds technologies and nothing else, which is what makes the answer
+    sound.
+
+    That distinction matters because this module's whole argument is that a
+    slug does not determine a kind. It still does not. What determines this
+    one is provenance.
+    """
+    return {identity for identity in identities
+            if identity.endswith(build_queue_templates.UPGRADE_SUFFIX)
+            and identity[:-len(build_queue_templates.UPGRADE_SUFFIX)]
+            in identities}
+
+
 def classify():
     """{identity: kind} for every template, best knowledge first."""
     known = read_kinds()
     units = curated_units()
+    identities = template_identities()
+    upgrades = split_off_the_tech_folder(identities)
     kinds = dict(FEED_ONLY)
-    for identity in template_identities():
+    for identity in identities:
         # Anything a person already recorded wins: this file is meant to
         # be corrected by eye, and a rerun must never undo that.
         recorded = known.get(identity)
         if recorded and recorded != UNKNOWN:
             kinds[identity] = recorded
-        elif identity in queue.TECH_IDENTITIES:
+        elif identity in queue.TECH_IDENTITIES or identity in upgrades:
             kinds[identity] = TECHNOLOGY
         elif identity in units:
             kinds[identity] = UNIT

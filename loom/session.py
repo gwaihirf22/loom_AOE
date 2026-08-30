@@ -32,6 +32,16 @@ GAME_RESUMED = "game_resumed"     # same match as before: pick up where it is
 # what I can observe keeps me from implying knowledge I do not have.
 TRACKING_LOST = "tracking_lost"
 
+# How far the clock must go BACKWARDS before it means a new match rather
+# than a reading that wobbled.
+#
+# Imported rather than written again, and that is the point: loom/events.py
+# measured it across 252 recorded games - real seams jump back hundreds of
+# seconds (529 to 7) while jitter is one to three - and two modules asking
+# the same question with two numbers is how they drift apart. One of them
+# had no number at all, which is the same fault at its limit.
+from .events import SEAM_TOLERANCE_SECONDS  # noqa: E402
+
 
 class GameSession:
     """Tracks whether a game is running, and reports when that changes.
@@ -73,8 +83,16 @@ class GameSession:
         else:
             # Already tracking. A clock that jumps backwards means a new game
             # began without the HUD ever vanishing for long enough to notice.
+            #
+            # FAR ENOUGH backwards. Any step at all used to count, and a
+            # single wobbly reading therefore started a new game and wrote a
+            # permanent stats file - which is how a ten-minute match came
+            # back as seventy-five files (issue #12). The reader is good
+            # enough now that it rarely wobbles; that makes this guard cheap
+            # rather than unnecessary.
             event = None
-            if self._last_game_time is not None and game_time < self._last_game_time:
+            if (self._last_game_time is not None
+                    and self._last_game_time - game_time > SEAM_TOLERANCE_SECONDS):
                 event = GAME_STARTED
 
         self.state = IN_GAME

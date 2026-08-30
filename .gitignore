@@ -37,3 +37,12 @@ dist/
 build/
 *.spec.bak
 BUILD_COMMIT
+
+# Flatpak build output. flatpak-builder rebuilds all of this from the
+# manifest, and the bundle is a release artifact rather than source - the
+# same rule dist/ follows above. Named here because these appear in the
+# REPO ROOT, which is exactly where a scratch file got published from once.
+build-dir/
+.flatpak-builder/
+repo/
+*.flatpak

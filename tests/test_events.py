@@ -236,3 +236,59 @@ def test_an_order_that_never_finished_is_not_given_a_duration():
     seen = events.with_record({}, FakeTruth(builds={"castle": [(400, 0, 0)]}))
     assert events.build_durations(seen) == []
 
+
+
+# ---- which record of the queue the page is built from -------------------
+
+def test_an_old_file_still_gets_its_queued_list():
+    """A game recorded before episodes existed has only `queued`, and is
+    not improved by being shown less than it actually recorded."""
+    game = {"queued": {"knight": 300, "archer": 120}}
+    assert events.queue_sightings(game) == [(120, "archer"), (300, "knight")]
+
+
+def test_episodes_win_where_they_exist():
+    """The whole point of the vote. `queued` believed one glance, which put
+    45 subjects on a real Post-game page that the vote reduced to 20 - a
+    fleet of dragon ships and fireships in a Fast Castle."""
+    game = {
+        "queued": {"knight": 300, "dragon_ship": 118, "fireship": 402},
+        "episodes": [
+            {"subject": "knight", "started": 300, "polls": 9},
+            {"subject": None, "started": 118, "polls": 1},
+            {"subject": None, "started": 402, "polls": 1},
+        ],
+    }
+    assert events.queue_sightings(game) == [(300, "knight")]
+
+
+def test_a_subject_is_reported_once_at_its_earliest_episode():
+    """Deliberately the same shape `queued` had. Episodes can now say how
+    MANY times a thing produced, which `queued` never could, but turning
+    that on changes what every consumer downstream counts."""
+    game = {"episodes": [
+        {"subject": "archer", "started": 500, "polls": 6},
+        {"subject": "archer", "started": 240, "polls": 6},
+        {"subject": "archer", "started": 900, "polls": 6},
+    ]}
+    assert events.queue_sightings(game) == [(240, "archer")]
+
+
+def test_an_empty_episode_list_is_not_a_missing_one():
+    """A game where the queue was watched and nothing survived the vote is
+    a game with nothing to report - not a game to fall back to the old
+    believed-on-sight list for. Absent and empty are different answers."""
+    game = {"queued": {"dragon_ship": 118}, "episodes": []}
+    assert events.queue_sightings(game) == []
+
+
+def test_villagers_stay_out_of_the_list():
+    """The timeline tells that story second by second; a row here adds
+    nothing. gamestats has always left them out of `queued` and the two
+    sources must not disagree about it."""
+    game = {"episodes": [
+        {"subject": "villager_male", "started": 20, "polls": 9},
+        {"subject": "villager_female", "started": 40, "polls": 9},
+        {"subject": "knight", "started": 300, "polls": 9},
+    ]}
+    assert events.queue_sightings(game) == [(300, "knight")]

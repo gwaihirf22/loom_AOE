@@ -164,16 +164,42 @@ CONFIG_DIR = Path(_override) if _override else config_home()
 # not the project's.
 STATS_DIR = DATA_DIR / "stats"
 
+def installed(root=None):
+    """Is Loom running from a copy it is not allowed to write into?
+
+    The question every read-only-installation decision actually wants
+    answered, asked in one place. It used to be spelled `sys.frozen`, which
+    is a DIFFERENT question - "did PyInstaller build this" - that happened
+    to give the same answer everywhere I had shipped. The two part company
+    the moment Loom is installed from SOURCE somewhere read-only, which is
+    exactly what a Flatpak is: a real interpreter, nothing frozen, and
+    PROJECT_ROOT under /app where nothing may be written.
+
+    Frozen stays in the answer rather than being replaced by the writability
+    test, because a onefile bundle's extraction directory genuinely IS
+    writable and must still never be written to - it is deleted on exit, so
+    anything saved there is destroyed with it.
+    """
+    if getattr(sys, "frozen", False):
+        return True
+    root = PROJECT_ROOT if root is None else root
+    # Erring towards "installed" is the safe direction: the player's data
+    # directory always exists and is always writable, so a false positive
+    # costs a developer a surprising path and a false negative costs a
+    # player the capture they were trying to keep.
+    return not os.access(root, os.W_OK)
+
+
 def _captures_dir():
     """Captured frames. From a clone they stay in the source tree on
     purpose - scratch written by tools/ during development, see the module
-    docstring. A bundle is different: PROJECT_ROOT is the read-only
-    _internal directory, and the overlay still writes here at runtime,
-    because glyphs.TextWatcher saves unreadable notification lines for
-    later harvesting. That is how one of my own smoke-test crops ended up
-    shipped inside the 1.0.0 zip. Frozen, captures go with the player's
-    data instead."""
-    if getattr(sys, "frozen", False):
+    docstring. An installed copy is different: PROJECT_ROOT is read-only -
+    the bundle's _internal directory, or /app inside a Flatpak - and the
+    overlay still writes here at runtime, because glyphs.TextWatcher saves
+    unreadable notification lines for later harvesting. That is how one of
+    my own smoke-test crops ended up shipped inside the 1.0.0 zip.
+    Installed, captures go with the player's data instead."""
+    if installed():
         return DATA_DIR / "captures"
     return PROJECT_ROOT / "captures"
 

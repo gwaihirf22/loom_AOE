@@ -125,6 +125,39 @@ def locate_regions(frame_bgr, templates, scale, profile=None):
     return regions
 
 
+# How much blue a pixel may carry and still count as one of the yellow
+# digits. Measured rather than chosen: the mod draws these numbers at blue
+# EXACTLY 0 - min, median and max all zero across every digit in a live
+# frame - while the resource bar's own brown chrome starts at blue 61. The
+# gate used to be 110, which is above the chrome, so the chrome came through.
+#
+# That mattered for one band only, and for a reason worth writing down. The
+# number strip starts a few reference pixels LEFT of its icon, to allow for a
+# number that is not centred the same on every resource. For food, gold and
+# stone those pixels land on the previous icon's black box. Wood is the
+# LEFTMOST resource, so they land on the bar's end cap instead - brown, tall
+# enough to survive _keep_digit_shapes, and therefore a second "glyph" beside
+# the real one. The reader then saw two digits where there was one and
+# refused, which is the never-guess rule working correctly on bad input.
+#
+# Swept over the capture corpus, 1686 anchored frames: wood 97.0% -> 99.8%,
+# and food, gold and stone unchanged at 99.8%. The misses clustered whole
+# runs at a time rather than scattering, which is what a per-game difference
+# in the bar art looks like and not what a marginal threshold looks like.
+#
+# 30 because it is the middle of the gap: 30 clear of the digits at 0 and 31
+# clear of the chrome at 61, rather than hugging either population. Swept at
+# 20, 30 and 40 the corpus gives the same 99.8% on all four bands, so the
+# choice inside that range is free and the symmetric one is the one to take -
+# the digits are the fixed population (the mod draws them pure) and the
+# chrome is the variable one, so margin below matters most.
+#
+# `red - blue` would separate them too, 122 against 72. One discriminator
+# with a 61-level gap is enough, and a second constant is a second thing
+# that has to stay true.
+MAX_DIGIT_BLUE = 30
+
+
 def yellow_mask(crop_bgr):
     """White-on-black image of just the yellow pixels in a crop.
 
@@ -133,12 +166,15 @@ def yellow_mask(crop_bgr):
     caught alongside the digits, which breaks them into pieces. Yellow is
     specifically high red and green with low blue, so testing for that isolates
     the digits and drops the brown-and-white noise around them.
+
+    How little blue is the load-bearing part - see MAX_DIGIT_BLUE.
     """
     blue = crop_bgr[:, :, 0].astype(int)
     green = crop_bgr[:, :, 1].astype(int)
     red = crop_bgr[:, :, 2].astype(int)
 
-    is_yellow = (red > 120) & (green > 100) & (blue < 110) & (red - blue > 60)
+    is_yellow = ((red > 120) & (green > 100) & (blue < MAX_DIGIT_BLUE)
+                 & (red - blue > 60))
     mask = (is_yellow * 255).astype(np.uint8)
     return _keep_digit_shapes(mask)
 

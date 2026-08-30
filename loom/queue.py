@@ -182,10 +182,11 @@ TECH_IDENTITIES = frozenset({
 # defaulting to unit - which is what the old drift guard let happen
 # silently, being a tautology that could not fail.
 #
-# Kept SEPARATE from TECH_IDENTITIES on purpose, for now: widening the
-# reconciliation to 400 identities changes what the live reader believes
-# about counts, and that belongs behind the author's own testing rather
-# than arriving as a side effect of a statistics feature.
+# Kept SEPARATE from TECH_IDENTITIES on purpose: widening the reconciliation
+# to all 266 technologies changes what the live reader believes about counts,
+# and that belongs behind the author's own testing rather than arriving as a
+# side effect of a statistics feature. counted_as_technology() below widens
+# it by ONE named category rather than by the whole file.
 KINDS_PATH = paths.TEMPLATES_DIR / "queue" / "KINDS.tsv"
 
 UNIT, TECHNOLOGY = "unit", "technology"
@@ -227,6 +228,44 @@ def identity_kinds():
 def kind_of(identity):
     """Is this a unit, a technology, or has nobody said? Never guesses."""
     return identity_kinds().get(identity, UNKNOWN)
+
+
+# The suffix build_queue_templates gives a technology whose own name a unit
+# already holds. Kept in step with that tool by the test that walks both.
+UPGRADE_SUFFIX = "_upgrade"
+
+_counted_as_tech = None
+
+
+def counted_as_technology(identity):
+    """Does the game's no-numeral-on-a-technology rule apply to this name?
+
+    TECH_IDENTITIES above is what the reconciliation has trusted since it
+    was written, and the comment there is still right that widening it to
+    every one of the 266 technologies would change what the live reader
+    believes about counts on a scale nobody has played through.
+
+    This widens it by exactly one category instead: the upgrade technologies
+    that build_queue_templates had to split out of a unit's identity because
+    the game names the research after the unit it produces. They are the
+    place the rule is most provable - an upgrade research is a single order
+    that completes once and can never carry a batch numeral - and until the
+    split they could not be reasoned about at all, because each one WAS a
+    unit as far as this module could tell.
+
+    Derived from KINDS.tsv rather than typed out, so adding a civilisation's
+    unique upgrade needs no edit here: a name qualifies when it carries the
+    suffix, is recorded as a technology, and the identity it was split from
+    still exists. A hand-list of twenty-five would be a list to forget.
+    """
+    global _counted_as_tech
+    if _counted_as_tech is None:
+        kinds = identity_kinds()
+        _counted_as_tech = set(TECH_IDENTITIES) | {
+            name for name, kind in kinds.items()
+            if kind == TECHNOLOGY and name.endswith(UPGRADE_SUFFIX)
+            and name[:-len(UPGRADE_SUFFIX)] in kinds}
+    return identity in _counted_as_tech
 
 # The occupancy content gate needs a STRONGER identity than the matcher's
 # floor: a flat panel with a bright frame - which is what per-civ corner
@@ -496,6 +535,36 @@ def count_occupied(frame_gray, boxes):
     The queue never has holes: groups pack to the front and shift left when
     one finishes. So the first cell that does not look like a slot ends the
     queue, and nothing after it needs testing.
+
+    IT LOOKS LIKE A CHEAP PRE-FILTER AND IT IS NOT. It is the thing bounding
+    how far wrong the reader can go, and I mistook it for the former on
+    2026-08-27 at some cost.
+
+    The temptation is real and the evidence for it is real: this test needs
+    the WASH to draw a cell's outline, so a card whose green is still young
+    scores below MIN_EDGE_STEP and the queue reads empty. Six frames cropped
+    and looked at hold the SAME villager card with a batch count of 3, edges
+    18.4, 19.8, 20.9 and 24.0 astride a bar of 20, occupancy flipping as the
+    wash grew from nothing to 41%. That costs real TC IDLE alerts.
+
+    Both obvious repairs make it much worse, measured on the corpus:
+
+        MIN_EDGE_STEP 20 -> 8          identity 97.1% -> 75.8%
+        let a tint or a numeral
+        overrule this test entirely    idle 146 -> 785, identity -> 61.2%
+
+    The second is the instructive one. Remove this as the terminator and a
+    single cell with a spurious tint keeps the queue alive; every cell after
+    it is then identified, and past the real queue that is HUD art and
+    terrain. One run improved fourfold while another collapsed - the same
+    shape CLAUDE.md records for the notification font, where a change scored
+    UP while making the reader worse.
+
+    So the fault is real and this constant is not it: the test is being
+    asked to answer alone. Anything tried here needs the whole corpus
+    (`python -m tools.queue_report`) and needs idle to fall while identity
+    does NOT, because the failed alternatives above did the first without
+    the second.
     """
     for index, box in enumerate(boxes):
         if _edge_second_weakest(frame_gray, box) < MIN_EDGE_STEP:
@@ -830,7 +899,7 @@ def reconcile_identity_and_count(identity, score, count):
 
     Returns the (identity, count) to believe.
     """
-    if identity in TECH_IDENTITIES and count is not None:
+    if counted_as_technology(identity) and count is not None:
         if score >= CONTENT_IDENTITY_SCORE:
             return identity, None
         return None, count

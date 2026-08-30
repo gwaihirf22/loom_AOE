@@ -182,13 +182,18 @@ def listen(bindings, on_action):
     """Grab every binding and start delivering actions. Returns a handle."""
     try:
         from Xlib import X, XK, error
-        from Xlib import display as xdisplay
+
+        from .. import xconnect
     except ImportError as missing:
         raise HotkeyError(
             f"hotkeys on Linux need python-xlib: {missing}") from missing
 
+    # Through xconnect, not Display() directly: python-xlib cannot find a
+    # cookie whose hostname has drifted, and this is one of the four places
+    # that inherited that. It bit HERE first and loudest - the overlay is Qt
+    # and comes up fine, so the whole symptom was keys that did nothing.
     try:
-        connection = xdisplay.Display()
+        connection = xconnect.connect()
     except Exception as problem:
         raise HotkeyError(
             f"hotkeys need an X server (XWayland counts): {problem}") from problem

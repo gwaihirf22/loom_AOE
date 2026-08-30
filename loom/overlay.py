@@ -159,6 +159,20 @@ SLIGHTLY_BEHIND_SECONDS = 35
 PANEL_WIDTH = 560
 PANEL_HEIGHT = 186
 
+# What a panel draws. Not the same question as `placing`, which is about how
+# the WINDOW behaves - a placing window can be in any of these modes, because
+# the whole point of placement is looking at the panel you will actually play
+# with.
+BUILD_PANEL = "build"           # the build order: steps, targets, what's next
+DASHBOARD_PANEL = "dashboard"   # clock, villagers, resources, age, TCs
+BANDS_PANEL = "bands"           # the alert bands, and nothing whatsoever else
+
+# The dashboard is shorter than the build panel: it has a header, a resource
+# row and two lines, and none of that grows. A fixed height rather than one
+# derived from the build panel's, because the two have no rows in common and
+# tying them together would make every future change to one move the other.
+DASHBOARD_HEIGHT = 132
+
 # The production alert bands hang below the panel, so the content itself never
 # moves when an alert appears - a player's saved position keeps meaning what
 # it meant. Housing trouble and an idle TC are separate facts that are often
@@ -407,7 +421,7 @@ class Overlay(QWidget):
     # point, which does know, writes it down. See loom_overlay.remember_position.
     position_accepted = pyqtSignal()
 
-    def __init__(self, placing=False, layout=None):
+    def __init__(self, placing=False, layout=None, panel_mode=BUILD_PANEL):
         """placing=True gives an ordinary movable window instead of an
         overlay so the player can drag it where they want it.
 
@@ -419,9 +433,18 @@ class Overlay(QWidget):
 
         layout overrides the size knobs read from config - tests pass one so
         they never depend on the player's settings file.
+
+        panel_mode says WHAT this panel draws, which is a different question
+        from how it behaves as a window: BUILD_PANEL is the build order,
+        DASHBOARD_PANEL is the live readout with no build behind it, and
+        BANDS_PANEL is the alert bands and nothing else. The two tracking
+        modes exist because everything Loom reads except the build order -
+        the clock, the villagers, the queue, the age - is worth having on its
+        own, and the alerts most of all.
         """
         super().__init__()
         self.placing = placing
+        self.panel_mode = panel_mode
         # Named _layout: QWidget.layout() is a real Qt method, and shadowing
         # it would break the widget in confusing ways.
         self._layout = layout or OverlayLayout(config.overlay_scale(),
@@ -522,6 +545,11 @@ class Overlay(QWidget):
         self.have_reading = False
         self.alerts = []            # [(text, severity)], most urgent first
         self.report_rows = None     # build-complete report, replaces the step
+        # The dashboard's three lines. Empty means "not read", which is drawn
+        # as an admission rather than left blank - see _draw_dashboard.
+        self.age_text = ""
+        self.tc_text = ""
+        self.population_text = ""
 
     # ---- size ------------------------------------------------------------
 
@@ -532,7 +560,20 @@ class Overlay(QWidget):
         THEN row, the alert bands - so they all follow the growth without
         knowing about it. Growth is DOWNWARD from a fixed top-left, because
         that corner is what the player's saved position means.
+
+        ZERO in bands mode, and that one number is the whole of how "alert
+        bands and nothing else" is drawn. _draw_alert_bands already measures
+        from here and _resize_to_content already sizes from here, so a card
+        of no height puts the bands at the top of a window with room for
+        nothing but them. Nothing else had to learn about the mode.
         """
+        if self.panel_mode == BANDS_PANEL:
+            return 0
+        if self.panel_mode == DASHBOARD_PANEL:
+            # No steps behind it, so nothing can make it taller: self._extra
+            # is the build panel growing to fit a long step, and there is no
+            # step here.
+            return self._layout.y(DASHBOARD_HEIGHT)
         return self._layout.panel_height + self._extra
 
     def chrome_height(self):
@@ -748,6 +789,46 @@ class Overlay(QWidget):
         self.update()
         return resized
 
+    def show_tracking(self, villagers, game_time, per_resource=None,
+                      population=None, age_text="", tc_text="",
+                      villager_gap=None):
+        """Update the dashboard panel: what Loom reads, with no build behind it.
+
+        Everything arrives as strings and numbers, never objects. The panel's
+        contract is that it is TOLD what to show and never reads the game
+        itself, and passing an age object rather than its name would have
+        loom/overlay.py importing loom/age.py - an arrow the architecture map
+        does not have, for no gain.
+
+        age_text is "" when the crest has not been read. That is not the same
+        as a missing age and must not be drawn as one - see _draw_dashboard.
+        """
+        self.have_reading = True
+        self.report_rows = None
+        self.actual = per_resource or {}
+        # No build, so nothing to be off: the row shows what you have and
+        # flags nothing. `None` rather than `{}` - see draw_resource_row.
+        self.targets = None
+        self.item_rows = []
+        self.item_states = []
+
+        minutes, seconds = divmod(int(game_time), 60)
+        self.status_line = f"{minutes}:{seconds:02d}   {villagers} villagers"
+
+        # The header's right-hand slot carries the age here, where the build
+        # panel carries pace. Same slot, same drawing, different fact - there
+        # is no pace to report without a build to be behind.
+        self.age_text = age_text
+        self.tc_text = tc_text
+        self.population_text = (f"{population[0]}/{population[1]}"
+                                if population else "")
+        self.pace_text = age_text or "age not read"
+        self.pace_color = TEXT if age_text else FAINT_TEXT
+
+        self.header_note, self.header_note_color = describe_staleness(
+            villager_gap)
+        self.update()
+
     def show_alerts(self, alerts_list):
         """Set the production alert bands, most urgent first. [] clears.
 
@@ -761,21 +842,31 @@ class Overlay(QWidget):
         """Single-alert convenience for callers that only have one."""
         self.show_alerts([(text, severity)] if text else [])
 
-    def show_report(self, rows, build_name, status_line):
+    def show_report(self, rows, build_name, status_line, extra=0):
         """Switch the panel to the build-complete report.
 
         rows come from report.BuildReport.summary(). The panel stays in
         report mode until show_step is called again (a new game), and the
         alert bands keep working underneath - the game goes on.
+
+        The header is drawn on this page too, so the chip is set HERE rather
+        than left to whatever the last step-page poll happened to write.
+        That inheritance is why a runaway "+55 VILL" once sat directly above
+        a report row correctly reading "+4 beyond the build" - the report
+        page never wrote the chip and never knew it was showing a stale one.
+        Setting it means the two numbers on this page come from one value.
         """
         self.have_reading = True
         self.report_rows = rows
         self.build_name = build_name
         self.status_line = status_line
+        self.pace_text, self.pace_color = describe_pace(None, extra,
+                                                        complete=True)
         self.update()
 
     def show_step(self, build, villagers, game_time, active, following, delta,
-                  per_resource=None, extra=0, milestone_queued=False,
+                  per_resource=None, extra=0, complete=False,
+                  milestone_queued=False,
                   follow_mode=None, resume_hint=None, seconds_left=None,
                   item_states=None, villager_gap=None, no_key=None):
         """Update the panel from one poll's worth of state.
@@ -843,7 +934,8 @@ class Overlay(QWidget):
             when_minutes, when_seconds = divmod(int(following.time or 0), 60)
             self.next_when = f"{when_minutes}:{when_seconds:02d} · {following.villager_count} vills"
 
-        self.pace_text, self.pace_color = describe_pace(delta, extra)
+        self.pace_text, self.pace_color = describe_pace(delta, extra,
+                                                        complete)
         self.header_note, self.header_note_color = describe_follow(
             follow_mode, resume_hint, seconds_left, no_key)
         # A follow note keeps the slot: MANUAL already says the panel is
@@ -862,6 +954,16 @@ class Overlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
+        # Bands mode draws no card and no writing - just the alarms, wherever
+        # the player put them. It leaves before the content branch below
+        # rather than being threaded through it, because every one of those
+        # branches assumes a card exists to draw on.
+        if self.panel_mode == BANDS_PANEL:
+            if self.alerts:
+                painter.setOpacity(1.0)
+                self._draw_alert_bands(painter)
+            return
+
         self._draw_background(painter)
 
         # Everything WRITTEN on the card fades with the text slider; the
@@ -876,11 +978,21 @@ class Overlay(QWidget):
             painter.setFont(QFont("sans", self._layout.pt(11)))
             painter.drawText(0, 0, self.width(), self.panel_height(),
                              Qt.AlignmentFlag.AlignCenter, self.status_line)
+            # The bands still go up. A panel with no usable reading has
+            # nothing to SAY, but an alert it was given is still true - and
+            # this early return used to swallow them, which is why bands
+            # mode could not simply reuse this path.
+            if self.alerts:
+                painter.setOpacity(1.0)
+                self._draw_alert_bands(painter)
             return
 
         if self.report_rows is not None:
             self._draw_header(painter)
             self._draw_report(painter)
+        elif self.panel_mode == DASHBOARD_PANEL:
+            self._draw_header(painter)
+            self._draw_dashboard(painter)
         else:
             self._draw_header(painter)
             self._draw_items(painter)
@@ -1048,6 +1160,52 @@ class Overlay(QWidget):
         painter.setFont(QFont("sans", L.pt(11), QFont.Weight.Bold))
         draw_resource_row(painter, self._icons, self.targets, self.actual,
                           max(L.x(66), label_end), y, spacing=L.spacing,
+                          pen=self._pen)
+
+    def _draw_dashboard(self, painter):
+        """The tracking panel's body: what Loom knows that is not a build.
+
+        Three labelled lines and the resource row, in the same idiom
+        _draw_next uses for THEN - a bold faint label on the left, the value
+        beside it - so the two panels look like the same program.
+
+        An unread value says so rather than showing a plausible blank. "TCs
+        not read" and an empty line are different facts and the player is
+        owed the difference; a blank line reads as "no Town Centres", which
+        is a claim Loom never made.
+        """
+        L = self._layout
+        rows = (("TCS", self.tc_text, "not read"),
+                ("POP", self.population_text, "not read"))
+        painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
+        label_end = L.x(16) + L.x(8) + max(
+            painter.fontMetrics().horizontalAdvance(label)
+            for label, _value, _absent in rows)
+        value_x = max(L.x(62), label_end)
+
+        for index, (label, value, absent) in enumerate(rows):
+            baseline = L.y(58) + index * L.y(24)
+            painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
+            painter.setPen(self._pen(FAINT_TEXT))
+            painter.drawText(L.x(16), baseline, label)
+
+            painter.setFont(QFont("sans", L.pt(11),
+                                  QFont.Weight.Bold if value
+                                  else QFont.Weight.Normal))
+            painter.setPen(self._pen(TEXT if value else FAINT_TEXT))
+            painter.drawText(value_x, baseline, value or absent)
+
+        # The villagers-per-resource row, in the same place and the same
+        # label dance the build panel uses - it is the same reading.
+        y = self.panel_height() - L.y(20)
+        painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
+        painter.setPen(self._pen(FAINT_TEXT))
+        painter.drawText(L.x(16), y, "VILLS")
+        vills_end = (L.x(16) + L.x(8)
+                     + painter.fontMetrics().horizontalAdvance("VILLS"))
+        painter.setFont(QFont("sans", L.pt(11), QFont.Weight.Bold))
+        draw_resource_row(painter, self._icons, None, self.actual,
+                          max(L.x(66), vills_end), y, spacing=L.spacing,
                           pen=self._pen)
 
     def _draw_next(self, painter):
@@ -1294,6 +1452,36 @@ def draw_items(painter, rows, states, x, baseline, width, columns, points,
     return last
 
 
+def resource_cell(want, have):
+    """One resource's number, as (text, off_target, dim). Pure.
+
+    Split out of draw_resource_row so the decision can be tested without a
+    painter - which is how the "8/None" bug should have been caught. Every
+    geometry assertion passed while the row read that on screen, because the
+    only thing that knew the answer was a line in the middle of a drawing
+    loop.
+
+    want is None when there is no build behind the row. Then the count
+    stands alone and nothing can be off target: a red underline against a
+    plan that does not exist would be a verdict Loom never reached. An en
+    dash where nothing was read, never a 0 - "no villagers on stone" and "I
+    could not see the stone count" are different facts, and only one of them
+    was established.
+
+    THAT RULE NOW HOLDS IN BOTH BRANCHES, and it did not. With a build
+    behind the row an unread count fell back to the TARGET alone, so a
+    player with eleven villagers on wood against a build wanting five saw
+    "5" - which reads as a wrong number rather than a missing one, and was
+    reported as exactly that (issue #13). The dash is the honest half of
+    the pair: "I could not see it, and the build wants five".
+    """
+    if want is None:
+        return ("–" if have is None else str(have), False, have is None)
+    off = have is not None and abs(have - want) > RESOURCE_TOLERANCE
+    text = f"–/{want}" if have is None else f"{have}/{want}"
+    return text, off, have is None and want == 0
+
+
 def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
                       pen=None):
     """The villagers-per-resource row, shared by the overlay and the preview.
@@ -1312,15 +1500,20 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
 
     pen maps each colour before it is used - the overlay passes its contrast
     knob; the default identity keeps the preview exactly as designed.
+
+    targets=None means there is no build behind this row, so there is nothing
+    to be off. That is not the same as an empty dict: `{}` says the build
+    wants nobody here, which is a target of zero and worth flagging when
+    somebody is. Passing `{}` for "no build" would paint "8/0" with a red
+    off-target underline on every resource the player is actually using.
     """
     if pen is None:
         pen = lambda color: color
     for name in RESOURCE_ORDER:
-        want = targets.get(name, 0)
+        want = None if targets is None else targets.get(name, 0)
         have = actual.get(name)
 
-        off = have is not None and abs(have - want) > RESOURCE_TOLERANCE
-        dim = have is None and want == 0     # nothing wanted here yet
+        text, off, dim = resource_cell(want, have)
         resource_color = QColor(90, 90, 98) if dim else RESOURCE_COLORS[name]
 
         icon = icons.get(name)
@@ -1337,7 +1530,6 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
             x += (painter.fontMetrics().horizontalAdvance(label)
                   + round(6 * spacing))
 
-        text = str(want) if have is None else f"{have}/{want}"
         painter.setPen(pen(TEXT if off else resource_color))
         painter.drawText(int(x), y, text)
         width = painter.fontMetrics().horizontalAdvance(text)
@@ -1357,6 +1549,51 @@ def draw_resource_row(painter, icons, targets, actual, x, y, spacing=1.0,
 # running and I am watching for a match".
 WAITING_FOR_GAME = "waiting_for_game"
 WAITING_FOR_MATCH = "waiting_for_match"
+
+
+def describe_tcs(busy, idle):
+    """The dashboard's Town Centre line: "2 producing, 1 idle".
+
+    Both numbers come straight from the tracker's two beliefs and NEITHER is
+    derived from the other. production.py asks a slot's tint two different
+    questions with two different gates - does another Town Centre exist, and
+    is this one working - because erring busy is safe while erring towards a
+    Town Centre that does not exist is permanent. Subtracting one count from
+    the other here would manufacture a third answer that neither gate stands
+    behind, which is the whole point of keeping them apart.
+
+    "" when nothing is believed yet, which the dashboard draws as "not read"
+    rather than as an absence of Town Centres.
+    """
+    if not busy and not idle:
+        return ""
+    parts = []
+    if busy:
+        parts.append("TC producing" if busy == 1 else f"{busy} producing")
+    if idle:
+        parts.append("TC idle" if idle == 1 and not busy else f"{idle} idle")
+    return ", ".join(parts)
+
+
+def waiting_band(stage):
+    """What a bands-only panel says before there is a match to watch.
+
+    A panel that draws no card and has no alerts is a completely transparent
+    window, which is indistinguishable from a Loom that failed to start -
+    the exact failure LiveSession was built to remove for the build panel.
+    So the waiting message becomes a band, and the player can see Loom is
+    alive.
+
+    SOFT, not FULL: it is information, and SOFT does not flash. An alarm that
+    fires because nothing is wrong teaches the player to ignore the ones that
+    mean something.
+
+    Returns a list ready for show_alerts, so the caller never assembles a
+    band by hand. Reuses describe_waiting's vocabulary so the two panels
+    cannot drift into saying different things about the same state.
+    """
+    text, _color = describe_waiting(stage)
+    return [(f"LOOM — {text}", alerts.SOFT)] if text else []
 
 
 def describe_waiting(stage):
@@ -1478,7 +1715,7 @@ def describe_staleness(villager_gap):
     return f"VILLAGERS UNREAD · {int(villager_gap)}s", NOT_FOLLOWING_COLOR
 
 
-def describe_pace(delta, extra=0):
+def describe_pace(delta, extra=0, complete=False):
     """Turn a pace delta in seconds into (text, color).
 
     extra is how many villagers beyond the build's ask are on the field.
@@ -1487,7 +1724,24 @@ def describe_pace(delta, extra=0):
     before an age-up slides the click 25-40 seconds, and the player should
     see the cause next to the effect. Red stays red: already-behind is
     still the louder fact.
+
+    complete says the build is over, and it changes what the number MEANS
+    rather than only how it is drawn. During the build "+2 VILL" is a live
+    warning about a slip that is happening. Afterwards there is no build
+    left to be over, so the same shape read as a count still running: it
+    reached "+55 VILL · —" in a real game, twenty minutes after a build
+    that ended at +4, beside a report row still correctly saying +4. So it
+    is worded as the total it is - "+4 VILLS > BUILD" - and the "· —" tail
+    goes, because a dash where a pace verdict used to be reads as a missing
+    reading rather than as a meter that has honourably retired.
     """
+    if complete:
+        # Nothing to say when the player never went over: the header's
+        # centre slot already carries BUILD DONE.
+        if extra > 0:
+            return f"+{extra} VILLS > BUILD", SLIGHTLY_BEHIND_COLOR
+        return "", FAINT_TEXT
+
     if delta is None:
         text, color = "—", FAINT_TEXT
     elif delta < -ON_PACE_SECONDS:

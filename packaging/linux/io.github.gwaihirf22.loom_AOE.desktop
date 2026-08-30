@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Loom
+GenericName=Build-Order Assistant
+Comment=Live build-order overlay for Age of Empires II: Definitive Edition
+Exec=loom
+Icon=io.github.gwaihirf22.loom_AOE
+Terminal=false
+Categories=Game;StrategyGame;Utility;
+Keywords=aoe2;age of empires;build order;overlay;rts;
+# Matches entry.DESKTOP_ID, which loom_app.py hands to Qt's
+# setDesktopFileName before any window exists. Both halves are needed: this
+# line is what older shells match on, and the Qt call is what newer ones
+# read. Without them the taskbar shows a grey placeholder beside a launcher
+# whose own windows all carry the right icon.
+StartupWMClass=io.github.gwaihirf22.loom_AOE
+StartupNotify=true

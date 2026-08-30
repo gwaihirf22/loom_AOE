@@ -58,8 +58,11 @@ the overlay each look the window up and would otherwise run two streams over the
 same window.
 
 How the game is *identified* is left to the backend rather than fixed here: X11
-matches a window-title substring, macOS matches a bundle identifier, and Windows
-matches the title and corroborates with the executable name.
+matches a window-title substring; macOS matches the native port's bundle
+identifier exactly, and for the Windows build under CrossOver matches the title
+with the owner corroborated as a Wine host; Windows matches the title and
+corroborates with the executable name. Both corroborating backends *refuse* an
+uncorroborated title match rather than falling back to it.
 
 ## Importing never fails
 

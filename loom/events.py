@@ -86,6 +86,62 @@ Sighting = namedtuple("Sighting",
 Sighting.__new__.__defaults__ = ((), None)
 
 
+# Queue identities that are just villagers. The timeline already tells that
+# story second by second, so listing them among the things that happened
+# adds a row nobody reads. Mirrors gamestats, which has always left them
+# out of `queued` for the same reason.
+VILLAGERS = {"villager_male", "villager_female"}
+
+
+def queue_sightings(game):
+    """(when, subject) for everything the QUEUE says was produced.
+
+    TWO SOURCES, AND THE NEWER ONE WINS WHERE IT EXISTS.
+
+    `queued` is the old record: the first time anything was named in a
+    slot, believed on one glance. That is how nine things that never
+    happened reached a real Post-game page, and how one game listed 65
+    subjects of which 45 were never produced - a fleet of dragon ships and
+    fireships in a Fast Castle, and campaign technologies no random map can
+    hold.
+
+    `episodes` is what loom/episodes.py decided: one production followed
+    across polls and named ONCE by vote, from every look that watched it.
+    Measured across 39 paired capture runs, that removes 79% of the
+    phantoms.
+
+    A file written before episodes existed has only `queued`, and gets it -
+    an old game is not improved by being shown less than it recorded.
+
+    REFUSED EPISODES CONTRIBUTE NOTHING HERE, AND THAT IS A GAP. An episode
+    the vote would not name carries subject: null, which means "this was
+    watched and I decline to name it" - a refusal, not an absence. It
+    belongs on the page as REFUSED, and cannot be an Event because an Event
+    is about a subject and this one has no name. The rows are in the stats
+    file waiting for the panel that will draw them; until then a person
+    sees fewer rows than Loom actually knows about, which is the honest
+    direction to be wrong in but is still wrong.
+    """
+    episodes = game.get("episodes")
+    if episodes is None:
+        return sorted((when, subject)
+                      for subject, when in (game.get("queued") or {}).items())
+    # ONE sighting per subject, at the earliest episode that named it -
+    # deliberately the same shape `queued` had. Episodes can now say how
+    # MANY times a thing was produced, which `queued` never could, but
+    # turning that on changes what every consumer downstream is counting
+    # and belongs in its own change with its own measurement.
+    first = {}
+    for episode in episodes:
+        subject = episode.get("subject")
+        when = episode.get("started")
+        if not subject or when is None or subject in VILLAGERS:
+            continue
+        if subject not in first or when < first[subject]:
+            first[subject] = when
+    return sorted((when, subject) for subject, when in first.items())
+
+
 def from_recording(game):
     """Every event a recorded game holds, from both witnesses.
 
@@ -93,11 +149,7 @@ def from_recording(game):
     this is the raw arrival, one Event per thing one witness saw once.
     """
     found = []
-    # The queue: first sightings only. It cannot say how many, so it does
-    # not try, and it cannot say when something FINISHED - an item that
-    # leaves the queue has either completed or been cancelled and those
-    # look identical.
-    for subject, when in (game.get("queued") or {}).items():
+    for when, subject in queue_sightings(game):
         found.append(Event(when, subject, kind_of(subject), "sighted", QUEUE))
     # The feed: one event per line read, named "<action>:<subject>".
     # Lines with no subject (attacked, wild_animals) are game-state

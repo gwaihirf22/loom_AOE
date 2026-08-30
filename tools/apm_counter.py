@@ -31,10 +31,9 @@ import signal
 import sys
 import time
 
-from Xlib import display as xdisplay
 from Xlib.ext import ge, xinput
 
-from loom import statefeed
+from loom import statefeed, xconnect
 from loom.apm import BUCKET_SECONDS
 
 # XInput2 raw event type codes (Xlib.ext.xinput defines the constants; the
@@ -49,8 +48,12 @@ def main():
                         help="bucket length in wall seconds")
     args = parser.parse_args()
 
+    # xconnect rather than Display() directly: python-xlib cannot find a
+    # cookie whose hostname has drifted, and this counter is one of the four
+    # places that inherited that. Its symptom was the quietest of them - a
+    # printed line in the launcher's output pane and an APM chart of zeros.
     try:
-        dpy = xdisplay.Display()
+        dpy = xconnect.connect()
     except Exception as error:
         print(f"apm: no X display ({error}); APM tracking disabled")
         return

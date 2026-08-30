@@ -5,13 +5,71 @@ See [platform support](platform-support.md) for the comparison.
 
 ## What you need
 
-- **Python 3.10 or newer**
 - **X11, or Wayland with XWayland.** Developed on Bazzite / KDE Plasma /
   Wayland. Loom reads the game's XWayland window directly, which is why
   Wayland is fine even though screenshotting the desktop there is not.
 - **Age of Empires II: Definitive Edition**, through Proton
+- **Python 3.10 or newer** — only for the source install below. The Flatpak
+  brings its own, which is the point of it.
 
-## Install
+## Install as a Flatpak (recommended)
+
+One command, no Python install, and it works the same on Bazzite, Fedora,
+Ubuntu, Arch, SteamOS and Nobara.
+
+```bash
+flatpak install ./Loom-x.y.z-x86_64.flatpak
+flatpak run io.github.gwaihirf22.loom_AOE
+```
+
+Download the bundle from the
+[releases page](https://github.com/gwaihirf22/loom_AOE/releases).
+
+### The one thing you may have to grant
+
+Loom finds your recorded games on its own, in any library Steam knows
+about — it reads Steam's own library list. What it cannot do is read a
+drive the sandbox will not let it open. So if your **Steam library is on
+another drive**, grant it once:
+
+```bash
+flatpak override --user     --filesystem=/run/media/you/games/SteamLibrary:ro     io.github.gwaihirf22.loom_AOE
+```
+
+That is the whole step. Loom sees the library in Steam's list, and now that
+it can read that drive, it finds the recorded games inside it.
+
+If your records live somewhere Steam has never heard of — copied off
+another machine, say — name the folder yourself instead:
+
+```bash
+flatpak override --user     --env=LOOM_RECORDS_DIR=/path/to/"Age of Empires 2 DE"     io.github.gwaihirf22.loom_AOE
+```
+
+Two such folders: separate them with `:` like `PATH`. [Flatseal] does the
+same thing with checkboxes if you would rather click.
+
+Recorded games are only used **after** a match ends, to check Loom's own
+readings against what the game was actually told to do. Loom never writes to
+them, and the permission is read-only. You can also turn the whole feature
+off in the launcher's settings, in which case you need none of this.
+
+[Flatseal]: https://flathub.org/apps/com.github.tchx84.Flatseal
+
+### Why it says "potentially unsafe"
+
+Because it asks for **X11 access**, and a software centre flags that. It is
+accurate, and it is not avoidable: Loom reads the game's window pixels,
+grabs global hotkeys and counts APM, and Wayland has no API for any of the
+three by design — which is exactly why they are privileged. The game runs
+under XWayland and Loom has to be on the same X server it is.
+
+What Loom does **not** ask for is `--device=input`. It never reads
+`/dev/input`, and APM is counted by asking the X server for event *counts*
+rather than by watching a key stream. See `packaging/linux/README.md` for
+the full list and what each permission is for.
+
+## Install from source
 
 ```bash
 git clone https://github.com/gwaihirf22/loom_AOE.git
@@ -82,6 +140,13 @@ Following the XDG base directory spec:
 
 - Settings: `~/.config/loom/config.json` (or `$XDG_CONFIG_HOME/loom`)
 - Match statistics: `~/.local/share/loom/stats` (or `$XDG_DATA_HOME/loom`)
+
+From the Flatpak these are the same paths with the sandbox's home in front:
+`~/.var/app/io.github.gwaihirf22.loom_AOE/config/loom/` and
+`.../data/loom/stats`. Nothing special happens to make that work — Flatpak
+rewrites `XDG_CONFIG_HOME` and `XDG_DATA_HOME`, and Loom was already
+following them.
+
 - Build orders: the `builds` directory in the clone, plus your own in
   the data directory above. **Import build** in the launcher puts them
   there for you, after checking the file; **Open builds folder** shows
@@ -111,3 +176,16 @@ never happen, and when it does it costs a match.
 
 **The overlay does not appear over the game.** It needs to run under XWayland;
 `loom_overlay.py` sets `QT_QPA_PLATFORM=xcb` itself for this reason.
+
+**Statistics says you have no recorded games, and you have hundreds.** This
+is the Flatpak, not Loom: the sandbox cannot see your Steam library unless
+it is told to. Grant it read-only and restart Loom —
+
+```bash
+flatpak override --user --filesystem=/path/to/SteamLibrary:ro io.github.gwaihirf22.loom_AOE
+```
+
+— or set `LOOM_RECORDS_DIR` to the folder holding the records, colon-separated
+for more than one, like `PATH`. [Flatseal](https://flathub.org/apps/com.github.tchx84.Flatseal)
+does the same thing with a GUI. Note Loom refuses to read a game that is
+still being played, so a record only appears once the match has ended.

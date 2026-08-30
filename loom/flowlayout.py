@@ -80,12 +80,45 @@ class FlowLayout(QLayout):
         """
         size = QSize()
         for item in self._items:
-            size = size.expandedTo(item.minimumSize())
+            widget = item.widget()
+            if widget is None:
+                size = size.expandedTo(item.minimumSize())
+            else:
+                size = size.expandedTo(
+                    widget.minimumSizeHint().expandedTo(widget.minimumSize()))
         margins = self.contentsMargins()
         return size + QSize(margins.left() + margins.right(),
                             margins.top() + margins.bottom())
 
     # ---- internals -------------------------------------------------------
+
+    def _hint(self, item):
+        """The box this child needs, asked of the WIDGET rather than the item.
+
+        The distinction is invisible on two platforms and the whole bug on
+        the third. Qt's macOS style gives widgets "layout item margins":
+        QWidgetItem.sizeHint() comes back SMALLER than the widget's own
+        sizeHint (the Aqua bezel is allowed to overhang), and
+        item.setGeometry() inflates the rect back before the widget sees
+        it. Those two transforms do not round-trip for a stylesheet-styled
+        button - measured on this machine: widget.sizeHint 26px tall, item
+        hint 14, and the rect handed back 22 - so every button, checkbox
+        and label in every flow row drew with the bottom of its text cut
+        off, on macOS only. Linux and Windows styles carry no such margins,
+        which is why the same code was pixel-correct there for the whole
+        life of the project. Asking the widget and placing the widget (see
+        _lay_out) keeps both halves in the same coordinate system on every
+        platform.
+
+        Floored at the widget's minimums because there is no expansion pass
+        to correct a hint that comes in low; a no-op when hints are sane.
+        """
+        widget = item.widget()
+        if widget is None:
+            return item.sizeHint().expandedTo(item.minimumSize())
+        return (widget.sizeHint()
+                .expandedTo(widget.minimumSizeHint())
+                .expandedTo(widget.minimumSize()))
 
     def _lay_out(self, rect, apply):
         """Place the children in rect, or just measure. Returns the height."""
@@ -95,7 +128,7 @@ class FlowLayout(QLayout):
         x, y, row_height = area.x(), area.y(), 0
 
         for item in self._items:
-            hint = item.sizeHint()
+            hint = self._hint(item)
             gap = self._gap(item)
             next_x = x + hint.width() + gap
             if next_x - gap > area.right() and row_height > 0:
@@ -107,7 +140,16 @@ class FlowLayout(QLayout):
                 next_x = x + hint.width() + gap
                 row_height = 0
             if apply:
-                item.setGeometry(QRect(QPoint(x, y), hint))
+                # The widget is placed directly where one exists: going
+                # through item.setGeometry would re-apply the macOS layout
+                # item inflation that _hint explains, handing the widget a
+                # different rectangle than the one measured for it.
+                target = QRect(QPoint(x, y), hint)
+                widget = item.widget()
+                if widget is None:
+                    item.setGeometry(target)
+                else:
+                    widget.setGeometry(target)
             x = next_x
             row_height = max(row_height, hint.height())
 

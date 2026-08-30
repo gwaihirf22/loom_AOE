@@ -85,11 +85,22 @@ def module_imports():
     imported by nothing inside the package and look like orphans, when in
     fact they are exactly where the applications begin. The entry points ARE
     the architecture's top layer.
+
+    A package's SUBMODULES are read too, and what they import is attributed
+    to the package - `loom/capture/x11.py` counts as `capture`, because the
+    map draws a box per subsystem and the per-OS backends are the inside of
+    one. Reading only `__init__.py` missed every dependency a backend has
+    and nothing else has, which is exactly where the platform-specific ones
+    live: when xconnect landed, capture and hotkeys both took a real
+    dependency on it that this function could not see, and the check called
+    the correctly-drawn arrow a disagreement.
     """
     found = {}
     sources = (sorted(glob.glob(str(paths.PROJECT_ROOT / "loom" / "*.py")))
                + sorted(glob.glob(str(paths.PROJECT_ROOT / "loom" / "*"
                                       / "__init__.py")))
+               + sorted(glob.glob(str(paths.PROJECT_ROOT / "loom" / "*"
+                                      / "*.py")))
                + sorted(glob.glob(str(paths.PROJECT_ROOT / "loom_*.py"))))
     for source in sources:
         if os.path.dirname(source) == str(paths.PROJECT_ROOT):
@@ -117,7 +128,10 @@ def module_imports():
                 for alias in node.names:
                     if alias.name.startswith("loom."):
                         imports.add(alias.name[len("loom."):].split(".")[0])
-        found[name] = imports
+        # A submodule is part of its package's box, so "capture/x11" is
+        # folded into "capture" and its imports joined with the rest of the
+        # package's rather than replacing them.
+        found.setdefault(name.split("/")[0], set()).update(imports)
     return {name: {dep for dep in deps if dep in found}
             for name, deps in found.items()}
 
@@ -254,8 +268,17 @@ LAYOUT_DOC = paths.PROJECT_ROOT / "CLAUDE.md"
 
 
 def layout_block(markdown=None):
-    """The fenced block under CLAUDE.md's "## Layout" heading."""
+    """The fenced block under CLAUDE.md's "## Layout" heading, or None.
+
+    None means the document is not here to be read. That is not a fault:
+    CLAUDE.md is the project's working agreement and tools/release.py
+    strips it from the published snapshot, so the released tree runs this
+    suite without it. Raising there took the whole test session down with a
+    FileNotFoundError.
+    """
     if markdown is None:
+        if not LAYOUT_DOC.exists():
+            return None
         with open(LAYOUT_DOC, encoding="utf-8") as handle:
             markdown = handle.read()
     start = markdown.index("```", markdown.index("## Layout"))
@@ -278,6 +301,13 @@ def unlisted_modules(block=None, imports=None):
     """
     imports = module_imports() if imports is None else imports
     block = layout_block() if block is None else block
+    if block is None:
+        # No Layout to check against - see layout_block. Empty here would be
+        # a gate turned into decoration if anything ASSERTED on it, so the
+        # two tests that do are skipped when LAYOUT_DOC is missing rather
+        # than passing vacuously. The halves live in different files and
+        # only make sense together, which is why each says so.
+        return []
     return sorted(name for name in imports
                   if f"{name}.py" not in block and f"{name}/" not in block)
 

@@ -16,7 +16,10 @@ The questions, in the order it answers them:
      an IDE - never to Python itself.
   2. Can the game's window be found, and by what? Feral's port is
      com.feralinteractive.ageofempires2, and a bundle id is exact where a
-     window title is a guess.
+     window title is a guess. The Windows build under CrossOver is the other
+     route the backend reads: --list is how its window identity was measured
+     (CrossOverHelper bundle ids and bare exe-named owners), and --fragment
+     is the escape hatch when the backend refuses a host it does not know.
   3. What pixel scale comes back? This Mac's display is 2x. Loom's anchor
      search looks between 0.5x and 2.0x and falls through to 4.0x when that
      finds nothing, so a native-resolution capture is comfortably inside it -

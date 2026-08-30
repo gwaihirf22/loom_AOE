@@ -31,14 +31,34 @@ from loom import apm, apmwin
 def test_windows_counts_in_the_overlay():
     """Raw Input needs a window and a message pump; the overlay has both."""
     assert apm.counted_in_the_overlay("win32") is True
+    assert apm.how_counted("win32") == "overlay"
 
 
-@pytest.mark.parametrize("platform", ["linux", "darwin", "plan9"])
-def test_everywhere_else_uses_a_child_process(platform):
-    """The failure mode of the launcher and the overlay disagreeing is
-    counting everything twice, which would not look like a bug - it would
-    look like the player having a very good game."""
+def test_linux_counts_in_a_child_process():
+    """XInput2 raw events need neither a window nor a pump, so the counter
+    stays a separate process the launcher spawns."""
+    assert apm.how_counted("linux") == "child"
+    assert apm.counted_in_the_overlay("linux") is False
+
+
+@pytest.mark.parametrize("platform", ["darwin", "plan9"])
+def test_a_platform_with_no_counter_says_so(platform):
+    """None is honest absence, not a default. The old two-way answer sent
+    macOS down the child path, where tools.apm_counter imports Xlib and
+    dies - the platform's real answer was NEITHER, and nothing could say
+    it. The launcher spawns the child only for "child", so an unknown
+    platform gets no counter rather than a crashing one."""
+    assert apm.how_counted(platform) is None
     assert apm.counted_in_the_overlay(platform) is False
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin", "plan9"])
+def test_counted_in_the_overlay_is_a_view_of_how_counted(platform):
+    """One home for the answer. The failure mode of the launcher and the
+    overlay disagreeing is counting everything twice, which would not look
+    like a bug - it would look like the player having a very good game."""
+    assert (apm.counted_in_the_overlay(platform)
+            == (apm.how_counted(platform) == "overlay"))
 
 
 # ---- the record layout -----------------------------------------------------

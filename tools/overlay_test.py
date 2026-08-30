@@ -131,9 +131,9 @@ def set_x11_window_type(widget, type_name):
     property, so I can set it directly once the window exists. KWin decides
     which stacking layer a window belongs in partly from this.
     """
-    from Xlib import display as xdisplay
+    from loom import xconnect
 
-    dpy = xdisplay.Display()
+    dpy = xconnect.connect()
     window = dpy.create_resource_object("window", int(widget.winId()))
     window.change_property(
         dpy.intern_atom("_NET_WM_WINDOW_TYPE"),

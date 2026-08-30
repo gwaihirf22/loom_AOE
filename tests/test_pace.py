@@ -106,8 +106,40 @@ def test_extra_villager_detector():
     build = BuildOrder(GATED)
     assert extra_villagers(build, 12, 250) == 0      # exactly on the build
     assert extra_villagers(build, 13, 250) == 1      # trained into the hold
-    assert extra_villagers(build, 40, 9999) == 0     # build finished
+    # Zero because there is no AGE READING, not because the build is over.
+    # The comment here used to say "build finished", which was the right
+    # intent asserted by the wrong mechanism: the age ceiling is the rule
+    # that keeps counting, it is disabled without an age, and live always
+    # has one. So this line passed happily while the overlay header climbed
+    # to +55 on a build that ended at +4. See the next test.
+    assert extra_villagers(build, 40, 9999) == 0
     assert extra_villagers(build, None, 250) == 0
+
+
+def test_the_surplus_keeps_counting_after_the_build_ends():
+    """Deliberately NOT a bug in this function, and worth stating plainly.
+
+    extra_villagers is pure and knows nothing about a build being over. Its
+    age-ceiling rule compares the count against the largest ask in any age
+    at or below the one on the crest, so once the player is in the build's
+    final age that is the whole build and the answer is "villagers minus
+    the build's maximum" - which climbs for the rest of the game.
+
+    That is a correct answer to the question this function is asked. Making
+    it stop here would need it to learn what completion is, which belongs
+    to the caller. loom_overlay takes its displayed figure from
+    report.max_extra once pace.complete latches; this test exists so that
+    anyone reading the +55 in a bug report finds the mechanism rather than
+    concluding this function is broken.
+    """
+    from loom.build_order import BuildOrder as Build, extra_villagers
+    build = Build.load_by_name("scoutsrush18pop")
+    top = max(step.villager_count for step in build.steps)
+    final_age = max(step.age for step in build.steps if step.age)
+
+    assert extra_villagers(build, top, 9999, age=final_age) == 0
+    assert extra_villagers(build, top + 20, 9999, age=final_age) == 20
+    assert extra_villagers(build, top + 55, 9999, age=final_age) == 55
 
 
 def test_slightly_ahead_is_not_extra():
@@ -280,3 +312,103 @@ def test_more_villagers_than_the_age_allows_is_extra():
     assert extra_villagers(build, 18, 360) == 0
     # Exactly the age's ask is not surplus.
     assert extra_villagers(build, 17, 420, age=1) == 0
+
+
+# ---- the law: lag moves no faster than the clock ------------------------
+
+def test_pace_never_moves_faster_than_a_second_per_second(tracker):
+    """The law, stated directly.
+
+    Pace is the horizontal gap between two curves that both only move
+    forward, so it cannot change faster than the clock in either
+    direction. Stand still and the build's clock runs on at exactly one
+    per second; play perfectly and the best available is to close the gap
+    at one per second. Anything quicker is the measuring stick moving.
+    """
+    said, last = [], None
+    for t in range(80, 400):
+        # A villager count that lurches on purpose, so the underlying
+        # measurement swings far harder than any player could.
+        villagers = 6 + (t // 7) % 9
+        out = tracker.update(villagers, t)
+        if out is None:
+            continue
+        if last is not None:
+            assert abs(out - last) <= 1 + 1e-9, (
+                f"pace moved {out - last:+.1f} in one second at t={t}")
+        last = out
+        said.append(out)
+    assert said, "the tracker never spoke at all"
+
+
+def test_it_converges_rather_than_sticking(tracker):
+    """The distinction that keeps this from being the filter that froze
+    the villager count at 22 for a whole game.
+
+    The bound is on the RATE, never on the value, so a steady
+    measurement is always reached - the only question is how many
+    seconds it takes.
+    """
+    tracker.update(12, 225)                 # on pace, nothing to converge from
+    reached = None
+    for t in range(226, 400):
+        reached = tracker.update(12, t)     # no new villager: overdue climbs
+    # The measurement at t=399 with 12 villagers is the overdue term, and
+    # the report has walked all the way up to it rather than settling short.
+    assert reached == pytest.approx(tracker._overdue(12, 399), abs=1e-6)
+
+
+def test_a_poll_gap_earns_proportionally_more_room(tracker):
+    """Load shedding must not turn this into a stuck meter.
+
+    Five seconds of game time between polls permits five seconds of
+    movement, because five seconds of the gap really did elapse.
+    """
+    # Both start well behind, then a villager arrives that puts the
+    # measurement far below where the report sits. How far the report may
+    # follow it down is exactly the elapsed game time.
+    was = tracker.update(12, 310)
+    close = tracker.update(14, 311)         # one second later
+    far = PaceTracker(BuildOrder(SAMPLE))
+    assert far.update(12, 310) == was
+    wide = far.update(14, 330)              # twenty seconds later
+
+    assert was - close == pytest.approx(1, abs=1e-6), "one second, one second"
+    assert was - wide == pytest.approx(20, abs=1e-6), "twenty earns twenty"
+
+
+def test_a_new_game_starts_free_rather_than_converging_out_of_the_last(tracker):
+    """`reset` clears it, so the first reading of a match is adopted
+    whole. Crawling out of the previous game's answer at one per second
+    would be the last match's pace on this match's panel."""
+    for t in range(226, 380):
+        tracker.update(12, t)
+    assert tracker.update(12, 380) > 50, "not far behind enough to matter"
+    tracker.reset()
+    assert tracker._shown is None and tracker._last_time is None
+    # A fresh game, a villager arriving 60 seconds late: said at once.
+    assert tracker.update(12, 285) == pytest.approx(60)
+
+
+def test_the_clock_going_backwards_earns_no_room(tracker):
+    """A backwards clock is a misread or a seam, and neither is elapsed
+    time. Nothing may move on the strength of it."""
+    tracker.update(12, 300)
+    was = tracker._shown
+    assert tracker.update(15, 250) == pytest.approx(was)
+
+
+def test_the_cursor_is_not_run_through_the_pace_filter(tracker):
+    """Two different questions, and the seam between them stays sharp.
+
+    `player_time` asks WHERE the player is in the build; pace asks HOW
+    LATE they are. It reads `_delta_on_arrival` directly and must go on
+    doing so - its own docstring reasons carefully about why only that
+    term may feed the cursor, and running it through this filter would
+    quietly answer one question with the other's number.
+    """
+    tracker.update(12, 285)                 # 60 seconds late on arrival
+    for t in range(286, 340):               # the report converges upward
+        tracker.update(12, t)
+    assert tracker.player_time(340) == pytest.approx(
+        340 - tracker._delta_on_arrival)

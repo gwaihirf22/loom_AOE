@@ -8,11 +8,13 @@ only the part that applies to it.
 | | Linux | Windows | macOS |
 |---|---|---|---|
 | **Reading the HUD** | ✅ | ✅ | ⚠️ works, ~1–2s behind |
-| **Overlay** | ✅ | ✅ | ❌ not over fullscreen |
+| **Overlay** | ✅ | ✅ | ⚠️ CrossOver yes, Feral windowed only |
 | **Statistics + graphs** | ✅ | ✅ | ✅ |
 | **APM tracking** | ✅ | ✅ | ❌ not yet |
+| **Global hotkeys** | ✅ | ✅ | ❌ not yet |
 | **Demo / simulate modes** | ✅ | ✅ | ✅ |
-| **Status** | primary | primary | paused |
+| **Packaged install** | ✅ Flatpak | ✅ zip with `.exe` | ❌ source only |
+| **Status** | primary | primary | baseline via CrossOver; Feral paused |
 
 Everything that is not capture or overlay — the build-order engine, pace, the
 queue reader, notifications, statistics — is plain Python and OpenCV and behaves
@@ -31,8 +33,22 @@ region, verified at startup by asking the X server rather than trusting Qt.
 That matters more than it sounds — a panel the pointer can enter breaks the
 game's cursor confinement, and the mouse walks onto another monitor mid-match.
 
-APM tracking works here and only here, reading raw X input events. It counts
-keys and clicks and records nothing about which ones.
+APM tracking reads raw X input events, in a child process. It counts keys
+and clicks and records nothing about which ones. (Windows counts the same
+thing by a different mechanism — see below — so this is no longer the only
+platform that has it.)
+
+**Installing is one command.** Loom is packaged as a Flatpak, so there is no
+Python to set up: the runtime brings its own. Unlike the Windows `.exe` the
+Linux package is installed from SOURCE rather than frozen, which is what
+lets the APM child process start at all — a frozen build has no mode to
+launch it with. Everything the build needs is in
+[`packaging/linux/`](../packaging/linux/README.md), whose README carries the
+argument for each sandbox permission the package asks for.
+
+One of those permissions is X11, and the reason is the paragraph above: the
+desktop-screenshot route returns black on Wayland, so Loom must read the
+game's own X window.
 
 → [Install guide](install-linux.md)
 
@@ -87,20 +103,52 @@ use and what antivirus software looks for.
 
 ## macOS
 
-**Paused, and known-degraded.** Reading works against Feral Interactive's
-native port, but a poll costs about a second under game load, so Loom trails the
-game by one to two seconds. Both of Apple's scheduling levers were tried and
-neither moved that number; the remaining path is making the per-poll work
-smaller. Linux on a far weaker machine at the same 4K display trails only ~2
-game-seconds.
+The game arrives two ways on a Mac, and they are different answers.
+
+### The Windows build under CrossOver — baseline
+
+Run the WINDOWS version of the game through CrossOver (Wine) and Loom reads
+it and overlays it, **including over the game's fullscreen**. Wine draws
+"full screen" as a borderless window on the ordinary desktop Space, not as a
+macOS fullscreen Space — so the one limit that made the native port
+windowed-only simply does not exist on this route. Confirmed in a real
+session at 4K, stock HUD with the Transparent UI mod on: it read, and the
+clock kept pace with the game by eye. Poll latency has not been measured by
+instrument yet. The game itself runs worse under CrossOver than natively —
+the translation layer's cost, and the trade this route asks for.
+
+Recorded games live inside the bottle, where Loom's search does not look;
+`LOOM_RECORDS_DIR` points at them — the [install guide](install-macos.md)
+carries the path.
+
+What still does not work, on either route: **APM** (no macOS counter yet —
+the launcher says so on the toggle rather than counting nothing silently)
+and **global hotkeys** (no macOS backend yet; the build order can only be
+followed automatically).
+
+Loom finds the game by its title, corroborated by the window's owner being a
+Wine host — a CrossOver bundle id or a bare `.exe`-named process. If a
+future CrossOver names things differently and Loom keeps "waiting for the
+game", `python -m tools.macos_probe --list` shows what the window actually
+reports, and `--fragment` aims at it directly.
+
+### Feral Interactive's native port — paused
+
+**Paused, and known-degraded.** Reading works, but a poll costs about a
+second under game load, so Loom trails the game by one to two seconds. Both
+of Apple's scheduling levers were tried and neither moved that number; the
+remaining path is making the per-poll work smaller. Linux on a far weaker
+machine at the same 4K display trails only ~2 game-seconds.
 
 Two hard limits, both measured:
 
 - **The overlay cannot float above the game's fullscreen Space.** Every window
-  level and collection behaviour was tried. Windowed play only.
+  level and collection behaviour was tried. Windowed play only. (This is the
+  limit the CrossOver route escapes.)
 - **The game must be frontmost.** macOS only composites the front window, so
   backgrounding the game stops frames. Loom blanks rather than serving a frozen
-  clock.
+  clock. This one applies to the CrossOver route too — it is how macOS
+  composites, not how Feral draws.
 
 Validated only with the game at the display's native 4K. Rendering below it
 upscales the HUD, which the anchor search should now reach; if it does not,
@@ -114,3 +162,9 @@ The capture seam is one package —
 [`loom/capture/`](../loom/capture/README.md) — that picks a backend by
 `sys.platform`. A new platform is one module implementing six functions plus one
 line in a table. Nothing downstream changes.
+
+Shipping to that platform is a second, separate job: a `packaging/<os>/`
+folder, and a decision about whether the app is frozen there or installed
+from source. Those two answers are not related — Windows freezes and Linux
+does not, for reasons written up in
+[`packaging/linux/README.md`](../packaging/linux/README.md).

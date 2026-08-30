@@ -32,3 +32,13 @@
 *.txt  text
 *.yml  text
 *.yaml text
+*.xml  text
+
+# The exception to the no-eol rule above, and it earns it. These three are
+# read by LINUX whatever machine they were edited on: the Flatpak's entry
+# script, the dependency generator, and the desktop entry a shell parses.
+# A CRLF shell script does not fail as a line-ending problem, it fails as
+# `bad interpreter: /bin/sh^M`, which reads like a missing shell. Forcing
+# LF costs a Windows editor nothing here - nobody hand-edits these.
+*.sh      text eol=lf
+*.desktop text eol=lf

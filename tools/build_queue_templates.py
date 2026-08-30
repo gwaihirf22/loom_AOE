@@ -23,10 +23,12 @@ queue identities line up with build-order steps without a translation table.
 
 import os
 import pathlib
+import sys
 
 import cv2
 
-from loom import paths
+from loom import paths, queue
+from tools import civ_reference
 
 # How much the in-game queue portrait is zoomed compared to the library art.
 ZOOM = 1.25
@@ -164,11 +166,35 @@ SOURCES = {
 LIBRARY_DIR = paths.PROJECT_ROOT / "master_aoe2_images"
 OUTPUT_DIR = paths.TEMPLATES_DIR / "queue"
 
-# Where the game's own icon textures live. "DDS:" sources resolve from here -
-# they are the authoritative art for what the queue actually renders on this
-# machine, at this patch.
-GAME_TEXTURES = (pathlib.Path.home() / ".local/share/Steam/steamapps/common"
-                 / "AoE2DE/widgetui/textures/ingame")
+# Where the game's own icon textures live, under whichever install this
+# machine has. "DDS:" sources resolve from here - they are the authoritative
+# art for what the queue actually renders on this machine, at this patch.
+#
+# This used to be a hard-coded Linux Steam path, and the failure was not a
+# missing feature, it was DESTRUCTIVE and silent. main() deletes every
+# template before it writes any, and the whole tech sweep sits behind an
+# `if it exists` - so running this on Windows deleted 526 templates and wrote
+# back about 315, losing 181 identities without a word. civ_reference already
+# knows how to find the game: it parses Steam's libraryfolders.vdf (mine is on
+# E:, which no amount of guessing at Program Files would reach) and honours
+# LOOM_AOE2_DIR.
+TEXTURES_UNDER_INSTALL = pathlib.Path("widgetui/textures/ingame")
+
+_textures = None
+
+
+def game_textures():
+    """The install's ingame texture folder, or None if the game is not here.
+
+    Looked up on demand rather than at import, so importing this module costs
+    nothing and stays safe on a machine with no game - tests and the
+    classifier both import it.
+    """
+    global _textures
+    if _textures is None:
+        install = civ_reference.find_install()
+        _textures = (install / TEXTURES_UNDER_INSTALL) if install else False
+    return _textures or None
 
 
 def load_source(spec):
@@ -183,7 +209,7 @@ def load_source(spec):
         # on a machine without Pillow or without the game installed.
         from PIL import Image
         import numpy as np
-        path = GAME_TEXTURES / spec[len("DDS:"):]
+        path = game_textures() / spec[len("DDS:"):]
         if not path.exists():
             # The unit sheet flips extension case partway through (frames
             # 000-342 are .DDS, 343+ are .dds).
@@ -217,6 +243,65 @@ def cut_dds_template(image):
     square[y0:y0 + height, x0:x0 + width] = cropped
     return cv2.resize(square, (TEMPLATE_SIZE, TEMPLATE_SIZE),
                       interpolation=cv2.INTER_AREA)
+
+
+# The cut for the game's own UNIT portraits, kept apart from ZOOM above so a
+# sweep of this one cannot move the library cut - which is the one that
+# actually wins on live cells - underneath it.
+#
+# MEASURED AND REFUSED: (1.30, (-2, 0)). tools/cut_sweep.py exists now and it
+# is worth keeping, but its recommendation did not survive the corpus gate
+# and the reason is worth more than the constant would have been.
+#
+# What the sweep found, over 699 labelled cells: the window wants to be LEFT
+# of centre. At every zoom from 1.20 to 1.40, top-1 falls monotonically as
+# the window moves right (to 74-83% at +4) and is flat-to-better as it moves
+# left; (1.30, -2) read 100% at all three HUD scales SEPARATELY and held junk
+# terrain to 0.476 against this cut's 0.500. A gradient across five slices,
+# not one lucky row.
+#
+# What it could not see, and neither could two rounds of fixing it:
+#
+#   1. Mean SCORE peaks at dx = 0 and at zoom 1.25 - it points straight back
+#      at these constants while accuracy points elsewhere. The notification
+#      font's lesson: a corpus score can rise while the thing gets worse.
+#   2. (1.25, -2) took top-1 to 100% and pushed a JUNK terrain cell from
+#      0.500 to 0.521, past the uncorroborated identity gate. Junk carries no
+#      label, so it was never in the population being optimised; an invariant
+#      test caught it. The sweep scores junk now.
+#   3. And that is still not enough. `queue_report --check` refused
+#      (1.30, -2): a Magyars SCOUTS game went 100.00% -> 97.16%, six cells
+#      reading `knight` in a game that never ordered one. The labels come
+#      from cells today's templates already read CONFIDENTLY, so the cells a
+#      new cut damages are precisely the ones excluded from the measurement.
+#      A scout cell that starts losing to a knight was never in the sample.
+#
+# So the sweep can compare cuts and it cannot approve one. Only the whole-run
+# gate can, and it is the thing to run before believing any number above.
+UNIT_DDS_ZOOM = ZOOM
+UNIT_DDS_OFFSET = (0, 0)
+
+
+def cut_unit_dds(image, zoom=None, offset=None):
+    """Cut a unit portrait out of the game's own texture.
+
+    Same shape as cut_template - zoom the art, keep a window of template size
+    - but the window can be moved off centre. Only the zoom had ever been
+    tried, and a centred window is an assumption rather than a measurement:
+    the game crops these to fit a cell whose art is not necessarily centred
+    in the source file.
+    """
+    zoom = UNIT_DDS_ZOOM if zoom is None else zoom
+    dx, dy = UNIT_DDS_OFFSET if offset is None else offset
+    side = max(TEMPLATE_SIZE, int(TEMPLATE_SIZE * zoom))
+    zoomed = cv2.resize(image, (side, side), interpolation=cv2.INTER_AREA)
+    margin = (side - TEMPLATE_SIZE) // 2
+    # Clamped rather than wrapped or padded: a window that ran off the edge
+    # would be part real art and part black, and the black would score as
+    # agreement wherever the cell is dark.
+    x0 = min(max(margin + dx, 0), side - TEMPLATE_SIZE)
+    y0 = min(max(margin + dy, 0), side - TEMPLATE_SIZE)
+    return zoomed[y0:y0 + TEMPLATE_SIZE, x0:x0 + TEMPLATE_SIZE]
 
 
 def cut_template(library_image):
@@ -269,6 +354,20 @@ AUTO_EXCLUDE = {
     "mill/FarmDE.webp",
     "mill/Mill_aoe2de.webp",
     "mill/Pasture.webp",
+    # Supplies, and it is here for BOTH reasons this list exists.
+    #
+    # The filename is misspelled, so it slugs to "supllies" and the
+    # collision-into-variant rule cannot see that the game's own
+    # 124_supplies.DDS is the same technology - it became a second identity
+    # for one thing, competing in every match.
+    #
+    # Curating it under the right name fixed that and cost more than it
+    # saved: measured on run_20260826_142630_annehk, supplies then claimed
+    # 3 of 3613 slot readings in a game that never researched it, and
+    # queue_report --check refused the change. The game's own tech art is
+    # what the queue actually renders, and it does not need a second
+    # opinion from the wiki.
+    "barracks/Suplliesicon.webp",
 }
 
 # Game tech files kept out of the automatic DDS sweep: filenames only,
@@ -296,6 +395,43 @@ DDS_TECH_EXCLUDE = {
 }
 
 
+# The suffix a technology takes when a unit already owns its name.
+UPGRADE_SUFFIX = "_upgrade"
+
+
+def tech_identity(slug, existing, kinds):
+    """What to file a tech icon under when something already holds its name.
+
+    The game names an upgrade technology exactly like the unit it produces:
+    029_crossbowman.DDS is the Crossbowman RESEARCH and 018_50730.DDS is the
+    crossbowman. Folding the second into the first as a variant made one
+    identity out of two different pictures - measured, the tech art scores
+    1.000 against the variant it was filed as and 0.045 against the unit's own
+    portrait, and across ten sampled pairs the range is 0.045-0.666. So Loom
+    owned the research's picture, matched it at 0.784, and confidently
+    reported a unit. classify_queue_icons already named the mechanism ("the
+    ram and scorpion UPGRADE techs produce the same slug as the units") and
+    stopped at the classifier without following it back to here.
+
+    Merging is right when both files really are one thing - the wiki Loom
+    icon beside the game's own - so the test is the recorded KIND, not the
+    spelling: merge only into an identity KINDS.tsv calls a technology.
+    Unit, building, animal or unknown all split, because an unrecorded kind
+    is not evidence that merging is safe. That means a missing KINDS.tsv
+    splits everything, which is loud rather than silent, and is the right
+    way round.
+
+    Only collisions with something written THIS run count. KINDS.tsv also
+    carries rows for subjects the notification feed names and no template
+    exists for; a tech icon sharing one of those names collides with nothing.
+    """
+    if slug not in existing:
+        return slug
+    if kinds.get(slug) == queue.TECHNOLOGY:
+        return slug
+    return slug + UPGRADE_SUFFIX
+
+
 def auto_name(filename):
     """A template identity slug from a library filename."""
     import re
@@ -307,6 +443,20 @@ def auto_name(filename):
 
 
 def main():
+    # Checked BEFORE the directory is emptied. Without the game's textures
+    # this tool does not build a smaller set, it builds a broken one - 181
+    # identities and 30 curated variants short - and it used to do that in
+    # silence on any machine whose install was not where the old hard-coded
+    # path said. Saying where it looked is the actionable half: "no install
+    # found" and "I never checked your other drive" are different messages.
+    if game_textures() is None:
+        print("Cannot build: the game's textures are not where I looked.",
+              file=sys.stderr)
+        for candidate in civ_reference.install_candidates():
+            print(f"  tried {candidate}", file=sys.stderr)
+        print(f"Set {civ_reference.INSTALL_ENV} to the install directory.",
+              file=sys.stderr)
+        return 1
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Start clean: every template is generated from a source, and the
     # collision-into-variant rule scans the directory - rebuilding on top
@@ -314,7 +464,7 @@ def main():
     # (it did: 523 templates became 952 on the second run).
     for stale in pathlib.Path(OUTPUT_DIR).glob("*.png"):
         stale.unlink()
-    written, missing = 0, []
+    written, missing, split = 0, [], []
     used_specs = set()
     used_names = set()
 
@@ -334,7 +484,7 @@ def main():
             y0, x0 = (h - TEMPLATE_SIZE) // 2, (w - TEMPLATE_SIZE) // 2
             cut = image[y0:y0 + TEMPLATE_SIZE, x0:x0 + TEMPLATE_SIZE]
         elif spec.startswith("DDS:units/"):
-            cut = cut_template(image)
+            cut = cut_unit_dds(image)
         elif spec.startswith("DDS:"):
             cut = cut_dds_template(image)
         else:
@@ -363,7 +513,17 @@ def main():
         return index
 
     for directory in AUTO_DIRS:
-        for path in sorted((LIBRARY_DIR / directory).glob("*.webp")):
+        # Sorted by NAME, not by Path. Path comparison is case-INSENSITIVE on
+        # Windows and case-sensitive on Linux, so the same library folder
+        # hands back a different order on each - and since a name collision
+        # becomes "the next variant", that order decides which picture is
+        # war_galley.png and which is war_galley.2.png. Rebuilding on the
+        # other OS swapped ten committed templates in pairs. Harmless to the
+        # matcher, which takes the max over variants, and pure noise in a
+        # diff; a stable key means the set is a function of the sources
+        # rather than of the machine.
+        for path in sorted((LIBRARY_DIR / directory).glob("*.webp"),
+                           key=lambda path: path.name):
             spec = f"{directory}/{path.name}"
             if spec in used_specs or spec in AUTO_EXCLUDE:
                 continue
@@ -381,21 +541,30 @@ def main():
     # game-exact art rides beside the wiki art the way the curated
     # entries already pair them.
     import re as _re
-    if GAME_TEXTURES.exists():
-        for path in sorted((GAME_TEXTURES / "tech").iterdir()):
-            if path.suffix.lower() != ".dds":
-                continue
-            spec = f"DDS:tech/{path.name}"
-            if spec in used_specs or path.name in DDS_TECH_EXCLUDE:
-                continue
-            name = _re.sub(r"^\d+_", "", path.stem).lower()
-            used_names.add(name)
-            write_template(name, spec, next_variant_index(name))
+    kinds = queue.identity_kinds()
+    for path in sorted((game_textures() / "tech").iterdir(),
+                       key=lambda path: path.name):
+        if path.suffix.lower() != ".dds":
+            continue
+        spec = f"DDS:tech/{path.name}"
+        if spec in used_specs or path.name in DDS_TECH_EXCLUDE:
+            continue
+        slug = _re.sub(r"^\d+_", "", path.stem).lower()
+        name = tech_identity(slug, used_names, kinds)
+        if name != slug:
+            split.append(f"{slug} -> {name}")
+        used_names.add(name)
+        write_template(name, spec, next_variant_index(name))
 
     print(f"Wrote {written} templates to {OUTPUT_DIR}/")
     for spec in missing:
         print(f"  MISSING source: {spec}")
+    if split:
+        print(f"  {len(split)} tech icons kept out of a unit's identity:")
+        for line in split:
+            print(f"    {line}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

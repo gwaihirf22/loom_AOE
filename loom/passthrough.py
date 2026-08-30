@@ -44,12 +44,16 @@ def input_rectangles(window_id):
     rather than a try/except wrapped round the call.
     """
     try:
-        from Xlib import display as xdisplay
+        from . import xconnect
     except ImportError:
         return None
 
     try:
-        dpy = xdisplay.Display()
+        # xconnect rather than Display() directly - see its module docstring.
+        # Returning None here means "cannot answer", and a cookie python-xlib
+        # merely failed to LOOK UP would have been reported as an overlay
+        # whose click-through could not be verified.
+        dpy = xconnect.connect()
     except Exception:
         # No X server reachable: Wayland-native, headless, or no DISPLAY.
         return None

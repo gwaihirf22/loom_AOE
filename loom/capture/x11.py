@@ -19,8 +19,9 @@ Why not capture the whole screen? Two reasons:
 import functools
 
 import numpy as np
-from Xlib import display, error, X
+from Xlib import error, X
 
+from .. import xconnect
 from .errors import CaptureError
 
 WINDOW_NAME_FRAGMENT = "Age of Empires II"
@@ -55,8 +56,16 @@ def _translates_errors(function):
 
 @_translates_errors
 def open_display():
-    """Connect to the X server."""
-    return display.Display()
+    """Connect to the X server.
+
+    Delegated to loom.xconnect because capture is not the only subsystem
+    that needs a display: hotkeys, passthrough and the APM counter all open
+    their own, and all four used to carry the same inability to find a
+    cookie whose hostname had drifted. The module docstring there has the
+    detail; the short version is that python-xlib ignores the wildcard
+    xauthority entry every C client falls back on.
+    """
+    return xconnect.connect()
 
 
 @_translates_errors

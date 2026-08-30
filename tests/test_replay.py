@@ -10,6 +10,8 @@ from names and mtimes alone.
 # debugging and review. The design and code are my own work.
 
 import datetime
+import os
+from pathlib import Path
 
 import pytest
 
@@ -136,6 +138,183 @@ def test_every_platform_can_say_where_it_looked():
     assert all("Age of Empires 2 DE" in str(p) for p in replay.search_paths())
 
 
+def test_a_flatpak_steam_is_looked_in(monkeypatch):
+    """Steam installed as a Flatpak redirects its whole home, so NONE of
+    the ordinary paths exist and Loom reported "no recorded games" on a
+    machine full of them. That is a large share of Bazzite and Steam Deck
+    players, and it is the shape Loom's own Flatpak will most often meet.
+
+    Checked by parts rather than by string so it reads the same from
+    either boot."""
+    monkeypatch.delenv(replay.RECORDS_DIR_ENV, raising=False)
+
+    wanted = (".var", "app", "com.valvesoftware.Steam")
+    assert any(all(part in path.parts for part in wanted)
+               for path in replay.search_paths("posix")),         "a Flatpak'd Steam is not among the places looked in"
+
+
+LIBRARY_MANIFEST = '''"libraryfolders"
+{
+\t"0"
+\t{
+\t\t"path"\t\t"%s"
+\t\t"apps"
+\t\t{
+\t\t\t"813780"\t\t"24838737434"
+\t\t}
+\t}
+\t"1"
+\t{
+\t\t"path"\t\t"%s"
+\t}
+}
+'''
+
+
+def write_manifest(steam_root, libraries):
+    manifest = steam_root / "steamapps" / "libraryfolders.vdf"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(LIBRARY_MANIFEST % tuple(str(p) for p in libraries),
+                        encoding="utf-8")
+    return manifest
+
+
+def test_steam_names_its_own_libraries(tmp_path):
+    """A game on a second drive keeps its Proton prefix there too, so on
+    Linux "which library" decides whether there are records at all."""
+    steam = tmp_path / "Steam"
+    second = tmp_path / "BigDrive" / "SteamLibrary"
+    write_manifest(steam, [steam, second])
+
+    assert replay.steam_libraries(steam) == [steam, second]
+
+
+def test_no_manifest_is_an_ordinary_answer(tmp_path):
+    """Steam absent, or not installed in this shape, is not a failure -
+    search_paths still returns the hardcoded guesses around it."""
+    assert replay.steam_libraries(tmp_path / "nowhere") == []
+
+
+def test_a_malformed_manifest_does_not_take_discovery_with_it(tmp_path):
+    """Only the `path` key is read, so anything else Valve changes in this
+    format cannot break Loom - and a truncated file yields what it has."""
+    manifest = tmp_path / "steamapps" / "libraryfolders.vdf"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('"libraryfolders" {  "0" { "path"  "/drive/Lib"\n',
+                        encoding="utf-8")
+
+    assert replay.steam_libraries(tmp_path) == [Path("/drive/Lib")]
+
+
+def test_a_second_drive_library_is_searched(monkeypatch, tmp_path):
+    """The whole point of reading the manifest, stated as a path check.
+
+    Guarded against the real machine's Steam by pointing HOME at tmp_path,
+    so this says the same thing on a laptop with one library and on the
+    author's desktop with four.
+    """
+    monkeypatch.delenv(replay.RECORDS_DIR_ENV, raising=False)
+    monkeypatch.setattr(replay.Path, "home", classmethod(lambda cls: tmp_path))
+
+    steam = tmp_path / ".steam" / "steam"
+    second = tmp_path / "mnt" / "2TB" / "SteamLibrary"
+    write_manifest(steam, [steam, second])
+
+    looked = replay.search_paths("posix")
+    assert any(second in path.parents for path in looked), \
+        [str(p) for p in looked]
+
+
+def test_where_it_looked_names_nowhere_twice(monkeypatch, tmp_path):
+    """A manifest lists its own Steam root, so without this the default
+    library appears twice in every "where I looked" message."""
+    monkeypatch.delenv(replay.RECORDS_DIR_ENV, raising=False)
+    monkeypatch.setattr(replay.Path, "home", classmethod(lambda cls: tmp_path))
+
+    steam = tmp_path / ".steam" / "steam"
+    write_manifest(steam, [steam, steam])
+
+    looked = replay.search_paths("posix")
+    assert len(looked) == len(set(looked)), [str(p) for p in looked]
+
+
+def test_one_record_reached_by_two_roots_is_listed_once(tmp_path):
+    """Steam's own default Linux layout made every game ambiguous.
+
+    search_paths names ~/.steam/steam AND ~/.local/share/Steam because
+    either can be the real one - and Steam ships the first as a SYMLINK to
+    the second, so on an ordinary install both are the same directory and
+    every record came back twice. `match` may not choose between two
+    records covering one session, so it refused every game with "2 recorded
+    games were running then": the guard answering correctly a question it
+    should never have been asked, which is why this read as matching being
+    broken rather than as listing.
+
+    Measured on the author's desktop before the fix: 168 records reported,
+    84 real, and not one game could be attached to its replay.
+    """
+    real = tmp_path / "real"
+    (real / "savegame").mkdir(parents=True)
+    record = real / "savegame" / "SP Replay v101.103.48987.0 @2026.08.29 235217.aoe2record"
+    record.write_bytes(b"not parsed by this test")
+    os.utime(record, (0, 0))            # long settled
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem does not do directory symlinks")
+
+    found = replay.records(roots=[real, link])
+    assert len(found) == 1, [str(r.path) for r in found]
+
+
+def test_two_genuinely_different_files_both_count(tmp_path):
+    """The other side of the rule above: de-duplication is by which FILE a
+    path resolves to, never by name. A record copied to a second folder is
+    two records, and collapsing those would hide a real ambiguity that
+    `match` exists to report."""
+    stamp = "SP Replay v101.103.48987.0 @2026.08.29 235217.aoe2record"
+    roots = []
+    for name in ("one", "two"):
+        folder = tmp_path / name
+        folder.mkdir()
+        copy = folder / stamp
+        copy.write_bytes(b"not parsed by this test")
+        os.utime(copy, (0, 0))
+        roots.append(folder)
+
+    assert len(replay.records(roots=roots)) == 2
+
+
+def test_a_named_records_folder_is_looked_in_first(monkeypatch, tmp_path):
+    """The guesses can only ever cover the DEFAULT Steam library. A library
+    on a second drive is wherever the player put it, so they can say."""
+    monkeypatch.setenv(replay.RECORDS_DIR_ENV, str(tmp_path))
+
+    assert replay.search_paths("posix")[0] == tmp_path
+
+
+def test_two_libraries_can_be_named(monkeypatch, tmp_path):
+    """os.pathsep-separated, like PATH: a player with two Steam libraries
+    has two answers and choosing one for them would be a guess."""
+    second = tmp_path / "other"
+    monkeypatch.setenv(replay.RECORDS_DIR_ENV,
+                       os.pathsep.join([str(tmp_path), str(second)]))
+
+    assert replay.search_paths("posix")[:2] == [tmp_path, second]
+
+
+def test_naming_a_folder_does_not_hide_the_usual_places(monkeypatch, tmp_path):
+    """A mistyped variable should leave a visibly wrong entry at the top of
+    a list that still contains the right places, not replace the list with
+    nothing and report that the game is not installed."""
+    monkeypatch.setenv(replay.RECORDS_DIR_ENV, str(tmp_path / "typo"))
+
+    assert len(replay.search_paths("posix")) > 1
+    assert any("Steam" in path.parts for path in replay.search_paths("posix"))
+
+
 def test_reading_a_record_costs_nothing_until_one_is_read():
     """mgz is imported inside the parser, not at module scope. Most runs of
     Loom never open a record, and a frozen build should not carry the cost
@@ -229,3 +408,49 @@ def test_the_frozen_build_names_the_parser_it_only_imports_lazily():
     hidden = text[text.index("hiddenimports=["):text.index("excludes=[")]
     for needed in ('"mgz"', '"mgz.fast"', '"construct"'):
         assert needed in hidden, f"{needed} is not named in the build"
+
+
+def test_a_race_and_an_absence_never_share_a_sentence(tmp_path):
+    """The bug this pair exists to stop from coming back.
+
+    A record whose match Loom sat through, written seconds ago, is NOT
+    the same answer as no record at all - one is worth waiting for and
+    the other never will be. They were the same answer for the whole life
+    of the feature, because `records` dropped the fresh file before
+    `match` could see it and `match` then said "no recorded game was
+    running then" about a file sitting on the disk.
+    """
+    covering = a_record(tmp_path, "2026.08.25 010700", minutes=36)
+    stats = tmp_path / "2026-08-25_010714_fast_castle.json"
+
+    # As it is: aged, so it reads.
+    assert replay.match(stats, available=[covering]).confidence \
+        == replay.CERTAIN
+
+    # The same file, seconds old. The session is still inside it.
+    import os
+    now = datetime.datetime.now()
+    os.utime(covering.path, (now.timestamp(), now.timestamp()))
+    fresh = replay.Record(covering.path, covering.started, now)
+    found = replay.match(stats, available=[fresh])
+    assert found.confidence == replay.NOT_YET
+    assert found.record is None, "a record that may not be read is not offered"
+    # And it says which of the two it is, in words a person can act on.
+    assert "few seconds" in found.why
+
+    # Nothing covering the session at all is still NONE, and says so.
+    away = a_record(tmp_path, "2026.08.25 230000", minutes=10)
+    missing = replay.match(stats, available=[away])
+    assert missing.confidence == replay.NONE
+    assert missing.why != found.why
+
+
+def test_the_unsettled_records_are_fetched_only_when_asked(tmp_path):
+    """`settled_only=False` exists for `match` alone. Every other caller
+    keeps the refusal, so a looser lookup cannot widen what may be read."""
+    fresh = tmp_path / "SP Replay v1 @2026.08.25 010700.aoe2record"
+    fresh.write_bytes(b"still going")
+
+    assert replay.records(roots=[tmp_path]) == []
+    asked = replay.records(roots=[tmp_path], settled_only=False)
+    assert [r.path for r in asked] == [fresh]

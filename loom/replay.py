@@ -101,29 +101,138 @@ Match = namedtuple("Match", "record confidence why gap")
 CERTAIN = "certain"          # one record contains the session
 AMBIGUOUS = "ambiguous"      # more than one does
 NONE = "none"                # no record contains it
+# The record IS there and I have not been allowed to read it yet. Its own
+# answer because the alternative was reporting it as NONE, which is a claim
+# about the world manufactured out of a refusal to read - the same fault as
+# absence dressed as empty, and it made a nine-second race look exactly
+# like a match that was never recorded. A caller seeing this can wait; a
+# caller seeing NONE has nothing to wait for.
+NOT_YET = "not yet"
 
 
-def search_paths():
+# Escape hatch, the same convention as LOOM_DATA_DIR: name the folder that
+# holds the recorded games. os.pathsep-separated, because a player with two
+# Steam libraries has two of them and picking one for them would be a guess.
+#
+# This used to be the ONLY answer for a game outside the default library,
+# on the reasoning that parsing Steam's own library manifest would make a
+# shipped feature depend on the shape of another program's config file.
+# That reasoning was sound on Windows and wrong on Linux, and the reason is
+# worth keeping because it is a general one: the same feature has a
+# different shape per platform.
+#
+# On Windows the records live in %USERPROFILE%\Games, so which drive the
+# GAME sits on never mattered - the author's own Windows machine keeps its
+# library on a separate HDD and auto-location has always worked there. On
+# Linux they live INSIDE the Proton prefix, which lives in whichever
+# library holds the game. So on Linux "which library" is not a detail, it
+# is the whole question, and declining to ask it meant a player with the
+# game on a second drive got silence.
+#
+# steam_libraries reads that manifest now. The variable stays, because a
+# manifest can be missing or a folder can be somewhere Steam never heard
+# of. Inside a Flatpak it is also how the player points Loom at the folder
+# they opened a sandbox hole for - see docs/install-linux.md.
+RECORDS_DIR_ENV = "LOOM_RECORDS_DIR"
+
+# The path below a Proton prefix, which is a Windows filesystem, so it is
+# character-for-character what Windows itself uses. 813780 is AoE2 DE's
+# Steam app id.
+_GAMES_UNDER_HOME = Path("Games") / "Age of Empires 2 DE"
+_PREFIX_TAIL = (Path("steamapps") / "compatdata" / "813780" / "pfx"
+                / "drive_c" / "users" / "steamuser" / _GAMES_UNDER_HOME)
+
+# Every `"path"  "<somewhere>"` in Steam's library manifest. A whole VDF
+# parser would be the wrong tool: the file is a nested key-value format and
+# the only thing wanted from it is a flat list of library roots, so reading
+# just that one key means a change to any other part of the format cannot
+# break this. A missing or unreadable file is not an error either - see
+# steam_libraries - because "Steam is not installed in this shape" has
+# always been an ordinary answer here.
+_LIBRARY_PATH = re.compile(r'"path"\s*"([^"]+)"')
+
+# Where Steam keeps that manifest, below a Steam root.
+_LIBRARY_MANIFEST = Path("steamapps") / "libraryfolders.vdf"
+
+
+def steam_libraries(steam_root):
+    """Every library folder a Steam installation lists, that one's own included.
+
+    Returns [] when the manifest is absent or says nothing - a Steam that is
+    not installed here, or not installed in this shape, and neither is a
+    failure worth raising over. The paths are returned unchecked, on the
+    same contract as search_paths: naming somewhere is a place to LOOK.
+    """
+    try:
+        text = (Path(steam_root) / _LIBRARY_MANIFEST).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [Path(found) for found in _LIBRARY_PATH.findall(text)]
+
+
+def search_paths(os_name=None):
     """Where this OS keeps recorded games.
 
     Returned whether or not they exist - a caller listing nothing wants to
     be able to say WHERE it looked, and "no records found" is a different
     message from "the game is not installed here".
+
+    That contract is what makes it safe to list a Steam that may not be
+    installed in that shape: naming a directory here is a place to LOOK,
+    never a claim that anything is in it.
+
+    Takes the OS as an argument for the same reason paths.data_home does:
+    the Linux answer is the one that keeps growing, and I want it checked
+    from whichever machine happens to be running the suite rather than only
+    on the boot that already works.
     """
+    os_name = os.name if os_name is None else os_name
     found = []
-    if os.name == "nt":
+
+    # The override first, because a player who named a folder has answered
+    # the question the guesses below are guessing at. The guesses still
+    # follow: they cost nothing, and dropping them would turn a mistyped
+    # variable into "you have no recorded games" rather than a short list
+    # that visibly does not contain the one they meant.
+    override = os.environ.get(RECORDS_DIR_ENV)
+    if override:
+        found.extend(Path(part) for part in override.split(os.pathsep) if part)
+
+    if os_name == "nt":
         home = os.environ.get("USERPROFILE")
         if home:
-            found.append(Path(home) / "Games" / "Age of Empires 2 DE")
+            found.append(Path(home) / _GAMES_UNDER_HOME)
     else:
-        # Steam Play keeps a Windows filesystem inside the Proton prefix,
-        # so the path below it is identical. 813780 is AoE2 DE's app id.
         home = Path.home()
-        for steam in (home / ".steam" / "steam", home / ".local" / "share" / "Steam"):
-            found.append(steam / "steamapps" / "compatdata" / "813780" / "pfx"
-                         / "drive_c" / "users" / "steamuser" / "Games"
-                         / "Age of Empires 2 DE")
-    return found
+        steams = [
+            home / ".steam" / "steam",
+            home / ".local" / "share" / "Steam",
+            # Steam installed as a Flatpak, which is how a large share of
+            # Bazzite and Steam Deck players have it. Its whole home is
+            # redirected, so none of the paths above exist and Loom
+            # reported "no recorded games" on a machine full of them.
+            (home / ".var" / "app" / "com.valvesoftware.Steam"
+             / ".local" / "share" / "Steam"),
+        ]
+        # The default libraries first, then every library those installs
+        # name. Order matters only for what a "where I looked" list reads
+        # like: the common answer should be at the top.
+        found.extend(steam / _PREFIX_TAIL for steam in steams)
+        for steam in steams:
+            found.extend(library / _PREFIX_TAIL
+                         for library in steam_libraries(steam))
+
+    # A library manifest lists its own Steam root, so the default libraries
+    # come back twice on every ordinary install. De-duplicated by the path
+    # as written rather than as resolved, because this list is what Loom
+    # SAYS it looked in and a symlink is a different sentence to a reader -
+    # records() is where sameness on disk is decided, and it resolves.
+    unique = []
+    for path in found:
+        if path not in unique:
+            unique.append(path)
+    return unique
 
 
 class GameStillRunning(Exception):
@@ -181,21 +290,64 @@ def session_started_at(stats_path):
     return datetime.datetime(*map(int, found.groups())) if found else None
 
 
-def records(roots=None, now=None):
+def records(roots=None, now=None, settled_only=True):
     """Every readable recorded game, oldest first.
 
     A record with no timestamp in its name is skipped rather than guessed
     at: without a start there is nothing to match against, and an mtime
     alone would put every old file in the running.
+
+    `settled_only=False` includes the ones Loom is not allowed to read yet
+    - the match in progress, and the file the game finished writing seconds
+    ago. It exists for ONE caller: `match`, which needs to know that a
+    record covering this session exists before it is entitled to say none
+    does. Dropping them here was how a nine-second race came back as "no
+    recorded game was running then", so a caller that wants them must ask
+    and every other caller keeps the refusal.
     """
     found = []
+    # One record must not be found twice, and on an ordinary Linux install
+    # it was. search_paths names both ~/.steam/steam and
+    # ~/.local/share/Steam because either can be the real one - but Steam's
+    # own default layout makes the first a SYMLINK to the second, so both
+    # are the same directory and every record came back as two.
+    #
+    # The damage landed nowhere near here. `match` is forbidden from
+    # guessing between two records covering one session, so it correctly
+    # refused every single game: "2 recorded games were running then". The
+    # guard was working perfectly on a question it should never have been
+    # asked, which is why this looked like matching being broken rather
+    # than listing. Measured on this machine: 168 records reported, 84 real.
+    #
+    # Roots are collapsed before the walk so the same tree is not scanned
+    # twice, and files are checked again after it because roots can overlap
+    # without being equal - one nested inside another resolves differently
+    # and still yields the same file.
+    seen_roots = set()
+    seen_files = set()
     for root in (roots if roots is not None else search_paths()):
         root = Path(root)
         if not root.is_dir():
             continue
+        try:
+            key = root.resolve()
+        except OSError:
+            key = root
+        if key in seen_roots:
+            continue
+        seen_roots.add(key)
         for path in root.rglob("*.aoe2record"):
+            try:
+                real = path.resolve()
+            except OSError:
+                real = path
+            if real in seen_files:
+                continue
+            seen_files.add(real)
             started = started_at(path)
-            if started is None or not is_finished(path, now):
+            if started is None:
+                continue
+            if settled_only and not is_finished(path, now):
                 continue
             try:
                 ended = datetime.datetime.fromtimestamp(path.stat().st_mtime)
@@ -217,14 +369,35 @@ def match(stats_path, available=None, now=None):
     AMBIGUOUS and says so, because picking the nearer one would be Loom
     guessing at exactly the seam where a wrong answer would attach one
     game's truth to another game's readings.
+
+    And it distinguishes NOT_YET from NONE, which is the whole reason the
+    unsettled records are fetched at all. The game finishes writing its
+    record and the overlay exits about nine seconds later - measured, on
+    this machine - against a thirty-second settle window. Reporting that as
+    "no recorded game was running then" is a statement about the world
+    built out of a refusal to read, and it made a race that one retry fixes
+    look like a match nobody recorded.
     """
     when = session_started_at(stats_path)
     if when is None:
         return Match(None, NONE, "the stats file has no timestamp to match on",
                      None)
-    inside = [r for r in (records(now=now) if available is None else available)
-              if contains(r, when)]
+    looking = (records(now=now, settled_only=False) if available is None
+               else available)
+    inside = [r for r in looking if contains(r, when)]
+    # The refusal moved here from `records` so that ONE function decides
+    # what a caller is told. `is_finished` is still the boundary and still
+    # says no; the difference is that "no" now arrives with its reason.
+    waiting = [r for r in inside if not is_finished(r.path, now)]
+    inside = [r for r in inside if is_finished(r.path, now)]
     if not inside:
+        if waiting:
+            # One sentence for however many are waiting: they are all the
+            # same answer, and refusal_reason already phrases it for a
+            # person ("try again in a few seconds").
+            return Match(None, NOT_YET,
+                         refusal_reason(waiting[0].path, now)
+                         or "that record cannot be read yet", None)
         return Match(None, NONE, "no recorded game was running then", None)
     if len(inside) > 1:
         return Match(None, AMBIGUOUS,
@@ -277,13 +450,22 @@ def _now():
 # because the HUD counts villagers directly and the feed cannot keep up
 # with unit lines anyway.
 
-from .replay_ids import BUILDINGS, TECHNOLOGIES  # noqa: E402
+from .replay_ids import (BUILDINGS, QUEUE_TECHS, QUEUE_UNITS,  # noqa: E402
+                         TECHNOLOGIES)
 
 UNITS = {
     83: "villager",
 }
 
 AGE_TECHS = {101: "feudal_age", 102: "castle_age", 103: "imperial_age"}
+
+# Every icon family the dataset can name AND the queue reader has a template
+# for. The set exists to keep two different silences apart: an identity in
+# here that a game never ordered is a MISREAD, while an identity outside it
+# cannot be spoken about at all - the record has no name for it, or the
+# reader has no picture of it. Scoring the second as either right or wrong
+# would be inventing an answer, so it is counted separately and reported.
+QUEUE_KNOWN = frozenset(QUEUE_UNITS.values()) | frozenset(QUEUE_TECHS.values())
 
 
 class Truth:
@@ -294,6 +476,16 @@ class Truth:
         self.builds = collections.defaultdict(list)       # id -> [(sec, x, y)]
         self.researches = collections.defaultdict(list)   # id -> [sec]
         self.queued = collections.Counter()               # unit id -> total
+        # Everything a single production building was told to do, in order.
+        # object_id -> [(second, "unit"|"technology", id, amount)]
+        #
+        # The record identifies buildings by the object id its commands
+        # carry, which is how a Town Centre becomes findable at all: an
+        # object that trains villagers or researches Loom is a Town Centre,
+        # and there is no other way to know. Counting totals threw that
+        # away - `queued` above is a Counter with no when and no where,
+        # which cannot say whether a building was working at 09:38.
+        self.orders = collections.defaultdict(list)
         self.duration = 0
 
     def name_of_building(self, ident):
@@ -304,6 +496,39 @@ class Truth:
 
     def name_of_unit(self, ident):
         return UNITS.get(ident, f"unit_{ident}")
+
+    def queue_subjects(self):
+        """Every icon family the QUEUE reader could honestly show, per game.
+
+        Two vocabularies meet here and they are not the same one. The record
+        counts in numeric ids; the queue reader names icon templates. An id
+        with no template is left OUT rather than named, because the reader
+        can never say it - so its absence from a reading is a fact about the
+        template set and not evidence of a misread.
+
+        Used to ask whether a slot's identity is one the player ever ordered.
+        A reading outside this set is a misread; a reading inside it may
+        still be wrong, and the timing checks are what look at that.
+        """
+        found = set()
+        for ident in self.queued:
+            if ident in QUEUE_UNITS:
+                found.add(QUEUE_UNITS[ident])
+        for ident in self.researches:
+            if ident in QUEUE_TECHS:
+                found.add(QUEUE_TECHS[ident])
+        return found
+
+    def unverifiable_orders(self):
+        """Ids the player ordered that the queue reader has no template for.
+
+        Reported rather than hidden. This is the number that says how much
+        of a game the identity check simply cannot speak about, and a check
+        whose blind spot is unmeasured is the KNOWN_WORDS failure waiting to
+        happen again.
+        """
+        return ({i for i in self.queued if i not in QUEUE_UNITS}
+                | {i for i in self.researches if i not in QUEUE_TECHS})
 
     def ages(self):
         """When each age was ORDERED, in game seconds. Not when it arrived."""
@@ -379,9 +604,64 @@ def harvest(path, player=1):
                 (second, data["x"], data["y"]))
         elif kind == "RESEARCH":
             truth.researches[data["technology_id"]].append(second)
+            for oid in _objects_in(data):
+                truth.orders[oid].append(
+                    (second, "technology", data["technology_id"], 1))
         elif kind in ("DE_QUEUE", "MAKE"):
-            truth.queued[data["unit_id"]] += data.get("amount", 1)
+            amount = data.get("amount", 1)
+            truth.queued[data["unit_id"]] += amount
+            for oid in _objects_in(data):
+                truth.orders[oid].append(
+                    (second, "unit", data["unit_id"], amount))
     return truth
+
+
+def _objects_in(data):
+    """Which building an order was given to, however the op spells it.
+
+    DE_QUEUE and RESEARCH carry `object_ids` (a selection, so a list);
+    MAKE carries a single `building_id`. Same fact, two spellings, and
+    reading only one of them loses a whole command type - MAKE is 207 of
+    the 722 production orders in the game this was measured on.
+    """
+    ids = data.get("object_ids")
+    if ids:
+        return list(ids)
+    single = data.get("building_id")
+    return [single] if single is not None else []
+
+
+# A building that trains villagers or researches a Town Centre technology
+# IS a Town Centre. The record never says so directly - it identifies
+# buildings only by the object id its commands carry - so this is the only
+# route from a recorded game to "how many Town Centres existed at 09:38",
+# which is the question a whole class of Loom bug turns on.
+TC_UNIT_IDS = {83}                                  # villager
+TC_TECH_IDS = {22, 101, 102, 103, 213, 249, 8, 280}  # loom, ages, wheelbarrow,
+                                                     # hand cart, town watch,
+                                                     # town patrol
+
+
+def town_centres(truth):
+    """{object id: first second it was seen working}, for Town Centres only.
+
+    First ORDER, not first existence: a Town Centre that is built and never
+    used is invisible here. That direction is the safe one - it under-counts
+    rather than inventing, so it can convict Loom of believing in a Town
+    Centre too many and never of missing one.
+    """
+    found = {}
+    for oid, orders in truth.orders.items():
+        for second, kind, ident, _amount in orders:
+            if (kind == "unit" and ident in TC_UNIT_IDS) or \
+                    (kind == "technology" and ident in TC_TECH_IDS):
+                found[oid] = min(found.get(oid, second), second)
+    return found
+
+
+def town_centres_at(truth, when):
+    """How many Town Centres the record proves were working by `when`."""
+    return sum(1 for first in town_centres(truth).values() if first <= when)
 
 
 # Commands the game acted on, bucketed the same way the keystroke counter

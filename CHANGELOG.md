@@ -6,6 +6,222 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.8 — 2026-08-30
+
+### Added
+
+- **macOS has a working route again: the WINDOWS build of the game under
+  CrossOver (Wine).** Loom read it and overlaid it on first launch,
+  fullscreen included — Wine draws "full screen" as a borderless window on
+  the ordinary desktop Space rather than a macOS fullscreen Space, so the
+  limit that made the native Feral port windowed-only does not exist on
+  this route. Discovery now accepts both identities: Feral's exact bundle
+  id, or a title match corroborated by the owner being a Wine host (a
+  `com.codeweavers.` bundle id or a bare `.exe`-named app, both measured
+  with `macos_probe --list`). An uncorroborated title match is refused,
+  the same call the Windows backend makes — a browser tab about Age of
+  Empires must never be mistaken for the game. Confirmed in a real 4K
+  session (stock HUD, Transparent UI mod): it read, and the clock kept
+  pace by eye — the instrumented latency and template scores against the
+  D3DMetal renderer are still owed, and the docs say so rather than
+  presuming. Recorded games live inside the CrossOver bottle where the
+  search paths never look; `LOOM_RECORDS_DIR` is the documented answer,
+  with the exact path in the macOS install guide.
+- **Loom is packaged for Linux, as a Flatpak.** One install command on
+  Bazzite, Fedora, Ubuntu, Arch, SteamOS and Nobara, with no Python
+  install. Everything the build needs is in `packaging/linux/`. Bazzite's
+  store is Bazaar, a Flathub front end, so publishing there is what puts
+  Loom in that store — the same artifact serves every other distribution.
+- **The Linux package is installed from SOURCE rather than frozen**, which
+  is the opposite of the Windows `.exe` and deliberately so: a Flatpak's
+  runtime brings a real Python. That removes the need for a Linux
+  PyInstaller spec, and it is what lets APM work at all — on Linux the
+  counter is a child process, and a frozen build could not have started it
+  because `entry.MODES` has no mode for it.
+- `LOOM_RECORDS_DIR` names the folder holding recorded games, for a Steam
+  library on a drive Loom cannot guess at. Colon-separated for more than
+  one, like `PATH`.
+- **Post-game Data is two columns: what Loom read, beside what the game was
+  actually told to do.** The recorded game is the only ruler in the project
+  that is not one of Loom's own readers, so putting the two side by side is
+  the difference between "the reader says nine archers" and "the reader says
+  nine and the game was ordered nine".
+- **A Scan button walks the backlog of past games and attaches the recorded
+  game to each**, and a violet banner says so when a game has no record
+  rather than leaving an empty chart to be read as a zero.
+
+### Fixed
+
+- **Linux: hotkeys, capture, APM and click-through all worked again, and
+  they were one fault.** Reported as "hotkeys aren't working". The X
+  session cookie is keyed to the hostname at login, and where that name has
+  since changed, python-xlib alone cannot find it: it matches the address
+  for equality and does not implement `FamilyWild`, the "matches any host"
+  fallback C's Xlib uses. So it sent no authorisation and was refused,
+  while every C client on the desktop carried on. Four subsystems opened
+  their own connection and all four died together — capture read nothing,
+  hotkeys were refused, APM charted zeros, passthrough could not verify
+  click-through. The overlay is Qt, whose xcb plugin goes through C's Xlib,
+  so the panel came up looking perfectly healthy the whole time, which is
+  why it presented as the smallest of the four. `loom/xconnect.py` is the
+  single place that opens an X connection now, and it accepts only the
+  wildcard entry — where C's Xlib would fail, Loom fails too. The causes
+  are ordinary on immutable distributions: a transient name from DHCP, an
+  image update resetting an unset static hostname, or a distrobox
+  container.
+- **Linux: a match's recorded game is found again.** `search_paths` names
+  both `~/.steam/steam` and `~/.local/share/Steam`, and Steam's own default
+  layout makes the first a symlink to the second — so every record was
+  found twice, and `match`, which may not choose between two records
+  covering one session, refused every game with "2 recorded games were
+  running then". Measured: 168 records reported, 84 real. Roots that
+  resolve to the same directory are collapsed before the walk now.
+- **Linux: recorded games are found in any Steam library, not just the
+  default one.** Loom reads Steam's own `libraryfolders.vdf`. This matters
+  here and not on Windows, where records live in `%USERPROFILE%\Games` and
+  the drive holding the game is irrelevant; on Linux they live inside the
+  Proton prefix, in whichever library holds the game. Inside the Flatpak
+  this means granting a library on another drive is one `flatpak override`
+  rather than two — no `LOOM_RECORDS_DIR` naming the prefix path by hand.
+- **A demo replay no longer appears in the statistics as a game you
+  played.** `statsview` hides a stats file whose stem ends in `_demo`, and
+  no demo run had ever produced one: the mark lived in a default argument
+  that `loom_overlay` always overrode with `--build`'s value.
+- **The recorded game now attaches when the statistics window opens, not
+  only when the overlay stops.** Stopping Loom is not the match ending —
+  measured on a real game, the stats file was written at 12:19:20 and the
+  game was still writing its record fifteen minutes later. Loom rightly
+  refuses to read a record the game is still writing, the launcher's one
+  retry comes 35 seconds after the overlay exits, and nothing asked again,
+  so two of the six most recent games had no record attached while matching
+  their recording perfectly when asked later. Opening the statistics window
+  is a moment that is reliably *after* the match, so the last few games
+  without a record are tried then — quietly, three at a time, and never
+  twice for the same game. Two recordings that both cover a session are
+  still left for a person to choose between.
+- **The launcher no longer tries to count APM on macOS with a counter
+  that cannot run there.** `apm.how_counted` is the one home for "how
+  does this platform count" — overlay, child, or not at all — and darwin's
+  honest answer is not at all: the old two-way question sent macOS down
+  the child path, where the X11-only counter dies on import. The APM
+  toggle is disabled there with a tooltip saying why, instead of a ticked
+  box that counts nothing.
+- **Every control in the launcher's wrapping rows drew with the bottom of
+  its text cut off on macOS — buttons, checkboxes and labels alike. Found
+  by screenshot, fixed by measurement.** Qt's macOS style gives widgets
+  "layout item margins": the layout-item's size hint comes back SMALLER
+  than the widget's own (measured: 14px tall against 26) and
+  item.setGeometry inflates the rect back before the widget sees it, and
+  the two transforms do not round-trip for a stylesheet-styled button —
+  the rect handed back was 22px for a widget that needs 26. FlowLayout
+  now asks the WIDGET for its hint and places the WIDGET directly, so
+  both halves stay in one coordinate system on every platform; the other
+  two platforms' styles carry no such margins, which is why the same code
+  was pixel-correct there for the whole life of the project, and why a
+  green offscreen suite never saw it. The five overlay-control buttons
+  also now share one always-present base stylesheet instead of mixing
+  Qt's stylesheet renderer with the native one (the Hide button used to
+  flip between them at runtime), so their metrics no longer depend on
+  which engine happened to draw them last.
+- **Holding Shift no longer stops a key being captured in the settings
+  window.** Qt reports the character a key *produces* rather than the key
+  that was struck, so `Ctrl+Shift+9` arrived as `ParenLeft` and
+  `Ctrl+Shift+;` as `Colon` — names the grammar has never heard of, so the
+  press was declined. That was 21 of the 86 bindable keys: the whole digit
+  row, all eleven punctuation keys, and Tab. Letters were unaffected, which
+  is why it looked like a digit-only fault.
+
+- **Captures no longer resolve into a read-only installation.** The
+  decision asked `sys.frozen` — "did PyInstaller build this" — when the
+  question it needed answered was "may I write here". Those agreed on
+  Windows and part company in a Flatpak, where nothing is frozen and the
+  program directory is read-only, so the overlay's dump of unreadable
+  notification lines had nowhere to go. `paths.installed()` asks the real
+  question now.
+- **The wood villager count reads again.** The panel showed a dash for wood
+  while food, gold and stone read normally. The number strip starts a few
+  pixels left of its icon, to allow for a number that is not centred the same
+  on every resource; for the three inner resources those pixels land on the
+  previous icon's black box, but wood is the leftmost, so they land on the
+  resource bar's own brown end cap. That chrome passed the yellow test — the
+  gate allowed blue up to 110 and the chrome starts at 61 — and was tall
+  enough to survive the digit-shape filter, so the reader saw two glyphs
+  where the game had drawn one and refused the crop. The refusal was correct;
+  the fault was in what the mask let through. The digits are drawn at blue
+  exactly 0, so the gate is 30 now. Swept over 1686 frames of the capture
+  corpus: wood 97.0% to 99.8% read, with food, gold and stone unchanged.
+
+- **Recorded games are found when Steam is itself a Flatpak.** Its home is
+  redirected, so none of the paths Loom knew existed and it reported no
+  recorded games on machines full of them.
+- **A technology was filed under a unit's name, twenty-five times over.**
+  The game names an upgrade technology exactly like the unit it produces,
+  so Loom held the Crossbowman RESEARCH as a third picture of the
+  crossbowman UNIT and confidently reported a unit whenever it saw the
+  research. Measured, the two images correlate at 0.045 — they were never
+  two views of one thing. Twenty-five identities were affected; each now
+  carries its own name, and the game's rule that a technology never shows a
+  batch numeral reaches all of them.
+- **Thirty-one archers and fifty-seven cavalry archers stopped looking like
+  misreads.** `events.from_record` never read the recorded game's UNIT
+  orders and `replay.name_of_unit` could name only the villager, so
+  everything else was stored as `unit_4` or `unit_39` and read back as
+  something Loom had invented. Nine subjects a game were being blamed on
+  the readers, from data that was already on disk.
+- **Pace no longer staircases.** Lag is the horizontal gap between two
+  curves that only ever move forward, so it can change by at most a second
+  per second in either direction; the report is clamped to that. Measured
+  over 164 games the mean worst single jump fell from 31.6s to 12.1s while
+  the mean PEAK was unchanged at 360.3s — so the jumps were the artefact
+  and nothing true was lost. One change, and both the overlay and the
+  statistics chart are fixed by it.
+- **A popped-out chart lands beside the statistics window on *its* screen**,
+  rather than back on the primary monitor half off the edge. `beside`,
+  `clamped_position` and `WINDOW_GAP` moved out of `launcher.py` into
+  `placement.py` on the way, which is where the question already lived.
+- **The recorded game attaches itself when a match ends**, with one retry
+  past the thirty-second settle window, and attaching one redraws the whole
+  view instead of two widgets that could disagree with the rest of it.
+- **The launcher's window carries Loom's icon on Linux.** Nothing told Qt
+  which desktop entry the process belongs to, so the window inherited the
+  interpreter's identity and the taskbar showed a placeholder — the same
+  problem `windows_app_identity` was written for, on the other platform.
+  Both are now `entry.app_identity()`.
+
+### Changed
+
+- **The key that hides the panel is now `Ctrl+Shift+Minus` — the `-` key —
+  and no longer `Ctrl+Shift+0`.** Windows consumes `Ctrl+Shift+0` before any
+  program sees it. Measured in a single run with the window in the
+  foreground: `Shift+0` arrives as `ParenRight` and `Ctrl+Shift+1` as
+  `Exclam`, while `Ctrl+Shift+0` produces **no key event at all**. It can
+  still be *registered* — Windows reports the combination free and hands the
+  hotkey straight back to whoever asked for it — which is exactly why it
+  worked as a binding while being impossible to type into the settings
+  window. Nothing in Loom can capture a key that never arrives, so the
+  default moved rather than being patched around. An existing
+  `Ctrl+Shift+0` binding is left alone and keeps working; only the shipped
+  default changes.
+
+- `tools/release.py` reads the version from `loom/__init__.py` instead of
+  taking an independent one on the command line, and refuses an argument
+  that disagrees with it. Publishing 1.0.8 from a tree that still said
+  1.0.7 would have shipped a release whose own title bar contradicted its
+  tag, with nothing anywhere checking. It also refuses to publish a
+  version the Linux metadata has not been told about.
+- `mss` moved to `requirements-dev.txt`. Only `tools/capture_smoketest.py`
+  has ever imported it; nothing under `loom/` does.
+- **Loom reports itself as `1.0.8-dev` rather than `1.0.7`.** A `-dev`
+  suffix means the tree is between releases, so a build running from source
+  or from a nightly says so in its title bar and in every stats file it
+  writes, instead of claiming to be the last release. `tools/release.py`
+  reads the same suffix and refuses to publish such a tree as a release —
+  and refuses to publish a real release as a nightly.
+- **The Statistics and Scan buttons wear the record's violet**, derived from
+  the same `RECORD_COLOR` the charts use so a control cannot drift away from
+  the thing it opens. Darkened by measurement rather than by eye: white on
+  the chart colour is 2.58:1 and unreadable, where `darker(160)` is 5.88:1.
+
 ## 1.0.7 — 2026-08-26
 
 ### Fixed

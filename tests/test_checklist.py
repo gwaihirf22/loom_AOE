@@ -583,3 +583,203 @@ def test_a_tool_named_in_a_step_is_not_a_thing_to_deliver():
     sheet = checklist.Checklist(order)
     sheet.observe(-1, ["town_center_built"])
     assert sheet.state(0, 0) == checklist.OBSERVED
+
+
+# ---- buildings that do another building's job ---------------------------
+#
+# Some civilisations do not build what a build order names. An Inca player
+# has no Lumber Camp, Mining Camp or Mill at all - a Settlement is all
+# three, and supports population besides - so every one of those items in
+# every shipped build was unfinishable, falling back to ASSUMED and drawing
+# a faded hollow bullet where the player had done the work and Loom had read
+# the line saying so.
+
+SETTLEMENT = "built:settlement"
+MINING = "@mining_camp/Mining_camp_aoe2de.webp@"
+
+
+def test_a_settlement_is_a_lumber_camp():
+    order = build(f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+
+
+def test_a_settlement_is_a_mill_and_a_mining_camp_too():
+    for token in (MILL, MINING):
+        order = build(f"Build a {token}")
+        sheet = checklist.Checklist(order)
+        sheet.observe(0, [SETTLEMENT])
+        assert sheet.state(0, 0) == checklist.OBSERVED, token
+
+
+def test_a_settlement_is_OBSERVED_and_not_assumed():
+    """The game announced it and Loom read it. That is a sighting, and
+    dressing a sighting as a guess would be the never-guess rule broken
+    from the harmless side - but broken all the same."""
+    order = build(f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(0, 0) is not checklist.ASSUMED
+    assert sheet.state(0, 0) == checklist.OBSERVED
+
+
+def test_one_settlement_credits_a_dropsite_AND_a_house():
+    """The author's ruling, and the reason this is not just a spelling
+    table. A Settlement really did give the player both a dropsite and five
+    population, so both instructions are genuinely served."""
+    order = build(f"Build a {LUMBER}", f"Build a {HOUSE}")
+    sheet = checklist.Checklist(order)
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+    assert sheet.state(1, 0) == checklist.OBSERVED
+
+
+def test_one_settlement_never_credits_two_houses():
+    """What keeps the ruling above from weakening the House protection.
+
+    The existing rule forbids one sighting paying twice for the SAME
+    instruction - "Build 2 House" costs two lines. A Settlement crediting a
+    lumber camp and a house is not that, because the credits land on
+    different subjects. Two houses off one Settlement would be.
+    """
+    order = build(f"Build a {HOUSE}", f"Build a {HOUSE}")
+    sheet = checklist.Checklist(order)
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+    assert sheet.state(1, 0) is checklist.NOT_DONE
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(1, 0) == checklist.OBSERVED
+
+
+def test_a_distant_settlement_credits_nothing():
+    """Nearest item, not first waiting - the author's ruling, and the same
+    care a house gets. A Settlement can satisfy four different subjects, so
+    a distant match is the MOST dangerous kind there is."""
+    order = build("Do nothing", "Do nothing either", "Nor this",
+                  "Still nothing", f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+
+    sheet.observe(0, [SETTLEMENT])
+    assert sheet.state(4, 0) is checklist.NOT_DONE
+
+
+def test_a_mule_cart_is_a_lumber_camp_but_never_a_mill():
+    """Armenians and Georgians still build Mills and Farms - the Mule Cart
+    replaces the Lumber Camp and Mining Camp only. This asymmetry against
+    the Settlement is the whole reason these are three rows."""
+    order = build(f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:mule_cart"])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+
+    order = build(f"Build a {MILL}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:mule_cart"])
+    assert sheet.state(0, 0) is checklist.NOT_DONE
+
+
+def test_a_mule_cart_is_not_a_house():
+    order = build(f"Build a {HOUSE}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:mule_cart"])
+    assert sheet.state(0, 0) is checklist.NOT_DONE
+
+
+def test_a_folwark_is_a_mill_and_nothing_else():
+    order = build(f"Build a {MILL}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:folwark"])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+
+    order = build(f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:folwark"])
+    assert sheet.state(0, 0) is checklist.NOT_DONE
+
+
+def test_the_ordinary_building_still_credits_itself():
+    """The seam was added beside the old behaviour, not through it."""
+    order = build(f"Build a {LUMBER}")
+    sheet = checklist.Checklist(order)
+    sheet.observe(0, ["built:lumber_camp"])
+    assert sheet.state(0, 0) == checklist.OBSERVED
+
+
+def test_every_stand_in_is_a_line_the_reader_can_actually_produce():
+    """The audit a hand-written table has to have.
+
+    CLAUDE.md's rule: a hand-curated allowlist fails SILENTLY. A key
+    misspelled `settlment` would sit here forever matching nothing, and no
+    test, gate or log anywhere would say so - the player would just see a
+    hollow bullet and assume Loom had missed the line.
+
+    So this checks the CATEGORY rather than the entries: every key must be
+    a subject the notification reader really emits for a line the game
+    really prints.
+    """
+    from loom import glyphs
+    for stand_in in checklist.STANDS_IN_FOR:
+        printed = "--%s Built--" % stand_in.replace("_", " ").title()
+        assert glyphs.parse_event(printed) == "built:" + stand_in, printed
+
+
+def test_every_word_of_every_stand_in_is_a_known_word():
+    """KNOWN_WORDS is the gate the line passes before any of this runs.
+
+    A missing word refuses the whole line as a misread, so the substitution
+    below it would never be reached - the failure would look like a reader
+    fault rather than a vocabulary one, which is exactly how "camp" cost 23
+    items across the shipped builds.
+    """
+    from loom import glyphs
+    for stand_in in checklist.STANDS_IN_FOR:
+        for word in stand_in.split("_"):
+            assert word in glyphs.KNOWN_WORDS, word
+
+
+def test_every_substituted_subject_is_one_a_build_actually_asks_for():
+    """A row nobody's build can reach is dead weight, and dead weight in a
+    hand-written table is indistinguishable from a typo until someone
+    plays that civilisation and finds nothing ticks."""
+    import glob
+    from loom import paths
+    wanted = set()
+    for path in glob.glob(str(paths.PROJECT_ROOT / "builds" / "*.json")):
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read().lower()
+        for subject in ("lumber_camp", "mining_camp", "mill", "house"):
+            if subject in text or subject.replace("_", "") in text:
+                wanted.add(subject)
+    for stand_in, stands_for in checklist.STANDS_IN_FOR.items():
+        unreachable = stands_for - wanted
+        assert not unreachable, (stand_in, unreachable)
+
+
+def test_an_upgrade_ticks_a_step_named_for_the_unit():
+    """One reading, two questions, two answers.
+
+    The queue reader had to hold "crossbowman the research" and "crossbowman
+    the unit" apart - they are two different pictures, correlating at 0.045,
+    and calling one by the other's name is a confident wrong reading. A build
+    order asking for Crossbowman is not asking that question: it wants to
+    know whether the step happened, and the research happening is what it
+    meant.
+
+    The direction is the whole content of the rule. A build step named for
+    the UPGRADE must not be ticked by merely training the unit, because
+    training it proves the research already happened only if you assume the
+    thing being tested.
+    """
+    step = {"crossbowman": None, "archer": None}
+    assert checklist._same_subject("crossbowman_upgrade", step) == "crossbowman"
+    assert checklist._same_subject("crossbowman", step) == "crossbowman"
+    upgrade_step = {"crossbowman_upgrade": None}
+    assert checklist._same_subject("crossbowman", upgrade_step) is None
+    # An unrelated upgrade still matches nothing.
+    assert checklist._same_subject("paladin_upgrade", step) is None

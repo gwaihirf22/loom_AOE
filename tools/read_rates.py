@@ -55,15 +55,23 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loom import anchor, digits, hud, paths, queue, reader  # noqa: E402
+from loom import paths  # noqa: E402
+from tools import framebands  # noqa: E402
 
 
-def measure(run_dir, every=1):
-    """Read every band of every frame. Returns a dict of counts."""
+def measure(run_dir, every=1, kit=None):
+    """Read every band of every frame. Returns a dict of counts.
+
+    The per-frame reading itself lives in tools/framebands.py, because
+    tools/reader_report.py needs the same thing and a second copy of "how do
+    you read a frame" is the one-question-two-places failure. kit is
+    injectable so a caller measuring many runs loads the 527 queue templates
+    once rather than once per run.
+    """
     frames = sorted(glob.glob(os.path.join(run_dir, "frame_*.png")))[::every]
-    templates = {p: anchor.load_template(p) for p in hud.PROFILES}
-    woods = {p: queue.load_wood_template(p) for p in hud.PROFILES}
-    glyph_templates = digits.load_digit_templates()
+    # No crests: this tool has never reported the age, and loading them for
+    # a band nobody asks about is time spent on nothing.
+    reading = framebands.RunReader(kit or framebands.Kit(crests=False))
 
     counts = collections.Counter()
     fail_digits = collections.Counter()
@@ -82,18 +90,14 @@ def measure(run_dir, every=1):
         if image is None:
             continue
         counts["frames"] += 1
-        found = anchor.identify_hud(image, templates, wood_templates=woods)
-        if not found or found["score"] < reader.MIN_ANCHOR_SCORE:
+        bands = reading.read(image)
+        if not bands.anchored:
             continue
         counts["anchored"] += 1
-        skins[found["profile"].name] += 1
-        scales.append(found["scale"])
-        narrow = reader.min_glyph_width(found["scale"], found["profile"])
-        wide = reader.max_glyph_width(found["scale"], found["profile"])
+        skins[bands.skin] += 1
+        scales.append(bands.scale)
 
-        x1, y1, x2, y2 = found["clock_band"]
-        seconds, _ = digits.read_clock_seconds(
-            image[max(0, y1):y2, max(0, x1):x2], glyph_templates, narrow)
+        seconds = bands.clock
         if seconds is not None:
             counts["clock"] += 1
             last = seconds
@@ -111,18 +115,11 @@ def measure(run_dir, every=1):
             for char in f"{last // 3600:02d}{last // 60 % 60:02d}":
                 fail_digits[char] += 1
 
-        x1, y1, x2, y2 = found["villagers"]
-        count, _ = digits.read_count(
-            image[max(0, y1):y2, max(0, x1):x2], glyph_templates, narrow)
-        if count is not None:
+        if bands.villagers is not None:
             counts["villagers"] += 1
             bucket["villagers"] += 1
 
-        x1, y1, x2, y2 = found["population"]
-        pop = digits.read_population(
-            image[max(0, y1):y2, max(0, x1):x2], glyph_templates, narrow,
-            wide)
-        if pop and pop[0] is not None:
+        if bands.population is not None:
             counts["population"] += 1
             bucket["population"] += 1
     return counts, fail_digits, ok_digits, skins, scales, minutes

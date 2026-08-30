@@ -98,12 +98,68 @@ TECHNOLOGIES = {
 }
 
 
-def build_or_research_time(subject):
-    """Seconds the game needs to make this, or 0 when nobody has said.
+# ---- what the player's own games actually took ---------------------------
+#
+# The tables above are the GAME's numbers. This is the player's: swept out
+# of their own recorded games by tools/measure_durations.py and kept with
+# their statistics, never in the repository, because it describes how one
+# person plays rather than how the game works.
+#
+# The split between what it may override and what it may not is the same
+# asymmetry the whole module rests on.
+#
+# A BUILDING's time divides among however many villagers help, so the
+# one-villager number above is a ceiling nobody plays at. If somebody puts
+# two villagers on every Castle, their Castles really do take 123 seconds
+# rather than 200, and their own median is a better prediction of their
+# next one than the book is. Measured: castle 75/123/175 against a listed
+# 200, mill 22/40/63 against 35.
+#
+# RESEARCH does not divide, so the book value is the truth and a measured
+# figure can only ever be that plus queue time - a Blacksmith already busy
+# makes the next technology wait, and the wait is indistinguishable from
+# the research in this measurement. Measured across 61 games, the minimum
+# matches the table exactly for horse_collar, gold_mining, bodkin_arrow,
+# fletching, ballistics, husbandry, iron_casting, bracer, wheelbarrow and
+# every armour line, which is what confirms the tables rather than
+# replacing them. So technologies are NEVER overridden here.
+MEASURED_PATH_NAME = "durations.json"
+
+# Below this many samples a median is one game with an opinion.
+ENOUGH_SAMPLES = 4
+
+_measured = None
+
+
+def measured(reload=False):
+    """{subject: seconds} from the player's own games, or empty."""
+    global _measured
+    if _measured is not None and not reload:
+        return _measured
+    import json
+    from . import paths
+    path = paths.DATA_DIR / MEASURED_PATH_NAME
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        found = {}
+    _measured = {str(k): float(v) for k, v in (found.get("buildings") or {}).items()
+                 if isinstance(v, (int, float)) and v > 0}
+    return _measured
+
+
+def build_or_research_time(subject, personal=True):
+    """Seconds this takes, or 0 when nobody has said.
 
     Zero rather than a guess: an unknown subject falls back to judging on
     the card's own pacing, which is coarse but never confidently wrong.
+
+    `personal=False` asks for the GAME's number regardless of what this
+    player's own games say - which is what a tool comparing the two
+    wants, and what anything reasoning about the game itself should use.
     """
-    if subject in BUILDINGS:
-        return BUILDINGS[subject]
-    return TECHNOLOGIES.get(subject, 0)
+    if personal and subject not in TECHNOLOGIES:
+        mine = measured().get(subject)
+        if mine:
+            return mine
+    return BUILDINGS.get(subject) or TECHNOLOGIES.get(subject) or 0

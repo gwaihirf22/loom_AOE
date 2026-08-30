@@ -28,6 +28,80 @@ macos = pytest.importorskip("loom.capture.macos",
                             reason="the macOS backend needs pyobjc")
 
 
+# ---- which window is the game ------------------------------------------
+#
+# choose_window is a pure function of plain dicts, the same split the
+# Windows backend makes and for the same reason: the rule that decides
+# what Loom will read every coordinate through has to be testable without
+# a desktop full of windows to arrange. The dicts here are drawn from a
+# real `macos_probe --list` of this machine - the CrossOverHelper bundle
+# id really does carry a per-bottle suffix, and the same bottle really
+# does own windows whose app name is just the exe.
+
+
+def candidate(title="", app_name="", bundle_id="", area=100):
+    return {"window": object(), "title": title, "app_name": app_name,
+            "bundle_id": bundle_id, "area": area}
+
+
+FERAL = candidate(title="Age Of Empires II",
+                  app_name="Age Of Empires II",
+                  bundle_id="com.feralinteractive.ageofempires2",
+                  area=2_000_000)
+CROSSOVER = candidate(title="Age of Empires II: Definitive Edition",
+                      app_name="Steam (AoE2 bottle)",
+                      bundle_id="com.codeweavers.CrossOverHelper.57A12CF1",
+                      area=2_000_000)
+WINE_EXE = candidate(title="Age of Empires II: Definitive Edition",
+                     app_name="AoE2DE_s.exe",
+                     bundle_id="",
+                     area=2_000_000)
+BROWSER = candidate(title="aoc-mgz: Age of Empires II recorded game parsing",
+                    app_name="Vivaldi",
+                    bundle_id="com.vivaldi.Vivaldi",
+                    area=3_000_000)
+
+
+def test_the_feral_bundle_id_needs_no_corroboration():
+    assert macos.choose_window([BROWSER, FERAL]) is FERAL
+
+
+def test_a_crossover_owned_title_match_is_accepted():
+    assert macos.choose_window([BROWSER, CROSSOVER]) is CROSSOVER
+
+
+def test_a_bare_exe_owned_title_match_is_accepted():
+    """The same bottle presents some of its windows with no bundle id at
+    all, just the exe as the app name - both shapes are the game."""
+    assert macos.choose_window([BROWSER, WINE_EXE]) is WINE_EXE
+
+
+def test_a_browser_tab_about_the_game_is_refused():
+    """The Vivaldi incident, ported: a title fragment alone is a guess,
+    and an uncorroborated guess believed poisons every coordinate
+    downstream. Note the browser window is the LARGEST candidate here -
+    area must never outrank corroboration."""
+    assert macos.choose_window([BROWSER]) is None
+
+
+def test_the_playfield_beats_the_slivers():
+    sliver = candidate(title="Age of Empires II: Definitive Edition",
+                       app_name="AoE2DE_s.exe", area=57_024)
+    assert macos.choose_window([sliver, WINE_EXE]) is WINE_EXE
+
+
+def test_an_explicit_fragment_bypasses_corroboration():
+    """Stating a target is not guessing one - the dev override exists to
+    aim at an arbitrary window on purpose."""
+    chosen = macos.choose_window([BROWSER], fragment="recorded game")
+    assert chosen is BROWSER
+
+
+def test_nothing_matching_is_nobody_home():
+    assert macos.choose_window([BROWSER], fragment="chess") is None
+    assert macos.choose_window([]) is None
+
+
 class FakeWindow:
     """Stands in for a GameWindow without any ScreenCaptureKit behind it."""
 

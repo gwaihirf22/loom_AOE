@@ -23,6 +23,7 @@ every design rule about never guessing lives.
 ```mermaid
 flowchart LR
     game([the game on screen]) --> capture
+    xconnect --> capture
     hud --> anchor
     resources --> anchor
     digits --> resources
@@ -58,6 +59,18 @@ one. Neither is complete alone.
 
 `filters` is the gate that turns a reading into a belief, and `session`
 decides whether this is the same game as last time.
+
+`xconnect` is the one place that opens an X connection, and it is a module
+rather than a line of code because four subsystems need one — `capture`
+here, plus `hotkeys`, `passthrough` and the APM counter in the next two
+sections. Each used to call python-xlib's `Display()` itself and each
+inherited the same defect: python-xlib matches an xauthority entry on the
+hostname alone and does not implement the wildcard fallback that C's Xlib
+uses, so a hostname that has drifted since login refuses all four at once
+while every C client on the desktop carries on. The overlay is Qt, which
+goes through C's Xlib, so the panel appears perfectly healthy throughout —
+which is what made it read as "hotkeys aren't working" rather than as one
+fault with four faces.
 
 ### One cell, two readings, two questions
 
@@ -153,6 +166,7 @@ flowchart LR
     build_order --> report
     production --> report
     age --> gamestats
+    episodes --> gamestats
     filters --> debuglog
     apm --> apmwin
     statefeed --> apmwin
@@ -165,8 +179,10 @@ flowchart LR
     debuglog --> loom_overlay
     apm --> loom_overlay
     apmwin --> loom_overlay
+    xconnect --> passthrough
     passthrough --> loom_overlay
     placement --> loom_overlay
+    xconnect --> hotkeys
     hotkeys --> loom_overlay
     statefeed --> loom_overlay
     stopline --> loom_overlay
@@ -203,6 +219,7 @@ flowchart LR
     checklist --> browser
     config --> browser
     flowlayout --> browser
+    tooltips --> browser
     overlay --> browser
     placement --> browser
     steplayout --> browser
@@ -217,6 +234,7 @@ flowchart LR
     queue --> statsview
     replay_ids --> replay
     replay --> statsview
+    tooltips --> statsview
     report --> statsview
     about --> launcher
     apm --> launcher
@@ -226,6 +244,7 @@ flowchart LR
     config --> launcher
     entry --> launcher
     flowlayout --> launcher
+    tooltips --> launcher
     hotkeys --> launcher
     overlay --> launcher
     placement --> launcher

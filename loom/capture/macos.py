@@ -1,9 +1,14 @@
 """
 Loom — screen capture, the macOS backend.
 
-Reads pixels out of the game's window with ScreenCaptureKit. The game here is
-Feral Interactive's native macOS port of AoE2:DE, so this is a real Cocoa/Metal
-app and not a compatibility layer.
+Reads pixels out of the game's window with ScreenCaptureKit. The game arrives
+two different ways on this platform, and both are read: Feral Interactive's
+native macOS port, a real Cocoa/Metal app; and the WINDOWS build running under
+CrossOver (Wine), whose window is not a Cocoa app's but is still a normal
+compositor window that ScreenCaptureKit captures identically. The CrossOver
+route is the interesting one - Wine draws "full screen" as a borderless window
+on the ordinary desktop Space, not as a macOS fullscreen Space, so the overlay
+can float above it where the native port's fullscreen shuts the overlay out.
 
 The shape of this backend differs from the X11 one in a way worth stating
 plainly. X11 answers every request synchronously: ask for a rectangle, get
@@ -56,10 +61,24 @@ from .errors import CaptureError
 # survives the app being renamed or localised, which a window title is not.
 GAME_BUNDLE_ID = "com.feralinteractive.ageofempires2"
 
-# Fallback when matching by title instead. Compared case-insensitively on
-# purpose: the app spells it "Age Of Empires II" in places and the X11 backend
-# looks for "Age of Empires II", and a case-sensitive substring would miss it.
+# The title fragment the CrossOver route is found by. Compared
+# case-insensitively on purpose: the app spells it "Age Of Empires II" in
+# places and the X11 backend looks for "Age of Empires II", and a
+# case-sensitive substring would miss it.
 GAME_NAME_FRAGMENT = "age of empires"
+
+# What corroborates a title match: the window's owner must look like a Wine
+# host. Measured on this machine's CrossOver install rather than guessed -
+# the same bottle presents its windows under TWO identities, and different
+# windows of one program carry different ones. Steam in a bottle listed
+# windows owned by bundle id "com.codeweavers.CrossOverHelper.57A12CF1BEA4"
+# (a per-bottle suffix, hence the prefix match) and, for the same program,
+# windows whose owning app is plainly the exe - applicationName
+# "steam.exe", no bundle id at all. Either one is a Windows program running
+# under Wine, which is exactly the corroboration wanted: a browser tab
+# titled "Age of Empires" is owned by the browser and matches neither.
+CROSSOVER_BUNDLE_PREFIX = "com.codeweavers."
+WINE_EXE_SUFFIX = ".exe"
 
 # How often the stream is asked to deliver. Loom polls every 300ms, so 10fps
 # leaves headroom for a missed frame or two while costing almost nothing.
@@ -223,32 +242,77 @@ def _area(window):
     return size.width * size.height
 
 
-def _pick_game_window(windows, fragment=None):
-    """The game's playfield window, or None.
+def _candidates(windows):
+    """SCWindows flattened to plain dicts, so the choosing rule stays pure.
 
-    The game owns EIGHT windows: the playfield plus a 500x500, a 312x237 and
-    five 1728x33 slivers. Only one carries the HUD and it is by far the largest
-    - 1728x1084 against 1728x33 for the runners-up - so area decides it. The
-    list comes back in no documented order, which makes "the first match" a
-    coin flip.
+    The same split the Windows backend makes: the platform call collects,
+    and choose_window decides - a pure function of a list of dicts, testable
+    without a desktop full of windows to arrange.
     """
-    if fragment is None:
-        owned = [w for w in windows
-                 if w.owningApplication()
-                 and w.owningApplication().bundleIdentifier() == GAME_BUNDLE_ID]
-        if owned:
-            return max(owned, key=_area)
-
-    needle = (fragment or GAME_NAME_FRAGMENT).lower()
-    matches = []
+    flattened = []
     for window in windows:
         application = window.owningApplication()
-        haystacks = [window.title() or ""]
-        if application:
-            haystacks.append(application.applicationName() or "")
-        if any(needle in text.lower() for text in haystacks):
-            matches.append(window)
-    return max(matches, key=_area) if matches else None
+        flattened.append({
+            "window": window,
+            "title": window.title() or "",
+            "app_name": (application.applicationName() or ""
+                         if application else ""),
+            "bundle_id": (application.bundleIdentifier() or ""
+                          if application else ""),
+            "area": _area(window),
+        })
+    return flattened
+
+
+def _wine_hosted(candidate):
+    """Is this window owned by a Wine host - CrossOver, or a bare exe?"""
+    return (candidate["bundle_id"].startswith(CROSSOVER_BUNDLE_PREFIX)
+            or candidate["app_name"].lower().endswith(WINE_EXE_SUFFIX))
+
+
+def choose_window(candidates, fragment=None):
+    """Which window is the game? The chosen candidate dict, or None.
+
+    Two identities are accepted, in order. Feral's bundle id is exact and
+    needs nothing else. A GAME_NAME_FRAGMENT title match is the CrossOver
+    route, and on its own it is a guess - a browser tab reading the wiki
+    matches just as happily, which on Windows once sent every overlay
+    coordinate through a Vivaldi window - so it must be CORROBORATED by the
+    owner looking like a Wine host. An uncorroborated match is refused, the
+    same call windows.choose_window makes and for the same reason: "waiting
+    for the game" is true and actionable, a browser tab believed to be the
+    game silently poisons everything downstream.
+
+    The cost of refusing is a Feral port whose bundle id ever changes, or a
+    Wine host named something new - both become invisible until the
+    constant catches up. An explicitly passed fragment bypasses
+    corroboration: it exists to aim at an arbitrary window on purpose
+    (macos_probe --fragment), and stating a target is not guessing one.
+
+    Largest area wins among equals. Feral's port owns EIGHT windows - the
+    playfield plus a 500x500, a 312x237 and five 1728x33 slivers - and only
+    the largest carries the HUD; a Wine bottle scatters the same kind of
+    slivers. The list comes back in no documented order, which makes "the
+    first match" a coin flip.
+    """
+    if fragment is None:
+        feral = [c for c in candidates if c["bundle_id"] == GAME_BUNDLE_ID]
+        if feral:
+            return max(feral, key=lambda c: c["area"])
+
+    needle = (fragment or GAME_NAME_FRAGMENT).lower()
+    matches = [c for c in candidates
+               if needle in c["title"].lower()
+               or needle in c["app_name"].lower()]
+    if fragment is None:
+        matches = [c for c in matches if _wine_hosted(c)]
+    return max(matches, key=lambda c: c["area"]) if matches else None
+
+
+def _pick_game_window(windows, fragment=None):
+    """The game's playfield window, or None."""
+    chosen = choose_window(_candidates(windows), fragment)
+    return chosen["window"] if chosen else None
 
 
 def _display_scale(content, window):

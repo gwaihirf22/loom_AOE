@@ -80,3 +80,36 @@ def test_is_in_game_reflects_the_state(tracker):
     for _ in range(3):
         tracker.update(None, None)
     assert not tracker.is_in_game()
+
+
+def test_a_wobbling_clock_is_not_a_new_game():
+    """The fault behind seventy-five stats files for one ten-minute match.
+
+    Any backwards step at all used to mean a new game, so a single
+    misread wrote a permanent file. The reader is good enough now that it
+    rarely wobbles - which makes this guard cheap, not unnecessary.
+    """
+    watcher = session.GameSession()
+    assert watcher.update(100, 10) is not None      # first sighting
+    for wobble in (99, 98, 96, 100):
+        assert watcher.update(wobble, 10) is None, (
+            f"a step back to {wobble} was read as a new match")
+
+
+def test_a_real_seam_is_still_a_new_game():
+    """The other half. Measured over 252 recorded games, a real restart
+    jumps back hundreds of seconds - 529 to 7 - so the tolerance has room
+    to spare and must not swallow one."""
+    watcher = session.GameSession()
+    watcher.update(529, 30)
+    assert watcher.update(7, 4) == session.GAME_STARTED
+
+
+def test_the_tolerance_is_the_one_events_measured():
+    """Two modules asking the same question must not carry two numbers.
+
+    events.py measured it; session.py had none at all, which is the same
+    fault at its limit. Pinned against the source rather than a literal.
+    """
+    from loom import events
+    assert session.SEAM_TOLERANCE_SECONDS is events.SEAM_TOLERANCE_SECONDS

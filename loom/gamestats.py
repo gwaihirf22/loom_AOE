@@ -27,7 +27,7 @@ Honesty rules carried over from the rest of Loom:
 import json
 import os
 
-from . import __version__, age, paths
+from . import __version__, age, episodes, paths
 
 SCHEMA = 2
 
@@ -123,6 +123,9 @@ class GameRecorder:
         # for the age tracker, and this is the one consumer that does not.
         self.ages = []
         self.queued = {}               # identity -> first seen queued, t
+        # Every item the queue was watched producing, decided once by vote
+        # rather than believed on first sight. See loom/episodes.py.
+        self._episodes = episodes.EpisodeTracker()
         self.alerts = []               # (t, text, severity) transitions only
         self.max_villagers = 0
         self.tc_count = 1
@@ -234,10 +237,25 @@ class GameRecorder:
             self.max_army = max(self.max_army, army)
 
         # First sighting of everything the queue can name, villagers aside.
+        #
+        # KEPT, AND NO LONGER THE ONLY RECORD. This believes one glance:
+        # anything the queue names once becomes a permanent fact, which put
+        # nine things that never happened on a real Post-game page and 329
+        # phantom subjects across the capture corpus. `episodes` below is
+        # the replacement - it decides an item ONCE, by vote, from every
+        # poll that watched it produce. This stays for one release so stats
+        # files written by an older build, and every reader of them, keep
+        # working.
         for slot in slots or []:
             if (slot.identity and slot.identity not in VILLAGER_IDENTITIES
                     and slot.identity not in self.queued):
                 self.queued[slot.identity] = moment
+
+        # What the queue was actually watching produce. Amber and red are
+        # ignored - a waiting item has produced nothing - and an episode
+        # nobody watched long enough reports no identity rather than its
+        # best guess.
+        self._episodes.update(moment, slots)
 
         # Alerts as transitions: the moment a warning APPEARS is the story;
         # re-recording it every poll would just be the poll rate.
@@ -306,6 +324,41 @@ class GameRecorder:
         """Time for a crash-safety rewrite?"""
         return self.observed() - self._written_up_to >= FLUSH_EVERY
 
+    def episodes(self):
+        """Every production episode, closed and open alike.
+
+        The schema everything downstream reads:
+
+          subject   what the vote decided, or None when it refused
+          started   game seconds, or None if the clock never read
+          ended     game seconds
+          polls     how many looks the vote had
+          tally     identity -> summed identity score
+          runner_up the identity that came second, or None
+
+        `subject` being None is a REFUSAL and not an absence - the episode
+        happened and was watched, and Loom declines to name it. A reader
+        that drops those rows turns "I could not tell" into "nothing was
+        there", which is the distinction this whole project is built on.
+
+        Open episodes are included: a game ending mid-item is not the item
+        never having existed.
+        """
+        found = []
+        for episode in list(self._episodes.closed) + list(self._episodes.open):
+            if not episode.tally:
+                continue
+            found.append({
+                "subject": episode.identity,
+                "started": episode.started,
+                "ended": episode.ended,
+                "polls": episode.polls,
+                "tally": {name: round(score, 3)
+                          for name, score in episode.tally.most_common()},
+                "runner_up": episode.runner_up,
+            })
+        return found
+
     def to_dict(self):
         return {
             "schema": SCHEMA,
@@ -328,6 +381,7 @@ class GameRecorder:
                 "events": [list(e) for e in self.events],
                 "ages": [list(a) for a in self.ages],
                 "queued": dict(self.queued),
+                "episodes": self.episodes(),
                 "alerts": [list(a) for a in self.alerts],
             },
             "timeline": {

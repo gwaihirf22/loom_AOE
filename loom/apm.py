@@ -153,19 +153,40 @@ def align(buckets, pairs, game_from=None):
     return section
 
 
-def counted_in_the_overlay(platform):
-    """Does this platform count APM inside the overlay, or as a child process?
+def how_counted(platform):
+    """How this platform counts APM: "overlay", "child", or None for not at all.
 
     Windows uses Raw Input, which needs a window and a message pump, and the
     overlay already has both - so loom/apmwin.py runs there and there is no
     APM child at all. Linux selects XInput2 raw events on the root window,
     which needs neither, so tools/apm_counter.py stays a separate process.
 
-    One function both the launcher and the overlay ask, because the failure
-    mode of them disagreeing is counting every action twice - which would not
-    look like a bug, it would look like the player having a very good game.
+    macOS is None on purpose: it has no counter yet. That None is honest
+    absence, not a default - a counter there would need a CGEventTap, which
+    is deferred alongside the hotkey backend (see CLAUDE.md). The launcher
+    used to take the not-in-the-overlay answer as "so spawn the child", and
+    on macOS that child imports Xlib and dies; the platform's real answer
+    was neither, and nothing could say so.
 
-    Takes the platform rather than reading sys.platform, so both answers are
-    testable from either machine and this module stays import-free.
+    One function everything asks, because two of these answers held in two
+    places will drift - and the failure mode of the launcher and the overlay
+    drifting is counting every action twice, which would not look like a
+    bug, it would look like the player having a very good game.
+
+    Takes the platform rather than reading sys.platform, so every answer is
+    testable from any machine and this module stays import-free.
     """
-    return platform == "win32"
+    if platform == "win32":
+        return "overlay"
+    if platform == "linux":
+        return "child"
+    return None
+
+
+def counted_in_the_overlay(platform):
+    """Does this platform count APM inside the overlay?
+
+    A view of how_counted rather than a second opinion, so the two can
+    never disagree about a platform.
+    """
+    return how_counted(platform) == "overlay"
