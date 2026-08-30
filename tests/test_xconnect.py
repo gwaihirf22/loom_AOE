@@ -163,5 +163,17 @@ def test_the_cookie_file_is_written_once_and_kept_private(
     assert first == second
     assert len(list(tmp_path.glob("loom-xauth-*"))) == 1
 
+    # The mode is asked about only where a mode MEANS something. Windows
+    # honours just the read-only bit in os.chmod and reports 0o666 back for
+    # an ordinary writable file, so asserting 0o600 there fails on a
+    # platform that never runs this code - the whole file is the X11 path.
+    # Skipping says "I could not check" where a red test would have said
+    # "this is not true", and the difference is the point: these tests run
+    # on all three platforms deliberately, so the Linux logic stays
+    # answerable from the Windows boot without a reboot.
+    if os.name != "posix":
+        pytest.skip("no POSIX mode bits here - os.chmod honours only the "
+                    "read-only flag on this platform")
+
     mode = stat.S_IMODE(os.stat(first).st_mode)
     assert mode == 0o600, oct(mode)
