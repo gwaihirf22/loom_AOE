@@ -103,3 +103,70 @@ def test_every_universe_line_parses_to_a_real_event(universe):
     unparsed = [line for line in universe[:400]
                 if glyphs.parse_event(line) is None]
     assert not unparsed, f"these parse to nothing: {unparsed[:5]}"
+
+
+def test_a_sentence_the_game_cannot_print_is_not_in_the_universe(universe):
+    """The fault that sent me here.
+
+    Every subject crossed with every phrasing invents lines the game has
+    no way to draw, and each one is a RIVAL that can refuse a real read.
+    "--Wood Research Complete--" sat two edits from
+    "--Loom Research Complete--", so the Loom line was refused even from a
+    PERFECT read - the one research line in the whole table that no repair
+    could ever recover.
+    """
+    for impossible in ("--Wood Research Complete--",
+                       "--Gold Research Complete--",
+                       "--Stone Research Complete--",
+                       "--Food Research Complete--",
+                       "--Barracks Research Complete--",
+                       "--Goat Research Complete--",
+                       "--Mill Created--"):
+        assert impossible not in universe, f"{impossible!r} is not a real line"
+
+
+def test_the_villager_survives_the_resource_folder():
+    """The trap in the fix above, and the reason it asks the object table
+    rather than the folder.
+
+    The icon library files the villager under resource/ beside wood and
+    stone, and "--Villager Created--" is the commonest line in the whole
+    labelled corpus. Dropping the folder wholesale would have taken it.
+    """
+    assert "--Villager Created--" in lines.universe()
+    assert lines.nearest_line("--Villager Created--")[1] == "created:villager"
+
+
+def test_loom_can_be_recovered_from_a_wobbled_read():
+    """What the whole exercise was for. This line was unrecoverable at any
+    distance, including zero."""
+    assert lines.nearest_line("--Loom Research Complete--")[1] \
+        == "researched:loom"
+    assert lines.nearest_line("--Loom Researcli Complete--")[1] \
+        == "researched:loom"
+
+
+def test_a_real_rival_still_refuses():
+    """The safety case is unchanged where the rival is a real sentence.
+
+    Huskarl is a unit the game can genuinely research, so a wobbly Hussar
+    line has a real neighbour and must claim nothing. Narrowing the
+    universe must not have narrowed away the refusals that matter.
+    """
+    assert lines.nearest_line("--Hussar Research Complete--") is None
+
+
+def test_a_unit_keeps_the_phrasing_its_upgrade_uses():
+    """An upgrade is named after its unit, so a unit is both Created and
+    Research Complete - and an Elite form is researched whatever it is."""
+    assert "Created" in lines.phrasings_for("crossbowman")
+    assert "Research Complete" in lines.phrasings_for("crossbowman")
+    assert "Research Complete" in lines.phrasings_for("elite berserk")
+
+
+def test_a_subject_nobody_has_classified_keeps_every_phrasing():
+    """No opinion is not a refusal. The object table names 454 things and
+    the icon library 653, so a missing subject is usually a fact about the
+    table rather than about the game."""
+    assert lines.phrasings_for("a subject nobody has ever heard of") \
+        == lines.PHRASINGS

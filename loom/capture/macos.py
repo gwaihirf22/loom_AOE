@@ -324,31 +324,65 @@ def _display_scale(content, window):
     captured at 7680, which invents no detail and pushes the HUD to anchor
     scale 2.04 - which was past the old 2.0 ceiling of anchor.COARSE_SCALES,
     where the search could no longer refine. Measured on exactly that desk.
-    anchor.EXTENDED_SCALES now reaches 4.0, so this would be found today; the
-    doubling is still wrong and still worth not doing.
 
-    SCDisplay reports both its point frame and its pixel size, and its frame
-    shares SCWindow's top-left-origin coordinate space, so the window can be
-    matched to a display without going near NSScreen's bottom-left origin and
-    the flip bugs that live there.
+    An earlier version derived the factor as display.width() over the point
+    frame's width, believing SCDisplay reported its pixel size. On this
+    macOS it does not: measured 30 Aug 2026 across three attached displays -
+    a 4K in a scaled mode (backing 2.0), the built-in Retina panel (2.0)
+    and a 1x 2560 monitor - width() equalled the POINT width on all three,
+    so the ratio was 1.0 everywhere and every windowed capture arrived at
+    half detail. Clock strokes thinned until hollow zeros split in two, a
+    half-zero classified as a confident "6", and the impossible-clock gate
+    refused every read of a whole session. The July 4K runs never noticed
+    because fullscreen had switched the display to a native 1x mode where
+    points and pixels agree.
+
+    So the authority now is the screen's own backingScaleFactor - the very
+    number that says how much detail the window's backing store holds. The
+    SCDisplay is still what the window is MATCHED against, because its
+    frame shares SCWindow's top-left-origin space; NSScreen frames are
+    bottom-left-origin and are not compared against anything here. The two
+    lists are joined by display id (NSScreenNumber), not by geometry.
     """
     frame = window.frame()
-    centre_x = frame.origin.x + frame.size.width / 2
-    centre_y = frame.origin.y + frame.size.height / 2
+    centre = (frame.origin.x + frame.size.width / 2,
+              frame.origin.y + frame.size.height / 2)
 
-    for display in content.displays():
-        bounds = display.frame()
-        if (bounds.origin.x <= centre_x < bounds.origin.x + bounds.size.width
-                and bounds.origin.y <= centre_y
-                < bounds.origin.y + bounds.size.height):
-            if bounds.size.width:
-                return float(display.width()) / float(bounds.size.width)
+    backing = {}
+    for screen in NSScreen.screens():
+        number = screen.deviceDescription().get("NSScreenNumber")
+        if number is not None:
+            backing[int(number)] = float(screen.backingScaleFactor())
 
-    # No display owned the window's centre - it may straddle two, or the list
-    # may be empty. The main screen's factor is a better guess than 1.0, which
-    # would silently halve the capture on a Retina Mac.
+    displays = [(d.frame().origin.x, d.frame().origin.y,
+                 d.frame().size.width, d.frame().size.height,
+                 int(d.displayID())) for d in content.displays()]
+
+    # No display owning the window's centre - it may straddle two, or the
+    # list may be empty - or an id joining no screen falls back to the main
+    # screen's factor, a better guess than 1.0, which would silently halve
+    # the capture on a Retina Mac.
     main = NSScreen.mainScreen()
-    return float(main.backingScaleFactor()) if main else 1.0
+    fallback = float(main.backingScaleFactor()) if main else 1.0
+    return scale_for(centre, displays, backing, fallback)
+
+
+def scale_for(centre, displays, backing, fallback):
+    """The backing factor for the display owning `centre`. Pure, testable.
+
+    displays is [(x, y, width, height, display_id)] in points, top-left
+    origin; backing is {display_id: backingScaleFactor}. The same
+    collect-then-decide split choose_window has, for the same reason: this
+    join has now been wrong twice, and a rule that lives in a pure function
+    is checkable from any platform.
+    """
+    for x, y, width, height, display_id in displays:
+        if x <= centre[0] < x + width and y <= centre[1] < y + height:
+            factor = backing.get(display_id)
+            if factor:
+                return factor
+            break
+    return fallback
 
 
 def bgra_to_bgr(raw, width, height, stride):

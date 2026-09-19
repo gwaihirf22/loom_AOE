@@ -23,11 +23,25 @@ game's own arithmetic:
   * the clock must not go BACKWARDS, and must not jump further than the
     capture interval could carry it;
   * the villager count must not swing wildly between neighbouring frames;
-  * the population must not exceed its own cap.
+  * the population must not exceed its own cap;
+  * the villager count must not exceed the POPULATION beside it, since a
+    villager is a unit - two bands read off one frame, and the only test
+    here that judges a reading's VALUE rather than its presence. It says
+    the pair is impossible and NOT which half lied, because it cannot:
+    at HUD scale 1.155 it is the villagers, and on two stock runs it is
+    the population dropping a digit.
 
 Those are cheap and they are what separates a reader that improved from
 one that started guessing. A wrong clock desynchronises the whole build,
 and until now nothing measured it at all.
+
+The last of them was added late and is the one worth understanding. Every
+other measure here is COVERAGE - how often a band answered - and coverage
+cannot tell a right answer from a confident wrong one. Measured: at HUD
+scale 1.155 the villager band picked up a sliver of neighbouring art at
+its right edge, classified it as a "9", and appended it to every reading,
+so 22 villagers read as 229. The run scored `villagers 34/35`. It looked
+like the best run in the corpus.
 
 RUNS is the set of captures scored. It is deliberately small and fixed:
 these are matched recordings of ONE game across both HUD skins with and
@@ -129,6 +143,7 @@ def score_run(run_dir):
             last_clock = seconds
 
         x1, y1, x2, y2 = found["villagers"]
+        count = None
         count, _ = digits.read_count(
             image[max(0, y1):y2, max(0, x1):x2], glyph_templates, narrow)
         if count is not None:
@@ -150,6 +165,29 @@ def score_run(run_dir):
                 counts["impossible"] += 1
                 complaints.append(f"{name}: population OVER CAP "
                                   f"{pop[0]}/{pop[1]}")
+            # A villager is a unit, so the villager count can never exceed
+            # the population beside it. Two bands read off ONE frame, and
+            # the cheapest accuracy witness this report has: everything
+            # else here is coverage, which cannot tell a right answer from
+            # a confident wrong one.
+            #
+            # It is what this report was missing. At HUD scale 1.155 a
+            # sliver of neighbouring art at the villager band's edge was
+            # classified as a "9" and appended to every reading - 22
+            # villagers came back as 229 - and the run scored villagers
+            # 34/35, because a wrong number is still a number. Against the
+            # population on the same frame it is impossible on every one.
+            if count is not None and count > pop[0]:
+                counts["impossible"] += 1
+                # Named as a PAIR, because it does not say which half
+                # lied. At 1.155 it is the villagers (229 beside a real
+                # 23); on two stock runs it is the population (a real 26
+                # villagers beside a population of "2", which is the pop
+                # band losing a digit). Blaming one band in the message
+                # would send the next reader hunting the wrong one.
+                complaints.append(f"{name}: IMPOSSIBLE PAIR "
+                                  f"{count} villagers, population "
+                                  f"{pop[0]}")
     return counts, complaints
 
 
@@ -232,13 +270,23 @@ def main():
         wanted = list(scores(BASELINE.read_text(encoding="utf-8")))
     if not wanted:
         print("name the runs to score - there is no baseline yet")
-        return
+        sys.exit(1 if arguments.check else 0)
     runs = []
     for pattern in wanted:
         runs.extend(sorted(glob.glob(str(paths.CAPTURES_DIR / pattern))))
     runs = [r for r in runs if os.path.isdir(r)]
     if not runs:
+        # A gate that cannot run must say so with its exit code. --check
+        # exiting 0 here read as "no regression" on a machine that simply
+        # does not hold the baseline's runs - the corpus lives on one
+        # machine and the repo is developed on three.
         print(f"no capture runs matching {wanted}")
+        if arguments.check:
+            print("CHECK DID NOT RUN - the baseline's runs are not on this "
+                  "machine, so nothing was measured. Score runs that exist "
+                  "here by naming them, or run the gate where the corpus "
+                  "lives.")
+            sys.exit(1)
         return
 
     body = "\n".join(report(runs)) + "\n"

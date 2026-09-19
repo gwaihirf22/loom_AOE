@@ -70,9 +70,21 @@ def _match_at_scale(search_area, template, scale):
 
     Returns (score, x, y) in search-area coordinates, or None if the scaled
     template does not fit.
+
+    The FILTER follows the direction, which it did not used to. INTER_AREA
+    shrinks well and grows badly, degenerating towards nearest neighbour
+    and handing the matcher a stair-stepped outline to compare against a
+    smoothly drawn icon - and above HUD scale 1.0 every template here is
+    being GROWN. This is on the identify_hud path (the wood icon is the
+    second opinion that names the skin) and on the queue's own
+    self-location, so a score lost here is not one band misreading, it is
+    the HUD not being found or the queue reporting nothing at all.
+    age.py:169 has made this call correctly since it was written; this is
+    the same call in the three places that had not caught up.
     """
     scaled = cv2.resize(template, None, fx=scale, fy=scale,
-                        interpolation=cv2.INTER_AREA)
+                        interpolation=(cv2.INTER_AREA if scale < 1.0
+                                       else cv2.INTER_CUBIC))
     if scaled.shape[0] > search_area.shape[0] or scaled.shape[1] > search_area.shape[1]:
         return None
 

@@ -11,7 +11,7 @@ only the part that applies to it.
 | **Overlay** | ✅ | ✅ | ⚠️ CrossOver yes, Feral windowed only |
 | **Statistics + graphs** | ✅ | ✅ | ✅ |
 | **APM tracking** | ✅ | ✅ | ❌ not yet |
-| **Global hotkeys** | ✅ | ✅ | ❌ not yet |
+| **Global hotkeys** | ✅ | ✅ | ✅ |
 | **Demo / simulate modes** | ✅ | ✅ | ✅ |
 | **Packaged install** | ✅ Flatpak | ✅ zip with `.exe` | ❌ source only |
 | **Status** | primary | primary | baseline via CrossOver; Feral paused |
@@ -121,10 +121,12 @@ Recorded games live inside the bottle, where Loom's search does not look;
 `LOOM_RECORDS_DIR` points at them — the [install guide](install-macos.md)
 carries the path.
 
-What still does not work, on either route: **APM** (no macOS counter yet —
-the launcher says so on the toggle rather than counting nothing silently)
-and **global hotkeys** (no macOS backend yet; the build order can only be
-followed automatically).
+**Global hotkeys work** on both routes — Carbon `RegisterEventHotKey`,
+the same registered-id shape as Windows, no permission needed. The `Win`
+modifier is the Command (⌘) key on a Mac; F21–F24 and Insert do not exist
+on Mac keyboards and are refused per binding. What still does not work,
+on either route: **APM** (no macOS counter yet — the launcher says so on
+the toggle rather than counting nothing silently).
 
 Loom finds the game by its title, corroborated by the window's owner being a
 Wine host — a CrossOver bundle id or a bare `.exe`-named process. If a

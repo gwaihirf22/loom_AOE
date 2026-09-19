@@ -78,6 +78,64 @@ def classify_miss(text, truth, runs_found):
     return "merge" if len(flat_text) < len(flat_truth) else "split"
 
 
+# How wide a run may be, as a fraction of its own width, before --runs
+# calls it out as suspicious. Only a hint for the eye: the real bound is
+# glyphs.MERGED_RUN_FRACTION, and printing that comparison beside every run
+# is the whole point - a run at 0.80 of the height with the bound at 0.85 is
+# invisible in a text diff and obvious here.
+def show_runs(crop, truth, text, font, skin=None):
+    """One miss as pixels, with the run boundaries the reader chose.
+
+    This exists because of the lesson this project keeps re-learning: before
+    blaming the templates or the matcher, print the glyph the reader is
+    actually comparing. Three separate 1080p faults were visible the moment
+    the pixels were laid out as ASCII, and the same habit overturned a
+    confident diagnosis of a fourth.
+
+    A merge and an over-split are each obvious in one glance here and
+    indistinguishable in the read text, which only ever says the letters
+    came out wrong.
+    """
+    mask, runs = glyphs.segment_line(crop)
+    height = mask.shape[0]
+    if not runs:
+        return [f"      (no runs at all: height {height})"]
+    left = max(0, runs[0][0] - 2)
+    right = min(mask.shape[1], runs[-1][1] + 2)
+
+    out = [f"      truth {truth!r}", f"      read  {text!r}",
+           f"      height {height}  runs {len(runs)}  "
+           f"merge bound {height * glyphs.MERGED_RUN_FRACTION:.1f}px"]
+    for row in mask[:, left:right]:
+        out.append("      " + "".join("#" if value else " " for value in row))
+    ruler = [" "] * (right - left)
+    for start, end in runs:
+        for x in range(start - left, end - left):
+            ruler[x] = "-"
+        ruler[start - left] = "["
+        ruler[end - 1 - left] = "]"
+    out.append("      " + "".join(ruler))
+
+    # What each run classified as ON ITS OWN, which is what the reader
+    # believed before any join or split repair was tried. A wrong letter
+    # here is the font; a run boundary in the wrong place is segmentation,
+    # and the two have completely different remedies.
+    said = []
+    for start, end in runs:
+        glyph, aspect = glyphs.extract(mask, start, end)
+        if glyph is None:
+            said.append(("?", 0.0, end - start))
+            continue
+        char, score = glyphs.classify(glyph, aspect, font, skin=skin)
+        said.append((char or "?", score, end - start))
+    out.append("      per-run: " + "  ".join(
+        f"{char}({width}px"
+        + (" WIDE" if width >= height * glyphs.MERGED_RUN_FRACTION else "")
+        + f",{score:.2f})"
+        for char, score, width in said))
+    return out
+
+
 def read_labels(run_dir):
     labels_path = os.path.join(run_dir, "labels.tsv")
     if not os.path.exists(labels_path):
@@ -91,7 +149,15 @@ def read_labels(run_dir):
     return labels
 
 
-def report():
+def report(detail=None, kinds=None, only=None):
+    """Score every labelled crop; the baseline lines and the misses.
+
+    `detail`, when a list, collects the ASCII of every miss - narrowed to
+    the miss `kinds` named, and to run folders containing `only`. The sink
+    is threaded through THIS function rather than given its own walk of the
+    corpus, so there is one answer to "how is a crop read" rather than two
+    that can drift apart.
+    """
     font = glyphs.load_font()
     lines = []
     misses_for_manifest = []
@@ -158,6 +224,13 @@ def report():
                 misses.append((name, kind, truth, text or ""))
                 misses_for_manifest.append(
                     (os.path.join(run_dir, name), truth))
+                if (detail is not None
+                        and (kinds is None or kind in kinds)
+                        and (only is None or only in run)):
+                    detail.append(f"  {run}/{name}  [{kind}]")
+                    detail.extend(show_runs(crop, truth, text or "", font,
+                                            skin=skin))
+                    detail.append("")
         count = len(labels)
         lines.append(f"{run}: {count} labelled | "
                      f"read {totals['read']}/{count} | "
@@ -240,13 +313,41 @@ def main():
     parser.add_argument("--check", action="store_true",
                         help="compare against the committed baseline and exit"
                              " non-zero on a regression, without rewriting it")
+    parser.add_argument("--runs", nargs="?", const="", metavar="KINDS",
+                        help="print every miss as PIXELS, with the run"
+                             " boundaries the reader chose and what each run"
+                             " classified as on its own. Optionally a"
+                             " comma-separated list of miss kinds"
+                             " (split,merge,one-sub,...)")
+    parser.add_argument("--only", metavar="TEXT",
+                        help="with --runs, only run folders naming this")
     arguments = parser.parse_args()
-    lines, misses = report()
+    detail = [] if arguments.runs is not None else None
+    kinds = (set(filter(None, arguments.runs.split(",")))
+             if arguments.runs else None)
+    lines, misses = report(detail, kinds, arguments.only)
     if not lines:
+        # A gate that cannot run must say so with its exit code - the same
+        # repair digit_report needed: the corpus lives on one machine and
+        # the repo is developed on three, and --check exiting 0 here read
+        # as "no regression" where nothing was measured.
         print("no labelled corpus runs found - see tools/notif_corpus.py")
+        if arguments.check:
+            print("CHECK DID NOT RUN - the corpus is not on this machine, "
+                  "so nothing was measured. Run the gate where the corpus "
+                  "lives.")
+            sys.exit(1)
         return
     body = "\n".join(lines) + "\n"
     print(body, end="")
+    if detail is not None:
+        # The pixels never touch the baseline: it is a committed file whose
+        # git diff IS the review of a reader change, and burying that in
+        # several hundred lines of ASCII would end the practice.
+        print("")
+        print(chr(10).join(detail))
+        print(f"{len(detail)} lines of detail; the baseline was not written")
+        return
     if arguments.check:
         complaints = check(body)
         if complaints:

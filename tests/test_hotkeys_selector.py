@@ -43,14 +43,14 @@ def test_every_known_backend_offers_the_whole_contract():
             assert hasattr(module, wanted), f"{name} ({platform}) has no {wanted}"
 
 
-def test_both_backends_import_off_their_own_platform():
+def test_every_backend_imports_off_its_own_platform():
     """The dual-boot guard, same as test_capture_selector's.
 
     Everything OS-specific in these modules is imported inside a function
     precisely so this works; if somebody hoists an import to the top, this
     fails here rather than on the other machine days later.
     """
-    for name in ("windows", "x11"):
+    for name in ("windows", "x11", "macos"):
         module = importlib.import_module(f"loom.hotkeys.{name}")
         for wanted in hotkeys.CONTRACT:
             assert hasattr(module, wanted)
@@ -62,6 +62,8 @@ def test_platform_choice_without_an_override(monkeypatch):
     assert hotkeys.backend_name() == "windows"
     monkeypatch.setattr(hotkeys.sys, "platform", "linux")
     assert hotkeys.backend_name() == "x11"
+    monkeypatch.setattr(hotkeys.sys, "platform", "darwin")
+    assert hotkeys.backend_name() == "macos"
 
 
 def test_override_wins_over_the_platform(monkeypatch):
@@ -70,10 +72,14 @@ def test_override_wins_over_the_platform(monkeypatch):
 
 
 def test_a_platform_with_no_backend_is_a_hotkey_error(monkeypatch):
-    """macOS is the real case: it has no backend and must say so rather than
-    crash the overlay."""
+    """A platform with no entry must say so rather than crash the overlay.
+
+    This used darwin as its real example until a macOS backend landed; the
+    made-up platform keeps the honest-absence path covered now that every
+    real platform has an entry.
+    """
     monkeypatch.delenv("LOOM_HOTKEY_BACKEND", raising=False)
-    monkeypatch.setattr(hotkeys.sys, "platform", "darwin")
+    monkeypatch.setattr(hotkeys.sys, "platform", "plan9")
     assert hotkeys.backend_name() is None
     with pytest.raises(hotkeys.HotkeyError):
         hotkeys.load_backend()
@@ -122,6 +128,72 @@ def test_windows_rejects_a_key_it_cannot_map():
     from loom.hotkeys import windows
     with pytest.raises(hotkeys.HotkeyError):
         windows.virtual_key("Fnord")
+
+
+# ---- the macOS table -------------------------------------------------------
+
+def test_macos_maps_every_key_a_mac_keyboard_has():
+    """Every key in the grammar maps, except the five a Mac does not have.
+
+    The exceptions are pinned as a set rather than counted: Apple keyboards
+    stop at F20 and have no Insert key, and a sixth key silently joining
+    this list would be a binding a player can save and which never fires.
+    """
+    from loom.hotkeys import macos
+
+    unmappable = set()
+    for key in keyspec.KEYS:
+        try:
+            code = macos.virtual_key(key)
+        except hotkeys.HotkeyError:
+            unmappable.add(key)
+        else:
+            assert isinstance(code, int), key
+    assert unmappable == {"F21", "F22", "F23", "F24", "Insert"}
+
+
+@pytest.mark.parametrize("key, code", [
+    ("A", 0x00), ("S", 0x01), ("Z", 0x06), ("0", 0x1D), ("9", 0x19),
+    ("F1", 0x7A), ("F20", 0x5A),
+    ("Space", 0x31), ("Escape", 0x35), ("Backtick", 0x32), ("Up", 0x7E),
+    # Keycap truth against Apple's confusing names: keyspec's Backspace is
+    # kVK_Delete and keyspec's Delete is kVK_ForwardDelete.
+    ("Backspace", 0x33), ("Delete", 0x75),
+])
+def test_macos_virtual_keys_are_the_documented_codes(key, code):
+    from loom.hotkeys import macos
+    assert macos.virtual_key(key) == code
+
+
+def test_macos_modifier_flags_map_the_keycaps():
+    """Win is the command key: keyspec names the physical keycap family and
+    a Mac's command-ish modifier is ⌘, which keyspec's cmd/command aliases
+    already spell as Win."""
+    from loom.hotkeys import macos
+
+    flags = macos.modifier_flags(keyspec.parse("Ctrl+Win+Q"))
+
+    assert flags & macos.CONTROL_KEY
+    assert flags & macos.CMD_KEY
+    assert not flags & macos.OPTION_KEY
+    assert not flags & macos.SHIFT_KEY
+
+
+def test_macos_rejects_a_key_it_cannot_map():
+    from loom.hotkeys import macos
+    with pytest.raises(hotkeys.HotkeyError):
+        macos.virtual_key("Fnord")
+
+
+def test_macos_four_character_codes_are_the_documented_constants():
+    """'keyb' IS kEventClassKeyboard - the packing is the constant, so one
+    wrong byte order would register handlers for an event class that never
+    fires, silently."""
+    from loom.hotkeys import macos
+
+    assert macos.KEYBOARD_CLASS == 0x6B657962
+    assert macos.HOT_KEY_ID_TYPE == 0x686B6964
+    assert macos.fourcc("LOOM") == 0x4C4F4F4D
 
 
 # ---- the X11 table ---------------------------------------------------------

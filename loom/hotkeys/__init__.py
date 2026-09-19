@@ -52,12 +52,14 @@ import sys
 
 from .errors import HotkeyError
 
-# Which backend belongs to which platform. macOS is absent on purpose: it
-# would need a Quartz event tap, and macOS is paused - see CLAUDE.md. The
-# stub below turns that absence into an honest message rather than a crash.
+# Which backend belongs to which platform. All three registration APIs are
+# the same shape - the OS matches and hands back an id - which is what the
+# what-a-backend-may-learn constraint above demands. The stub below turns a
+# platform with no entry into an honest message rather than a crash.
 BACKENDS = {
     "win32": "windows",
     "linux": "x11",
+    "darwin": "macos",
 }
 
 # The names every backend must define, and which this module re-exports.

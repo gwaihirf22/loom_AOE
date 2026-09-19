@@ -21,6 +21,14 @@ label is optional and free text, and is worth the two seconds it costs: a
 folder of 2000 frames whose only name is a timestamp is a folder nobody can
 say anything about six weeks later without replaying it.
 
+Beside the frames goes `run.json` - the skin, the anchor SCALE, the match
+score and the frame size, measured once as the run starts. The folder name
+cannot carry the scale, because the folder is named before the first frame
+is saved and the scale is a measurement rather than a setting. Without it
+the corpus's most load-bearing variable was recoverable only by
+re-anchoring a frame, and two runs captured at HUD slider 115% and 125%
+sat in captures/ for a day looking exactly like every other run in there.
+
 --top exists because full 1440p frames run 2-3 MB each, which adds up to
 gigabytes across a whole game. Everything Loom reads off the HUD (resource bar,
 global queue, idle bell, age, clock) sits in the top strip of the screen, so
@@ -40,6 +48,7 @@ import time
 import cv2
 
 from loom import anchor, capture, hud, paths, queue
+from tools import runinfo
 
 
 def slugify(text):
@@ -53,25 +62,35 @@ def slugify(text):
     return "-".join("".join(kept).split("-")).strip("-") or "run"
 
 
-def detect_skin(window):
-    """Which HUD skin is on screen, for the folder name. "unknown" if none.
+def measure_hud(window):
+    """(skin, scale, score) for the HUD on screen right now.
 
     Worth doing at capture time rather than replay time: the answer is only
     knowable while the game is up, and a run whose skin nobody recorded is a
     run that has to be re-identified every time it is opened.
+
+    The SCALE comes back too, and that is the change. This measured it
+    already - identify_hud cannot name a skin without it - and returned
+    only the name, so the corpus's most load-bearing variable was the one
+    thing a run folder could not tell you. Two runs at HUD slider 115% and
+    125% then sat in captures/ looking like every other run in there.
+
+    A skin of "unknown" comes with scale None rather than the number the
+    match happened to land on: under the 0.8 gate that number is not a
+    measurement of anything.
     """
     try:
         frame = capture.capture_window(window)
     except capture.CaptureError:
-        return "unknown"
+        return "unknown", None, None
     found = anchor.identify_hud(
         frame,
         {profile: anchor.load_template(profile) for profile in hud.PROFILES},
         wood_templates={profile: queue.load_wood_template(profile)
                         for profile in hud.PROFILES})
     if found is None or found["score"] < 0.8:
-        return "unknown"
-    return found["profile"].name
+        return "unknown", None, None
+    return found["profile"].name, found["scale"], found["score"]
 
 
 def main():
@@ -101,11 +120,20 @@ def main():
     # frame_0001.png every time, so a second run silently overwrote the frames
     # from the first one. A capture tool that destroys previous captures is a
     # trap, so runs are kept apart by construction.
-    parts = [time.strftime("run_%Y%m%d_%H%M%S"), detect_skin(window)]
+    skin, scale, score = measure_hud(window)
+    parts = [time.strftime("run_%Y%m%d_%H%M%S"), skin]
     if args.label:
         parts.append(slugify(args.label))
     run_directory = os.path.join(paths.CAPTURES_DIR, "_".join(parts))
     os.makedirs(run_directory, exist_ok=True)
+    # What this run IS, beside its frames. The folder name cannot carry
+    # the scale - the folder is named before the first frame is saved -
+    # so it goes here, where nothing has to re-anchor a frame to find out.
+    runinfo.write(run_directory, skin, scale, score, (width, height),
+                  label=slugify(args.label) if args.label else None,
+                  top=args.top)
+    measured = "not found" if scale is None else f"{scale:.3f} (score {score:.3f})"
+    print(f"HUD: {skin}, scale {measured}")
     print(f"Saving a frame every {interval}s into {run_directory}/  —  Ctrl+C to stop.")
 
     frame_number = 0

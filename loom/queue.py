@@ -572,6 +572,25 @@ def count_occupied(frame_gray, boxes):
     return len(boxes)
 
 
+def _filter_for(factor):
+    """Which resize filter, for a resize of this factor.
+
+    INTER_AREA shrinks well and grows badly - it degenerates towards
+    nearest neighbour and hands the matcher a stair-stepped outline to
+    compare against art the game drew smoothly. INTER_CUBIC is the other
+    way round. age.py has made this call correctly since it was written
+    and every site here used INTER_AREA unconditionally, which was right
+    while the HUD was never larger than the templates and quietly wrong
+    the moment it was: at HUD slider 125% all 527 identity icons were
+    being enlarged with the shrinking filter, against identity gates
+    tuned on templates that had not been.
+
+    A factor of exactly 1.0 takes INTER_CUBIC and it does not matter -
+    every caller here skips the resize entirely at 1.0.
+    """
+    return cv2.INTER_AREA if factor < 1.0 else cv2.INTER_CUBIC
+
+
 def icon_interior(cell_bgr, scale=1.0):
     """The part of a slot crop that is the icon, and nothing else.
 
@@ -707,7 +726,7 @@ def wash_against_icon(cell_bgr, variants, scale=1.0):
     judged = False
     for variant in variants:
         icon = cv2.resize(variant, (width, height),
-                          interpolation=cv2.INTER_AREA)
+                          interpolation=_filter_for(width / variant.shape[1]))
         lit = icon.max(axis=2) > ICON_LIT_VALUE
         if int(lit.sum()) < ICON_WASH_MIN_PIXELS:
             continue
@@ -979,7 +998,7 @@ class QueueReader:
         strip, and a fraction of a strip is a sliver too short to search.
         """
         template = cv2.resize(self.wood_template, None, fx=scale, fy=scale,
-                              interpolation=cv2.INTER_AREA)
+                              interpolation=_filter_for(scale))
         if self._wood is not None:
             x, y = self._wood
             margin = 8
@@ -1112,7 +1131,7 @@ class QueueReader:
         if key not in self._scaled_decor:
             self._scaled_decor[key] = [
                 cv2.resize(t, None, fx=scale, fy=scale,
-                           interpolation=cv2.INTER_AREA)
+                           interpolation=_filter_for(scale))
                 for t in self.decor_templates]
         return self._scaled_decor[key]
 
@@ -1130,7 +1149,7 @@ class QueueReader:
         if key not in self._scaled_icons:
             self._scaled_icons[key] = {
                 name: [cv2.resize(t, None, fx=scale, fy=scale,
-                                  interpolation=cv2.INTER_AREA)
+                                  interpolation=_filter_for(scale))
                        for t in variants]
                 for name, variants in load_icon_templates().items()
             }

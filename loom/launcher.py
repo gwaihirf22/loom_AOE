@@ -359,9 +359,20 @@ def fixed_width_font():
     system = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
     font = QFont(system)
     # Preferred first, the platform's own answer last, so an unusual desktop
-    # still gets something fixed-pitch rather than the UI font.
-    font.setFamilies(["Consolas", "DejaVu Sans Mono", "Menlo",
-                      "Liberation Mono", system.family()])
+    # still gets something fixed-pitch rather than the UI font. The list is
+    # the same everywhere; only the ORDER is per platform, because a missing
+    # family at the head of the list is not free: Qt builds its whole
+    # font-alias table to rule it out, and macOS printed "Populating font
+    # family aliases took 61 ms... missing font family Consolas" at every
+    # launch until the family that machine actually has came first.
+    families = {
+        "darwin": ["Menlo", "Consolas", "DejaVu Sans Mono",
+                   "Liberation Mono"],
+        "linux": ["DejaVu Sans Mono", "Liberation Mono", "Consolas",
+                  "Menlo"],
+    }.get(sys.platform, ["Consolas", "DejaVu Sans Mono", "Menlo",
+                         "Liberation Mono"])
+    font.setFamilies(families + [system.family()])
     font.setStyleHint(QFont.StyleHint.Monospace)
     return font
 
@@ -1516,6 +1527,13 @@ class HotkeysBox(QGroupBox):
             unsupported.setWordWrap(True)
             unsupported.setStyleSheet("color: gray;")
             layout.addWidget(unsupported)
+        elif sys.platform == "darwin":
+            # The binding text stays canonical everywhere - one spelling per
+            # stored binding - so the Mac-specific fact is a note, not a
+            # renamed modifier.
+            command_note = QLabel("Win is the Command (⌘) key here.")
+            command_note.setStyleSheet("color: gray;")
+            layout.addWidget(command_note)
         # Two contracts, one per owner, stated rather than implied: the
         # overlay reads its keys once at startup; the launcher re-registers
         # its own the moment a binding changes.

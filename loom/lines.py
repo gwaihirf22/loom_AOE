@@ -31,7 +31,7 @@ import glob
 import os
 import re
 
-from . import glyphs, paths
+from . import glyphs, paths, queue
 
 # How far a read may sit from a real line and still be matched to it, and
 # how far clear of its nearest RIVAL that match must be. Both measured
@@ -60,6 +60,71 @@ MIN_LINE_LENGTH = 12
 # way the game draws them.
 PHRASINGS = ("Built", "Created", "Research Complete", "Found",
              "Destroyed", "Lost")
+
+# WHICH phrasings each kind of thing can appear in, because crossing every
+# subject with every phrasing invents sentences the game cannot print -
+# "--Barracks Research Complete--", "--Goat Built--", "--Wood Research
+# Complete--" - and every one of those is a RIVAL that can refuse a real
+# line. They cost nothing while a line reads cleanly and everything at the
+# small rendering, where recovery is doing most of the work.
+#
+# That is not hypothetical and it is what sent me here: the phantom
+# "--Wood Research Complete--" sits two edits from "--Loom Research
+# Complete--", so nearest_line refused the Loom line even from a PERFECT
+# read, and Loom was the one research line in the whole table that could
+# never be recovered.
+#
+# A unit keeps "Research Complete" because its UPGRADE is named after it -
+# "--Hussar Research Complete--" and "--Crossbowman Research Complete--"
+# are both real lines about units.
+PHRASINGS_BY_KIND = {
+    queue.TECHNOLOGY: ("Research Complete",),
+    queue.BUILDING: ("Built", "Destroyed", "Lost"),
+    queue.ANIMAL: ("Found", "Lost"),
+    queue.UNIT: ("Created", "Destroyed", "Lost", "Research Complete"),
+}
+
+# The icon folder that holds two unlike things: the villager, which the
+# feed announces every twenty-five seconds all game, and raw resources -
+# wood, gold, stone, food, a tree, a hammer, a berry bush - which it never
+# mentions at all. The folder cannot separate them and a hand list of the
+# seven would fail silently, so the question goes to the queue's KINDS
+# table instead: that is derived from the game's own object list, and it
+# calls `villager` a unit while having no word for `wood` at all.
+RESOURCE_FOLDER = "resource"
+
+
+def _kind_of(name):
+    """What the game's object table calls this subject, or UNKNOWN.
+
+    Boundary-insensitive for the same reason checklist._same_subject is:
+    one side of this comparison comes from an icon FILENAME and the other
+    from a hand-checked table, and "scoutcavalry" against "scout_cavalry"
+    is one subject whose two sources drew the underscores differently.
+    """
+    kinds = queue.identity_kinds()
+    slug = glyphs.slugify(name)
+    return (kinds.get(slug) or kinds.get(slug.replace("_", ""))
+            or queue.UNKNOWN)
+
+
+def phrasings_for(name):
+    """The phrasings this subject can legitimately appear in.
+
+    A subject the table has no opinion about keeps every phrasing. No
+    opinion is not a refusal - the table names 454 things and the icon
+    library 653, so half the reason a subject is missing is that nobody
+    has classified it, which is a fact about the table rather than about
+    the game.
+    """
+    base = name[6:] if name.startswith("elite ") else name
+    allowed = PHRASINGS_BY_KIND.get(_kind_of(base))
+    if allowed is None:
+        return PHRASINGS
+    if name != base and "Research Complete" not in allowed:
+        # The Elite form of anything is researched, whatever the thing is.
+        allowed = allowed + ("Research Complete",)
+    return allowed
 
 # Noise in the icon filenames that is not part of any entity's name.
 _FILENAME_NOISE = re.compile(
@@ -101,8 +166,9 @@ def subjects():
     A name is kept only if every word of it is in KNOWN_WORDS, because
     parse_event would refuse anything else anyway.
     """
-    found = set()
+    folders = {}
     for path in glob.glob(str(paths.ICON_LIBRARY_DIR / "*" / "*.webp")):
+        folder = os.path.basename(os.path.dirname(path))
         stem = os.path.splitext(os.path.basename(path))[0]
         cleaned = _FILENAME_NOISE.sub(" ", stem)
         cleaned = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", cleaned)
@@ -110,13 +176,15 @@ def subjects():
                  if w.isalpha() and len(w) > 1]
         if not words:
             continue
-        found.add(" ".join(words))
+        folders.setdefault(" ".join(words), set()).add(folder)
         pieces = []
         for word in words:
             pieces.extend(_split_concatenation(word))
-        found.add(" ".join(pieces))
-    found = {name for name in found
-             if all(word in glyphs.KNOWN_WORDS for word in name.split())}
+        folders.setdefault(" ".join(pieces), set()).add(folder)
+    found = {name for name, where in folders.items()
+             if all(word in glyphs.KNOWN_WORDS for word in name.split())
+             and not (where == {RESOURCE_FOLDER}
+                      and _kind_of(name) == queue.UNKNOWN)}
     # The game prints an Elite form of most unique units and the icon
     # library does not always carry one. One rule beats fifty entries, and
     # a subject that never occurs only ever costs a rival that loses.
@@ -134,7 +202,7 @@ def universe():
         _universe = sorted(
             "--" + " ".join(word.capitalize() for word in name.split())
             + " " + phrasing + "--"
-            for name in subjects() for phrasing in PHRASINGS)
+            for name in subjects() for phrasing in phrasings_for(name))
     return _universe
 
 

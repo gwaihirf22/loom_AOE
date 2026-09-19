@@ -175,11 +175,28 @@ def key_table():
 
 
 def modifiers_of(modifiers):
-    """The keyspec modifier names carried by a Qt modifier flag set."""
+    """The keyspec modifier names carried by a Qt modifier flag set.
+
+    On macOS the names are SWAPPED back. Qt exchanges Control and Meta
+    there - a pressed ⌘ arrives as ControlModifier and a pressed ⌃ as
+    MetaModifier, so that cross-platform Ctrl shortcuts land on the key Mac
+    users reach for. keyspec means the physical keycap ("Ctrl" is the key
+    labelled control, "Win" is the command-ish one), and the macos backend
+    maps those to Carbon's controlKey and cmdKey - so without undoing Qt's
+    swap here, the capture field would record the OPPOSITE modifier from
+    the key the player actually pressed, and the registered chord would
+    never match their fingers.
+    """
+    import sys
+
     from PyQt6.QtCore import Qt
 
-    return {name for attribute, name in _MODIFIER_NAMES
-            if modifiers & getattr(Qt.KeyboardModifier, attribute)}
+    names = {name for attribute, name in _MODIFIER_NAMES
+             if modifiers & getattr(Qt.KeyboardModifier, attribute)}
+    if sys.platform == "darwin":
+        swapped = {"Ctrl": "Win", "Win": "Ctrl"}
+        names = {swapped.get(name, name) for name in names}
+    return names
 
 
 def is_modifier_only(key):
@@ -239,12 +256,23 @@ def binding_for(key, modifiers, native=None):
 
 
 def _modifier_named(key):
-    """The modifier name a modifier KEY stands for, or None."""
+    """The modifier name a modifier KEY stands for, or None.
+
+    Qt's macOS Control/Meta exchange applies to these key codes exactly as
+    it does to the flag set - a pressed ⌘ arrives as Key_Control - so the
+    same swap modifiers_of makes is made here, or the building-a-chord
+    display would name the wrong key under the player's finger.
+    """
+    import sys
+
     from PyQt6.QtCore import Qt
 
-    return {Qt.Key.Key_Control.value: "Ctrl", Qt.Key.Key_Alt.value: "Alt",
+    control, meta = "Ctrl", "Win"
+    if sys.platform == "darwin":
+        control, meta = meta, control
+    return {Qt.Key.Key_Control.value: control, Qt.Key.Key_Alt.value: "Alt",
             Qt.Key.Key_AltGr.value: "Alt", Qt.Key.Key_Shift.value: "Shift",
-            Qt.Key.Key_Meta.value: "Win"}.get(key)
+            Qt.Key.Key_Meta.value: meta}.get(key)
 
 
 def describe(modifiers, key=None):

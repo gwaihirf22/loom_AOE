@@ -583,6 +583,12 @@ class LiveController(Hideable):
         # feed structurally misses houses built close together. See
         # checklist.HouseEvidence.
         self.houses = checklist.HouseEvidence()
+        # Technologies counted from the production queue as well as the
+        # feed, and reconciled so one research can never tick two items.
+        # The third second-witness on the checklist, for the same reason as
+        # the other two: the feed's "...Research Complete" line reads on
+        # 99% of full-size lines and 59% at 1080p. See checklist.TechEvidence.
+        self.techs = checklist.TechEvidence()
         # What age the HUD says we are in, and when each age-up was clicked
         # and reached. Debounced like every other belief here.
         self.ages = age_reader.AgeTracker()
@@ -605,7 +611,7 @@ class LiveController(Hideable):
         self.fresh_each_game = tuple(
             part for part in (self.pace, self.production, self.report,
                               self.follow, self.checklist, self.ages,
-                              self.houses)
+                              self.houses, self.techs)
             if part is not None)
         # Named once at startup, like every other setting the overlay reads.
         self.resume_hint = resume_hint()
@@ -901,16 +907,37 @@ class LiveController(Hideable):
         feed_houses = sum(1 for e in reading.game_events
                           if e == "built:house")
         new_houses = self.houses.update(cap, believed_age, feed_houses)
-        # RECONCILED, not appended, twice over: houses against the
-        # population cap, and age completions against the crest. In both
-        # cases one real event produces two signals, the feed's copies are
-        # dropped, and the better witness's verdict stands in for them.
+        # RECONCILED, not appended, three times over: houses against the
+        # population cap, age completions against the crest, and
+        # technologies against the production queue. In every case one real
+        # event produces two signals, the feed's copies are dropped, and
+        # the better witness's verdict stands in for them.
         # The crest read every age transition in every capture with no
         # frame unread; the feed's "...Research Complete" line wraps and
         # often never reads - the author watched Feudal Age sit amber for
-        # a whole game the crest had followed perfectly.
+        # a whole game the crest had followed perfectly, and Loom sit amber
+        # for one the queue had watched research for thirty-three seconds.
+        #
+        # The statistics recorder runs FIRST, ahead of the checklist, and
+        # only because of what it hands back: the production episodes that
+        # ended on this poll. An episode ending is the moment its vote is
+        # decided, and a technology the queue watched for its full research
+        # time is the third witness in the same chain. Nothing here depends
+        # on the checklist, so the order costs nothing - and the
+        # alternative, a second EpisodeTracker in this file, would be one
+        # question answered in two places.
+        finished_episodes = self.recorder.observe(
+            game_time, villagers, delta, self.production,
+            reading.population, reading.queue,
+            reading.game_events, alerts_list, age_events)
+        if self.recorder.due_flush():
+            self.recorder.write(self.stats_file)
+
         checklist_events = checklist.merged_age_events(
-            checklist.merged_house_events(reading.game_events, new_houses),
+            self.techs.update(
+                checklist.merged_house_events(reading.game_events,
+                                              new_houses),
+                finished_episodes),
             [which for what, which in age_events
              if what == age_reader.REACHED])
 
@@ -926,12 +953,6 @@ class LiveController(Hideable):
                                          clicked_through),
                 checklist_events)
 
-        # The statistics recorder watches the whole game, build and after.
-        self.recorder.observe(game_time, villagers, delta, self.production,
-                              reading.population, reading.queue,
-                              reading.game_events, alerts_list, age_events)
-        if self.recorder.due_flush():
-            self.recorder.write(self.stats_file)
 
         # The build finishing is the payoff moment: the panel flips from
         # instructions to the report and rests there for the rest of the

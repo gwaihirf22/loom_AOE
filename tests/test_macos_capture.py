@@ -233,3 +233,49 @@ def test_the_frame_does_not_alias_the_source_buffer():
     raw[:] = b"\xff" * len(raw)
 
     assert np.array_equal(frame, before)
+
+
+# ---- the display-scale join ------------------------------------------------
+#
+# scale_for is pure on purpose: this join has been wrong twice. First the
+# desktop's LARGEST factor doubled a window already in real pixels; then
+# display.width()-over-points returned 1.0 on every display of a machine
+# whose Retina screens were 2x, halving every capture - clock strokes
+# thinned until hollow zeros split and a whole session read no clock at
+# all. The fixture below is that machine's real display list, measured
+# 30 Aug 2026.
+
+THIS_DESK = [
+    (-2560, 198, 2560, 1440, 5),    # 1x 2560 monitor
+    (0, 0, 3360, 1890, 4),          # 4K in a scaled mode
+    (3360, 356, 1728, 1117, 1),     # built-in Retina panel
+]
+THIS_BACKING = {5: 1.0, 4: 2.0, 1: 2.0}
+
+
+def test_a_window_on_the_scaled_4k_display_captures_at_2x():
+    """The game window that lost its clock: centred on display 4."""
+    centre = (720 + 960, 356 + 556)
+
+    assert macos.scale_for(centre, THIS_DESK, THIS_BACKING, 9.0) == 2.0
+
+
+def test_a_window_on_the_1x_monitor_is_not_doubled():
+    """The original mixed-DPI bug, kept refused: 1x pixels stay 1x."""
+    centre = (-1280, 700)
+
+    assert macos.scale_for(centre, THIS_DESK, THIS_BACKING, 9.0) == 1.0
+
+
+def test_a_centre_no_display_owns_takes_the_fallback():
+    centre = (99999, 99999)
+
+    assert macos.scale_for(centre, THIS_DESK, THIS_BACKING, 2.0) == 2.0
+
+
+def test_a_display_with_no_screen_entry_takes_the_fallback():
+    """The join is by id, and an id NSScreen never mentioned must not be
+    treated as 1x - falling back is honest, inventing a factor is not."""
+    centre = (100, 100)
+
+    assert macos.scale_for(centre, THIS_DESK, {}, 2.0) == 2.0

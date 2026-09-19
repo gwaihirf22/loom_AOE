@@ -113,6 +113,27 @@
   </screenshots>
 
   <releases>
+    <release version="1.0.9" date="2026-09-19">
+      <url type="details">https://github.com/gwaihirf22/loom_AOE/blob/main/CHANGELOG.md</url>
+      <description>
+        <p>
+          Global hotkeys work on macOS, and a match's recorded game is
+          found automatically on the native Mac port.
+        </p>
+        <p>
+          The production queue is a third witness for the step checklist,
+          so a technology it watched produce is ticked off green whether
+          or not the game printed the line. The statistics window draws
+          what Loom read beside what the game was actually told to do, as
+          two lines on one chart with a row of averages along each.
+        </p>
+        <p>
+          The overlay's centre note no longer overlaps the clock or the
+          pace when it is too long for the space between them: it scrolls
+          within its own window instead, with its cut edges faded.
+        </p>
+      </description>
+    </release>
     <release version="1.0.8" date="2026-08-30">
       <url type="details">https://github.com/gwaihirf22/loom_AOE/blob/main/CHANGELOG.md</url>
       <description>

@@ -10,13 +10,17 @@ maths behind the graphs.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
+import hashlib
 import json
 import os
 import pathlib
+import re
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+
+from PyQt6.QtCore import Qt
 
 from loom import paths, statsview
 from loom.gamestats import GameRecorder
@@ -1558,7 +1562,17 @@ def test_every_divider_is_restored_from_one_place(app, stats_dir):
     notices for months, and the third one of its shape this week."""
     window = statsview.StatsWindow()
     assert {name for _, name, _ in window._dividers} == {
-        "history", "build", "military"}
+        "history", "build", "military", "technology"}
+
+
+def test_two_stacked_tabs_do_not_share_one_divider(app, stats_dir):
+    """Military and Technology are both a chart over a table, and
+    _stacked built both on a splitter hard-named "military" - so dragging
+    one tab's divider moved the other's, and whichever was restored last
+    won. The name is a parameter now, and this is what says so."""
+    window = statsview.StatsWindow()
+    names = [name for _, name, _ in window._dividers]
+    assert len(names) == len(set(names)), f"two dividers share a name: {names}"
 
 
 def test_a_saved_divider_position_comes_back(app, stats_dir, monkeypatch):
@@ -2239,31 +2253,6 @@ def test_attaching_a_record_redraws_everything_that_shows_one(stats_dir,
             "a chart is still showing the game as it was before the record"
 
 
-def test_the_banner_and_the_button_never_disagree(stats_dir):
-    """Two controls for one action, so they are driven by one function.
-
-    The banner exists because a missing record is missing from every
-    chart at once while the button for it lives on the tenth tab. That is
-    only safe while nothing can make them say different things.
-    """
-    write_game(stats_dir, "2026-08-25_010714_g.json")
-    path = stats_dir / "2026-08-25_010714_g.json"
-    window = statsview.StatsWindow()
-    window.refresh()
-    window.games.setCurrentRow(0)
-    assert window.banner.isVisibleTo(window), "nothing offered a record"
-    assert window.add_record_button.isEnabled()
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["record"] = {"path": "r.aoe2record", "duration": 900,
-                      "header": None, "apm": None, "villagers_ordered": None}
-    path.write_text(json.dumps(data), encoding="utf-8")
-    window.reload(path)
-    assert not window.banner.isVisibleTo(window), \
-        "the banner outlived the thing it was asking for"
-    assert not window.add_record_button.isEnabled()
-
-
 def test_the_scan_report_leads_with_what_somebody_can_act_on(stats_dir):
     """A bulk operation nobody reads the result of has finished silently.
 
@@ -2769,3 +2758,859 @@ def test_the_key_says_what_the_ring_means():
     assert "ring" in statsview.ORDER_KEY_LABEL
     for verdict in ("early", "on time", "late"):
         assert verdict in statsview.ORDER_KEY_LABEL
+
+
+# ---- one match, several files -------------------------------------------
+#
+# Restarting the overlay mid-match is a normal thing to do, and it leaves
+# TWO stats files for ONE match. Both pair with the same recorded game,
+# which is the matcher working; what was missing is anything knowing they
+# are one game.
+#
+# Deliberately NOT tested: that the parts land next to each other in the
+# list. All three real splits do, because the sort is by the wall clock
+# the recorder was minted at and no other match can be played between two
+# parts of one - but that is a property of today's restart timings rather
+# than a rule, and a test asserting it would be documentation of today
+# wearing a test's clothes.
+
+
+def write_part(directory, name, record, first, last, **game):
+    """A stats file naming `record` and covering first..last on the clock."""
+    recorder = GameRecorder("test", "Test Build", "2026-07-25T12:00:00")
+    for t in range(first, last + 1):
+        recorder.observe(t, 3 + t // 25, -2)
+    path = directory / name
+    recorder.write(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": record, "duration": last, "header": None,
+                      "apm": None, "villagers_ordered": None}
+    data["game"].update(game)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_two_files_naming_one_record_are_two_parts_of_one_match(stats_dir):
+    """The whole feature, in the shape it really arrives in."""
+    write_part(stats_dir, "2026-08-30_125036_s.json", "r.aoe2record", 1, 194)
+    write_part(stats_dir, "2026-08-30_125241_s.json", "r.aoe2record", 207, 770)
+    write_game(stats_dir, "2026-08-30_130000_alone.json")
+
+    rows = statsview.list_stats()
+    parts = statsview.match_parts(rows)
+    assert len(parts) == 2
+    numbered = {pathlib.Path(p).name: part.number for p, part in parts.items()}
+    assert numbered == {"2026-08-30_125036_s.json": 1,
+                        "2026-08-30_125241_s.json": 2}
+
+    labels = {p.name: label for p, label, _ in rows}
+    assert "part 1 of 2" in labels["2026-08-30_125036_s.json"]
+    assert "0:01" in labels["2026-08-30_125036_s.json"]
+    assert "3:14" in labels["2026-08-30_125036_s.json"]
+    assert "part 2 of 2" in labels["2026-08-30_125241_s.json"]
+    assert "3:27" in labels["2026-08-30_125241_s.json"]
+    assert "12:50" in labels["2026-08-30_125241_s.json"]
+    assert "part" not in labels["2026-08-30_130000_alone.json"]
+
+
+def test_parts_are_ordered_by_the_game_clock_not_the_filename(stats_dir):
+    """Part 1 means the part that starts earliest IN THE MATCH.
+
+    The filename agrees today and is not the rule, so this writes the
+    LATER clock under the EARLIER filename to make the two orderings
+    disagree. A numbering that quietly fell back to the name would
+    survive every other test in this section and fail here.
+    """
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 500, 900)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 1, 400)
+    parts = statsview.match_parts(statsview.list_stats())
+    by_name = {pathlib.Path(p).name: part for p, part in parts.items()}
+    assert by_name["2026-08-30_130000_b.json"].number == 1
+    assert by_name["2026-08-30_120000_a.json"].number == 2
+
+
+def test_a_lone_game_with_a_record_is_never_called_part_1_of_1(stats_dir):
+    """One of one claims that no other part EXISTS, and the only evidence
+    is that no other file in this folder names that record - which a
+    deleted file, or one recorded on the other boot, makes into a lie."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 900)
+    assert statsview.match_parts(statsview.list_stats()) == {}
+    assert "part" not in statsview.list_stats()[0][1]
+
+
+def test_only_the_records_own_name_groups_a_match(stats_dir):
+    """Exact evidence, never a resemblance - in both directions.
+
+    Grouping by resemblance instead - same build, clock ranges that run
+    on from each other, minutes apart on the wall clock - finds 43
+    candidate pairs in the author's 283 files where 3 are provable. The
+    other 40 are the issue #12 shape from before the wobble guard.
+    """
+    # Everything a resemblance would want, and two different records.
+    write_part(stats_dir, "2026-08-30_120000_a.json", "one.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_120100_b.json", "two.aoe2record",
+               405, 800)
+    assert statsview.match_parts(statsview.list_stats()) == {}
+
+    # Nothing a resemblance would want, and one record. Six days apart.
+    write_part(stats_dir, "2026-08-24_090000_c.json", "same.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_235959_d.json", "same.aoe2record",
+               405, 800)
+    parts = statsview.match_parts(statsview.list_stats())
+    assert sorted(pathlib.Path(p).name for p in parts) == [
+        "2026-08-24_090000_c.json", "2026-08-30_235959_d.json"]
+
+
+def test_a_file_with_no_record_is_never_grouped(stats_dir):
+    """The record's name is the only exact evidence there is."""
+    write_game(stats_dir, "2026-08-30_120000_a.json")
+    write_game(stats_dir, "2026-08-30_120500_b.json")
+    assert statsview.match_parts(statsview.list_stats()) == {}
+
+
+def test_the_real_three_part_shape_keeps_three_sets_of_numbers(stats_dir):
+    """Group, do not combine - pinned as a test rather than as a comment.
+
+    Built from the match that really is on disk in three files. Its tails
+    are DEGRADED: each reports tc_count 1 where the real answer was 3,
+    and each reports its whole span as Town Centre idle because the
+    tracker starts cold. Adding those idle seconds would invent 295
+    seconds of idleness that nobody was ever idle for.
+    """
+    write_part(stats_dir, "2026-08-22_235855_a.json", "r.aoe2record",
+               69, 1571, tc_count=3, tc_idle_seconds=564.0)
+    write_part(stats_dir, "2026-08-23_001439_b.json", "r.aoe2record",
+               1603, 1772, tc_count=1, tc_idle_seconds=169.0)
+    write_part(stats_dir, "2026-08-23_001632_c.json", "r.aoe2record",
+               1786, 1912, tc_count=1, tc_idle_seconds=126.0)
+
+    rows = statsview.list_stats()
+    parts = statsview.match_parts(rows)
+    by_name = {pathlib.Path(p).name: part for p, part in parts.items()}
+    assert [by_name[name].number
+            for name in ("2026-08-22_235855_a.json",
+                         "2026-08-23_001439_b.json",
+                         "2026-08-23_001632_c.json")] == [1, 2, 3]
+
+    # Each row carries its OWN range and nothing else's.
+    labels = {p.name: label for p, label, _ in rows}
+    assert "1:09" in labels["2026-08-22_235855_a.json"]
+    assert "26:11" in labels["2026-08-22_235855_a.json"]
+    assert "31:52" not in labels["2026-08-22_235855_a.json"]
+
+    # The whole-match span is never formed anywhere.
+    whole = statsview.format_time(1912 - 69)
+    assert not any(whole in label for label in labels.values())
+
+    # And every file still reports what it recorded, untouched.
+    for name, tcs, idle in (("2026-08-22_235855_a.json", 3, 564.0),
+                            ("2026-08-23_001439_b.json", 1, 169.0),
+                            ("2026-08-23_001632_c.json", 1, 126.0)):
+        data = next(d for p, _, d in rows if p.name == name)
+        assert data["game"]["tc_count"] == tcs
+        assert data["game"]["tc_idle_seconds"] == idle
+
+
+def test_a_part_that_cannot_say_where_it_began_says_so(stats_dir):
+    """Absent is not zero, at the place the value is DEFINED.
+
+    170 of the author's 283 files predate game["observed"], so a range
+    derived from duration-minus-observed rather than from the timeline
+    would come back blank on all of them. And when a file genuinely
+    cannot say, the range is dropped WHOLE - never drawn as 0:00, which
+    would be the file claiming it watched the opening.
+    """
+    first = write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record",
+                       1, 400)
+    second = write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record",
+                        405, 800)
+    # An older file: no timeline, and no "observed" either.
+    data = json.loads(second.read_text(encoding="utf-8"))
+    del data["timeline"]
+    del data["game"]["observed"]
+    second.write_text(json.dumps(data), encoding="utf-8")
+
+    parts = statsview.match_parts(statsview.list_stats())
+    older = parts[str(second)]
+    assert older.first is None, "guessed at a start it could not read"
+    assert older.last == 800
+    note = statsview.part_note(older)
+    assert "part 2 of 2" in note
+    assert "0:00" not in note and "–" not in note
+
+    # The timeline still answers for the file that has one.
+    assert parts[str(first)].first == 1
+
+    # And the arithmetic is a real fallback: observed, but no timeline.
+    data["game"]["observed"] = 395
+    second.write_text(json.dumps(data), encoding="utf-8")
+    again = statsview.match_parts(statsview.list_stats())
+    assert again[str(second)].first == 405
+
+
+def test_parts_with_no_clock_at_all_still_sort():
+    """None beside an int in a sort key is a TypeError, and this list is
+    built every time the window refreshes - so it would not be a wrong
+    answer, it would be the statistics window failing to open.
+
+    Every mixture at once: a part that knows both ends, two that know
+    only where they stopped, and one that knows nothing.
+    """
+    rows = [("a.json", "A", {"record": {"path": "r"},
+                             "game": {"duration": 900}}),
+            ("b.json", "B", {"record": {"path": "r"},
+                             "game": {"duration": 400}}),
+            ("c.json", "C", {"record": {"path": "r"},
+                             "timeline": {"t": [1, 200]}}),
+            ("d.json", "D", {"record": {"path": "r"}, "game": {}})]
+    parts = statsview.match_parts(rows)
+    assert [name for name, _ in sorted(parts.items(),
+                                       key=lambda kv: kv[1].number)] == [
+        "c.json", "b.json", "a.json", "d.json"]
+    # The one that knows nothing is last, and says so rather than
+    # claiming it started at the beginning.
+    assert parts["d.json"].first is None and parts["d.json"].last is None
+
+
+def test_an_unreadable_file_never_joins_a_group(stats_dir):
+    """The folder is user-visible, so garbage in it must not raise."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    (stats_dir / "2026-08-30_140000_broken.json").write_text("{ not json")
+    (stats_dir / "2026-08-30_150000_foreign.json").write_text(
+        json.dumps({"schema": 99}))
+
+    rows = statsview.list_stats()
+    parts = statsview.match_parts(rows)
+    assert len(parts) == 2
+    assert sum("unreadable" in label for _, label, _ in rows) == 2
+
+
+def test_every_part_can_be_found_by_typing_part(stats_dir):
+    """The note lives in the LABEL, so the filter box finds it.
+
+    Worth pinning rather than enjoying: the moment the note is painted by
+    the window instead, the row text and what the filter searches become
+    two answers to one question, and the fragments - the ones most worth
+    auditing, since a tail's numbers describe a cold start - stop being
+    findable at all.
+
+    "part" and not "part 2", and the difference is matches_filter's
+    doing rather than an oversight: it is order-free and word-based, so
+    "2" is satisfied by the "of 2" every part carries. What the box
+    actually offers is the whole set of split matches in one query,
+    which is the more useful of the two anyway.
+    """
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    write_game(stats_dir, "2026-08-30_140000_whole.json")
+    kept = [label for _, label, _ in statsview.list_stats()
+            if statsview.matches_filter(label, "part")]
+    assert len(kept) == 2
+    assert {"part 1 of 2", "part 2 of 2"} == {
+        note for note in ("part 1 of 2", "part 2 of 2")
+        if any(note in label for label in kept)}
+
+
+def test_the_numbering_survives_the_parts_being_apart_in_the_list(stats_dir):
+    """Adjacency is today's data, not a rule."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_game(stats_dir, "2026-08-30_125959_between.json")
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    labels = [label for _, label, _ in statsview.list_stats()]
+    assert "part 2 of 2" in labels[0]
+    assert "part" not in labels[1], "the row between them was swept in"
+    assert "part 1 of 2" in labels[2]
+
+
+def test_the_bracket_joins_adjacent_rows_of_one_match():
+    """The bracket's whole rule, away from any font.
+
+    Kept pure and tested here rather than in pixels because the
+    offscreen platform's font is a stub: it can answer where a line was
+    drawn and cannot answer where a glyph landed.
+    """
+    tags = ["r", "r", None, "s", "s", "s"]
+    assert statsview.bracket_shape(tags, 0) == (False, True)    # top of r
+    assert statsview.bracket_shape(tags, 1) == (True, False)    # bottom of r
+    assert statsview.bracket_shape(tags, 2) == (False, False)   # not a part
+    assert statsview.bracket_shape(tags, 3) == (False, True)
+    assert statsview.bracket_shape(tags, 4) == (True, True)     # the middle
+    assert statsview.bracket_shape(tags, 5) == (True, False)
+
+
+def test_the_bracket_never_reaches_across_a_stranger():
+    """Adjacency is not the rule, so the drawing must not assume it.
+
+    All three real splits ARE adjacent - no other match can be played
+    between two parts of one - but a filter can hide the row in between,
+    and a bracket drawn around a row that is not in the match would be a
+    claim nothing supports.
+    """
+    tags = ["r", None, "r"]
+    assert statsview.bracket_shape(tags, 0) == (False, False)
+    assert statsview.bracket_shape(tags, 2) == (False, False)
+    # Two different matches touching are not one bracket either.
+    assert statsview.bracket_shape(["r", "s"], 0) == (False, False)
+    assert statsview.bracket_shape(["r", "s"], 1) == (False, False)
+
+
+def test_a_single_row_of_a_match_is_a_tick_and_no_line(stats_dir):
+    """It still has to say "this belongs to something".
+
+    Drawing nothing on a part whose siblings are hidden would make the
+    filter box quietly erase the fact that the match is split.
+    """
+    assert statsview.bracket_shape(["r"], 0) == (False, False)
+
+
+def _violet_by_row(window):
+    """How many record-coloured pixels each visible row carries."""
+    from PyQt6.QtGui import QPixmap
+    games = window.games
+    games.resize(460, 240)
+    shot = QPixmap(games.viewport().size())
+    shot.fill()
+    games.viewport().render(shot)
+    image = shot.toImage()
+    violet = statsview.PARTS_COLOR.rgb() & 0xFFFFFF
+    counted = []
+    for row in range(games.count()):
+        rect = games.visualItemRect(games.item(row))
+        found = 0
+        for y in range(max(0, rect.top()),
+                       min(image.height(), rect.bottom() + 1)):
+            for x in range(image.width()):
+                if (image.pixel(x, y) & 0xFFFFFF) == violet:
+                    found += 1
+        counted.append(found)
+    return counted
+
+
+def test_the_bracket_is_actually_drawn_and_only_where_it_belongs(stats_dir):
+    """Look at the pixels, which is the habit this project runs on.
+
+    A colour IS answerable offscreen even though a font is not, so this
+    renders the list and counts. It is the half that bracket_shape
+    cannot check: that paintEvent is reached at all, and that a row
+    outside every match is left alone.
+    """
+    write_part(stats_dir, "2026-08-22_235855_a.json", "r.aoe2record", 69, 1571)
+    write_part(stats_dir, "2026-08-23_001439_b.json", "r.aoe2record",
+               1603, 1772)
+    write_game(stats_dir, "2026-08-24_090000_alone.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+
+    # Newest first: the lone game, then part 2, then part 1.
+    drawn = _violet_by_row(window)
+    assert drawn[0] == 0, "a game in no match wore the grouping colour"
+    assert drawn[1] > 0 and drawn[2] > 0, "the bracket was never drawn"
+
+
+def test_the_bracket_survives_the_row_being_selected(stats_dir):
+    """Painted after the rows, so it sits over the selection highlight.
+
+    A bracket that disappears on the row you are looking at is worse
+    than no bracket - the moment you click a part to read it, the thing
+    that told you it was a part is gone.
+    """
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    assert all(count > 0 for count in _violet_by_row(window))
+
+
+def test_a_grouped_row_is_indented_under_its_bracket(stats_dir):
+    """The indent is what the bracket is drawn in - and it reads as
+    nesting on its own, which a painted line does not survive being
+    pasted into a bug report as text."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_game(stats_dir, "2026-08-30_140000_alone.json")
+    labels = {p.name: label for p, label, _ in statsview.list_stats()}
+    assert not labels["2026-08-30_120000_a.json"].startswith(
+        statsview.PART_INDENT), "a lone game was indented"
+
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    labels = {p.name: label for p, label, _ in statsview.list_stats()}
+    assert labels["2026-08-30_120000_a.json"].startswith(
+        statsview.PART_INDENT)
+    assert labels["2026-08-30_130000_b.json"].startswith(
+        statsview.PART_INDENT)
+    assert not labels["2026-08-30_140000_alone.json"].startswith(" ")
+
+
+def test_the_indent_does_not_break_the_filter(stats_dir):
+    """Leading spaces are not a word, so nothing typed has to know."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    rows = statsview.list_stats()
+    assert all(statsview.matches_filter(label, "Test Build")
+               for _, label, _ in rows)
+
+def test_a_sibling_hidden_by_the_filter_is_still_reachable(stats_dir):
+    """A link that silently does nothing is the control that draws
+    nothing, wearing a different hat."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    window = statsview.StatsWindow()
+    window.refresh()
+    # 13:20 is part 2's own end and appears in no other row.
+    window.filter_box.setText("13:20")
+    assert window.games.count() == 1, "the filter did not hide the other part"
+    window.games.setCurrentRow(0)
+    window._show_part("2026-08-30_120000_a.json")
+    chosen = window.games.currentItem().data(Qt.ItemDataRole.UserRole)
+    assert pathlib.Path(chosen).name == "2026-08-30_120000_a.json"
+    assert window.filter_box.text() == ""
+
+
+def test_grouping_writes_nothing_to_disk(stats_dir):
+    """Derived at read time, so there is nothing to migrate and nothing
+    to go stale.
+
+    Pinned so a later "let's just cache the group id" cannot land
+    quietly: a written total would be wrong the moment a part is
+    deleted, with nothing anywhere to notice.
+    """
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+
+    def digest():
+        return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(stats_dir.glob("*.json"))}
+
+    before = digest()
+    window = statsview.StatsWindow()
+    window.refresh()
+    for row in range(window.games.count()):
+        window.games.setCurrentRow(row)
+    assert digest() == before
+
+
+def _bar_and_body(window):
+    """The message bar's height and the geometry of everything above it."""
+    window.resize(900, 600)
+    window.layout().activate()
+    return window.message.height(), window.split.geometry()
+
+
+def test_the_message_bar_never_changes_height(stats_dir):
+    """The fault this bar was rebuilt to fix.
+
+    Two strips above the tab strip used to show and hide themselves as
+    the selection changed, so clicking between games added and removed
+    up to five lines and shoved the tabs and every chart down the
+    window. Moving that to the bottom would only have moved the jump -
+    what stops it is a height that is always occupied.
+
+    Three games that have three different things to say, so all three
+    messages are exercised: one split into parts, one with no record at
+    all, and one whole game with a complete record.
+    """
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    write_part(stats_dir, "2026-08-30_140000_c.json", "alone.aoe2record",
+               1, 900)
+    write_game(stats_dir, "2026-08-30_150000_norecord.json")
+    window = statsview.StatsWindow()
+    window.refresh()
+
+    seen = set()
+    said = set()
+    for row in range(window.games.count()):
+        window.games.setCurrentRow(row)
+        seen.add(_bar_and_body(window))
+        said.add(window.message_label.text())
+    assert len(said) > 1, "every game said the same thing; test proves nothing"
+    assert len(seen) == 1, (
+        f"the window moved as the message changed: {seen}")
+
+
+def test_the_bar_is_one_line_whatever_it_says(stats_dir):
+    """A wrapping label is what varies the height, so it must not wrap."""
+    window = statsview.StatsWindow()
+    assert not window.message_label.wordWrap()
+    tall = window.message.height()
+    window.message_label.setText("word " * 200)
+    window.layout().activate()
+    assert window.message.height() == tall
+
+
+def test_the_actionable_message_wins(stats_dir):
+    """A missing record has a button; a part is a caveat the row already
+    carries in its label and its bracket."""
+    part = statsview.Part("r", 2, 2, 405, 800)
+    said, action, _tip = statsview.message_for(
+        statsview.RECORD_PARTIAL, part, [])
+    assert action == "Finish reading it"
+    assert "part 2" not in said.lower()
+
+    # With nothing to act on, the part gets the line.
+    said, action, _tip = statsview.message_for(
+        statsview.RECORD_COMPLETE, part, [])
+    assert action is None
+    assert "Part 2 of 2" in said
+
+
+def test_a_game_with_nothing_to_say_says_nothing(stats_dir):
+    """The bar stays; the words go. An empty line is not a message."""
+    said, action, tip = statsview.message_for(
+        statsview.RECORD_COMPLETE, None, [])
+    assert (said, action, tip) == ("", None, "")
+    # And an unreadable file is not a claim that a record is missing.
+    assert statsview.record_state(None) is None
+    assert statsview.message_for(None, None, []) == ("", None, "")
+
+
+def test_one_definition_of_what_a_record_is(stats_dir):
+    """The button and the bar must not answer this differently.
+
+    They used to test the file each in their own way, which is the shape
+    that ends with a button saying a record is attached beside a bar
+    still asking for one.
+    """
+    assert statsview.record_state({"record": {"path": "r"}}) == \
+        statsview.RECORD_PARTIAL
+    assert statsview.record_state({}) == statsview.RECORD_MISSING
+    whole = {"record": {key: None for key in statsview.RECORD_KEYS}}
+    assert statsview.record_state(whole) == statsview.RECORD_COMPLETE
+
+
+def test_the_bar_and_the_button_never_disagree(stats_dir):
+    """One game, one reading, driving both."""
+    write_game(stats_dir, "2026-08-25_010714_g.json")
+    path = stats_dir / "2026-08-25_010714_g.json"
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    assert "No recorded game" in window.message_label.text()
+    assert window.banner_button.isVisibleTo(window.message)
+    assert window.add_record_button.isEnabled()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["record"] = {"path": "r.aoe2record", "duration": 900,
+                      "header": None, "apm": None, "villagers_ordered": None}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    window.reload(path)
+    assert window.message_label.text() == "", \
+        "the bar outlived the thing it was asking for"
+    assert not window.banner_button.isVisibleTo(window.message)
+    assert not window.add_record_button.isEnabled()
+
+
+def test_part_1_is_not_accused_of_starting_cold(stats_dir):
+    """The two parts fail differently and are not told the same way.
+
+    Part 1 watched the opening and stopped early, so its counts are
+    real and merely stop where it does. A later part's trackers began
+    from nothing, which is how part 3 of the real three-part match came
+    to report its whole span as idle. Saying "started cold" about part 1
+    would be a fault reported that nobody observed.
+    """
+    first = statsview.part_line(statsview.Part("r", 1, 3, 69, 1571))[0]
+    later = statsview.part_line(statsview.Part("r", 3, 3, 1786, 1912))[0]
+    assert "Town Centre count" not in first
+    assert "Town Centre count" in later
+    assert "joined at 29:46" in later
+    assert "joined" not in first
+
+
+def test_the_part_line_counts_files_rather_than_restarts(stats_dir):
+    """N is a count of FILES, which is what Loom can see.
+
+    How many times a person restarted anything is an inference about a
+    session Loom did not watch.
+    """
+    said = statsview.part_line(statsview.Part("r", 1, 2, 1, 400))[0]
+    assert "of 2" in said
+    assert "restart" not in said.lower() and "twice" not in said
+
+
+def test_the_bracket_and_the_message_wear_one_colour(stats_dir):
+    """One relationship, one colour - whichever colour it is.
+
+    This is the rule rather than "violet": the bracket down the list and
+    the line in the bar describe exactly the same fact, and two places
+    answering one question is how they come to answer it differently.
+    """
+    violet = statsview.css_rgb(statsview.PARTS_COLOR)
+    said = statsview.part_line(
+        statsview.Part("r", 2, 2, 1, 400),
+        [("a.json", statsview.Part("r", 1, 2, 1, 9))])[0]
+    assert violet in said
+    # And the colour it is, is the record's - nothing is grouped until a
+    # record is attached and its name is the only evidence that groups it.
+    assert statsview.PARTS_COLOR is statsview.RECORD_COLOR
+
+
+def test_the_bar_speaks_only_for_a_game_that_has_others(stats_dir):
+    """A control that draws nothing is worse than no control - and a
+    line about the wrong game is worse than either."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    write_part(stats_dir, "2026-08-30_140000_c.json", "alone.aoe2record",
+               1, 900)
+    window = statsview.StatsWindow()
+    window.refresh()
+
+    window.games.setCurrentRow(0)                   # the lone game
+    assert window.message_label.text() == ""
+    window.games.setCurrentRow(1)                   # part 2
+    assert "Part 2 of 2" in window.message_label.text()
+
+
+def test_the_bar_goes_quiet_over_an_unreadable_file(stats_dir):
+    """A line left on screen over a file it does not describe."""
+    write_part(stats_dir, "2026-08-30_120000_a.json", "r.aoe2record", 1, 400)
+    write_part(stats_dir, "2026-08-30_130000_b.json", "r.aoe2record", 405, 800)
+    (stats_dir / "2026-08-30_150000_broken.json").write_text("{ not json")
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(1)                   # a part
+    assert window.message_label.text() != ""
+    window.games.setCurrentRow(0)                   # the corrupt file
+    assert window.message_label.text() == ""
+    assert not window.banner_button.isVisibleTo(window.message), \
+        "offered to attach a record to a file nobody could read"
+
+
+def test_every_sibling_the_bar_offers_can_be_reached(stats_dir):
+    """Walk what the bar actually renders, rather than a hand-list.
+
+    A test that agrees with the links passes happily while one of them
+    points at a row the window cannot resolve; this one fails the moment
+    a link is added whose target cannot be found.
+    """
+    for name, first, last in (("2026-08-22_235855_a.json", 69, 1571),
+                              ("2026-08-23_001439_b.json", 1603, 1772),
+                              ("2026-08-23_001632_c.json", 1786, 1912)):
+        write_part(stats_dir, name, "r.aoe2record", first, last)
+    window = statsview.StatsWindow()
+    window.refresh()
+    window.games.setCurrentRow(0)
+    offered = re.findall(r"href='([^']+)'", window.message_label.text())
+    assert len(offered) == 2, offered
+    for href in offered:
+        window._show_part(href)
+        chosen = window.games.currentItem().data(Qt.ItemDataRole.UserRole)
+        assert pathlib.Path(chosen).name == href
+
+
+# ---- the two rows of per-age averages ------------------------------------
+#
+# The APM chart carries two lines now, so it carries two rows of averages,
+# and the only thing saying which row belongs to which line is the ink. A
+# green 183 and a violet 44 under the same age are not two opinions about
+# one quantity; they are two different quantities, and a reader who takes
+# them for one has been misled by the chart rather than by the numbers.
+#
+# Counted in PIXELS rather than asserted on the drawing calls, which is the
+# trick loom-37 used for the grouping bracket: what matters is what reached
+# the screen. Offscreen cannot answer where a glyph LANDED - its font
+# database is a stub - but it answers what colour was painted where, and
+# that is the whole claim here.
+
+
+def apm_view_with_record(eapm=True):
+    """The APM chart over a game that has a recorded game attached.
+
+    game_with_ages() records no APM - the launcher fills that in after
+    the match - so both series are supplied here. Without Loom's own the
+    chart has no green row either, and every assertion below would pass
+    by measuring an empty picture.
+    """
+    data = game_with_ages()
+    buckets = list(range(0, 901, 5))
+    data["apm"] = {"t": buckets,
+                   "apm": [120 + (t // 55) % 60 for t in buckets]}
+    if eapm:
+        data["record"] = {"path": "r.aoe2record",
+                          "apm": {"t": buckets,
+                                  "apm": [40 + (t // 60) % 20 for t in buckets]}}
+    view = statsview.ChartView(("apm",))
+    view.show_game(data)
+    view.resize(700, 420)
+    return view
+
+
+# What a pixel in these bands can belong to. A pixel is attributed to
+# whichever of these it is nearest, which is how ink_in_band tells a label
+# from the background it sits on and from the other row's colour.
+def _label_candidates():
+    return [(statsview.APM_LABEL_TEXT.red(), statsview.APM_LABEL_TEXT.green(),
+             statsview.APM_LABEL_TEXT.blue()),
+            (statsview.EAPM_LABEL_TEXT.red(), statsview.EAPM_LABEL_TEXT.green(),
+             statsview.EAPM_LABEL_TEXT.blue()),
+            (statsview.BACKGROUND.red(), statsview.BACKGROUND.green(),
+             statsview.BACKGROUND.blue())]
+
+
+def ink_in_band(view, colour, top_fraction, bottom_fraction):
+    """Pixels in a horizontal band of the chart that are THIS label's colour.
+
+    Nearest-colour rather than exact equality, and that distinction cost
+    three weeks of red CI.
+
+    Exact equality is not a property of this feature, it is a property of
+    the font rasteriser. At this size FreeType antialiases every stroke of
+    these labels so that no pixel anywhere in them reaches the pure colour,
+    while Windows produces solid glyph cores - so the same assertion found
+    hundreds on one platform and zero on the other two, with the chart drawn
+    correctly the whole time. Worse, the pure-colour pixels that DO exist
+    are the series lines, which are stroked rather than rendered as text, so
+    the count was never measuring the labels at all.
+
+    The per-age labels make it plainer still: APM_LABEL_FAINT differs from
+    APM_LABEL_TEXT only in ALPHA, so not one pixel of those can ever equal
+    the full-strength colour by construction.
+
+    A pixel counts when it is nearer this label's colour than the other
+    row's or the background - which is what "drawn in the APM line's colour"
+    means, and is as true of a half-covered glyph edge as of a solid core.
+    """
+    from PyQt6.QtGui import QPixmap
+    shot = QPixmap(view.size())
+    shot.fill(statsview.BACKGROUND)
+    view.render(shot)
+    image = shot.toImage()
+    candidates = _label_candidates()
+    want = (colour.red(), colour.green(), colour.blue())
+    top = int(image.height() * top_fraction)
+    bottom = int(image.height() * bottom_fraction)
+
+    def nearest(pixel):
+        red, green, blue = (pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255
+        return min(candidates,
+                   key=lambda c: ((c[0] - red) ** 2 + (c[1] - green) ** 2
+                                  + (c[2] - blue) ** 2))
+
+    return sum(1
+               for y in range(top, bottom)
+               for x in range(image.width())
+               if nearest(image.pixel(x, y)) == want)
+
+
+def row_ink(view, colour, top_fraction, bottom_fraction, method):
+    """Pixels THIS LABEL ROW put on the chart, and nothing else's.
+
+    Counting the colour alone does not work and the first version of
+    these tests proved it: a row wears the ink of the line it averages,
+    deliberately, so a plain count of green in the top band came back 551
+    and every one of them belonged to the APM line passing through. The
+    row is measured by suppressing it and taking the difference, which is
+    the only way to attribute a pixel to it when its whole design is to
+    match something else already on screen.
+    """
+    before = ink_in_band(view, colour, top_fraction, bottom_fraction)
+    original = getattr(type(view), method)
+    setattr(type(view), method, lambda self, painter, plot: None)
+    try:
+        after = ink_in_band(view, colour, top_fraction, bottom_fraction)
+    finally:
+        setattr(type(view), method, original)
+    return before - after
+
+
+def test_the_record_gets_its_own_row_of_averages_along_the_floor(app):
+    """Only when a record is attached, which is the condition the violet
+    LINE is drawn under too. A row of averages for a line that is not on
+    the chart would be a number with nothing to check it against."""
+    drawn = row_ink(apm_view_with_record(True), statsview.EAPM_LABEL_TEXT,
+                    0.80, 1.0, "_eapm_span_labels")
+    without = row_ink(apm_view_with_record(False), statsview.EAPM_LABEL_TEXT,
+                      0.80, 1.0, "_eapm_span_labels")
+
+    assert drawn > 0, "the eAPM averages were never drawn"
+    assert without == 0, "an eAPM row appeared with no recorded game"
+
+
+def test_the_apm_averages_wear_the_line_they_average(app):
+    """Green ink, along the ceiling, over the line it averages."""
+    drawn = row_ink(apm_view_with_record(True), statsview.APM_LABEL_TEXT,
+                    0.10, 0.30, "_apm_span_labels")
+
+    assert drawn > 0, "the APM averages are not in the APM line's colour"
+
+
+def test_the_two_rows_are_at_opposite_ends_of_the_chart(app):
+    """Not decoration. Rendered on one row they overwrite each other -
+    measured on a real 56-minute game: "Imperial Age 37" landed on top of
+    "Imperial Age 153", and the two whole-game summaries fought for the
+    same right-hand corner because both rows right-align theirs."""
+    view = apm_view_with_record(True)
+    violet_high = row_ink(view, statsview.EAPM_LABEL_TEXT, 0.10, 0.30,
+                          "_eapm_span_labels")
+    violet_low = row_ink(view, statsview.EAPM_LABEL_TEXT, 0.80, 1.0,
+                         "_eapm_span_labels")
+    green_low = row_ink(view, statsview.APM_LABEL_TEXT, 0.80, 1.0,
+                        "_apm_span_labels")
+    green_high = row_ink(view, statsview.APM_LABEL_TEXT, 0.10, 0.30,
+                         "_apm_span_labels")
+
+    # Which row is at which end is the author's call and was reversed once
+    # after seeing it drawn - each row now sits at the end its own line
+    # occupies, APM high and eAPM low. What is NOT a matter of taste is
+    # that they are at opposite ends, so that is what this asserts twice
+    # over rather than pinning one arrangement.
+    assert green_high > 0 and green_low == 0, "the APM row is not on top"
+    assert violet_low > 0 and violet_high == 0, "the record's row is not below"
+
+
+def test_a_chart_with_no_headroom_is_not_given_a_top_row(app):
+    """_label_chip's docstring argues against the ceiling, and it was
+    right when written: with the axis at max(values) every series touches
+    the top edge by construction. The APM chart scales to 1.1x its peak
+    instead, so its ceiling is the emptiest band on it - which is why
+    at_top is safe THERE and is a flag rather than the default.
+
+    Pinned as a rule about the axis rather than about the picture, so it
+    keeps meaning something if the labels move again.
+    """
+    view = apm_view_with_record(True)
+    values = [v for v in view.apm_smooth if v is not None]
+    assert values, "no smoothed series to reason about"
+    # The axis top, as _draw_apm computes it.
+    hi = min(max(values + [60]) * 1.1, 400)
+
+    assert hi > max(values), "the APM axis no longer leaves headroom"
+
+
+# ---- eAPM in the hover readout -------------------------------------------
+
+
+def test_the_readout_names_eapm_as_eapm(app):
+    """Two numbers close enough in kind that an unlabelled pair would read
+    as one quantity twice - the same care "queued" needed."""
+    said = statsview.hover_summary({"t": 300, "apm": 183.0, "eapm": 44.0},
+                                   ("apm", "eapm"))
+
+    assert "183 APM" in said and "44 eAPM" in said
+
+
+def test_the_readout_stays_quiet_about_eapm_with_no_record(app):
+    """Absent, not zero. A game nobody commanded and a game nobody asked
+    about must not read alike."""
+    said = statsview.hover_summary({"t": 300, "apm": 183.0}, ("apm", "eapm"))
+
+    assert "eAPM" not in said
+
+
+def test_eapm_is_the_records_series_in_the_readout_table():
+    """RECORD_SERIES is what makes the readout follow the witness toggle,
+    so eAPM belongs in it rather than in CHART_SERIES - otherwise the
+    number would still be quoted with the record switched off."""
+    assert "eapm" in statsview.RECORD_SERIES["apm"]
+    assert "eapm" not in statsview.CHART_SERIES["apm"]
+
+
+def test_the_readout_reads_the_smoothed_record_line(app):
+    """The same rule the APM readout follows: say what the bold line says.
+    Quoting a raw bucket would report a number nobody can see."""
+    view = apm_view_with_record(True)
+    found = view.values_at(300)
+
+    assert found.get("eapm") is not None
+    assert found["eapm"] in view.eapm_smooth

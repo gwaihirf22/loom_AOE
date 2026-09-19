@@ -137,9 +137,14 @@ def test_the_small_hud_reads(templates):
 def test_it_needs_the_faint_white_pass(templates, monkeypatch):
     """At this size antialiasing pulls whole strokes under both of the
     older gates - the bottom bar of the "2" in 00:02:41 disappears, and
-    what is left scores as a "7" just under the match gate."""
+    what is left scores as a "7" just under the match gate.
+
+    The neck-faint gate is pushed out of reach too: it rescues this same
+    fixture by another route, and with it live the test would pass while
+    the gate it exists to prove load-bearing quietly stopped mattering."""
     monkeypatch.setattr(digits, "WHITE_PASSES",
                         (digits.WHITE_STRICT, digits.WHITE_SOFT))
+    monkeypatch.setattr(digits, "CLOCK_NECK_FAINT", 999)
 
     assert digits.read_clock_seconds(
         band(SMALL), templates, SMALL_GLYPH_WIDTH)[0] is None
@@ -154,6 +159,33 @@ def test_it_needs_narrow_but_tall_runs_to_count_as_digits(templates,
 
     assert digits.read_clock_seconds(
         band(SMALL), templates, SMALL_GLYPH_WIDTH)[0] is None
+
+
+# The macOS renderer, windowed at 1080p-in-points on a Retina display and
+# captured at the full 2x backing. Its antialiasing reran the small-HUD
+# story thirty grey-levels lower: the NECK of the seconds-tens "2" in
+# 00:02:23 renders at 139-146 while the same frame's minutes "2" stays
+# above 170, so under every older gate the bottom bar detaches, the shape
+# filter deletes it as a glint, and the topless "2" scores as a "7" -
+# refused, which read from outside as Loom losing sight of the game for
+# ten seconds of every minute.
+
+MAC_NECK = "mac_windowed_neck_143.png"
+MAC_NECK_GLYPH_WIDTH = 6
+
+
+def test_the_mac_windowed_band_reads(templates):
+    assert digits.read_clock_seconds(
+        band(MAC_NECK), templates, MAC_NECK_GLYPH_WIDTH)[0] == 143
+
+
+def test_it_needs_the_neck_faint_gate(templates, monkeypatch):
+    """Remove the gate and this band dies exactly as it did live - which is
+    what makes the gate load-bearing rather than decorative."""
+    monkeypatch.setattr(digits, "CLOCK_NECK_FAINT", 999)
+
+    assert digits.read_clock_seconds(
+        band(MAC_NECK), templates, MAC_NECK_GLYPH_WIDTH)[0] is None
 
 
 def large_hud_templates():
@@ -189,13 +221,17 @@ def test_it_needs_glyphs_scored_at_their_own_size(monkeypatch):
 
     Against the LARGE-HUD templates, which is the set that made this
     necessary: with only those, and only the stretching path, the small
-    HUD does not read at all."""
+    HUD does not read at all. The neck-faint gate is pushed out of reach
+    for the same reason as in test_it_needs_the_faint_white_pass: it
+    reshapes this fixture's segmentation enough to rescue the stretched
+    read, and this test is about the scoring path, not the mask."""
     as_shipped = digits.classify_glyph
 
     def stretched_only(glyph, tmpl, native=None):
         return as_shipped(glyph, tmpl)
 
     monkeypatch.setattr(digits, "classify_glyph", stretched_only)
+    monkeypatch.setattr(digits, "CLOCK_NECK_FAINT", 999)
 
     assert digits.read_clock_seconds(
         band(SMALL), large_hud_templates(), SMALL_GLYPH_WIDTH)[0] is None
@@ -239,16 +275,36 @@ def test_a_band_of_split_zeros_never_reads_as_a_marathon():
     assert value is None or value < 3600, f"read {value}s from a fresh match"
 
 
-def test_the_hours_bound_is_the_thing_that_stops_it(monkeypatch):
-    """Pinned separately so the bound cannot be quietly widened: without
-    it, this very band is where the 36060 came from."""
+def test_the_ten_hour_misread_cannot_be_produced_any_more(monkeypatch):
+    """This band once read 36060s - four hollow zeros split into "1"s and
+    "10:01:00" got out through the first pass that parsed. Two guards were
+    layered over it (the most-confident-answer sweep, then MAX_GAME_HOURS
+    as backstop), and this test used to pin WHICH one caught it first.
+
+    Then the hollow-half merge reached every pass - the previous version
+    of this test carried its own tripwire ("no pass misreads it any more;
+    this test is moot") and the tripwire fired: with split zeros rejoined
+    before classification, every single pass now reads this band as the
+    6s it really shows. So what is pinned now is the stronger fact: the
+    misread cannot be PRODUCED, on any pass, with the hours bound pushed
+    out of the way - and the correct read comes out the front door.
+    """
     monkeypatch.setattr(digits, "MAX_GAME_HOURS", 99)
     templates = digits.load_digit_templates()
 
     value, _score = digits.read_clock_seconds(
         band("small_hud_1080p_split_zeros.png"), templates, SMALL_GLYPH_WIDTH)
 
-    assert value == 36060, "the misread this guard exists for has changed"
+    assert value == 6, f"read {value}s from a band showing 00:00:06"
+
+    fitted = digits._fit_clock_rows(band("small_hud_1080p_split_zeros.png"))
+    for min_channel, max_spread in digits.clock_passes():
+        got, _s = digits._parse_clock(
+            digits.white_mask(fitted, min_channel, max_spread),
+            templates, SMALL_GLYPH_WIDTH)
+        assert got != 36060, (
+            f"pass ({min_channel},{max_spread}) resurrected the "
+            "ten-hour misread")
 
 
 # The Transparent UI mod removes the HUD backdrop entirely, so the clock is
@@ -282,8 +338,18 @@ def test_it_needs_the_tight_colour_spread(templates, monkeypatch):
 
     Removing the tight pass leaves the loose one, which is what shipped
     before, and this band goes back to being unreadable.
+
+    The hollow-half merge's WIDENED ink floor is rolled back to the old
+    bar floor here - not disabled outright, which would remove the merges
+    the pre-change code made too and manufacture a third behaviour (the
+    band then reads a confident wrong 0). With the old floor restored,
+    the merge behaves exactly as it did when this proof was measured, and
+    the arcs the wider floor rescues stay unmerged - the same
+    second-rescuer problem the neck-faint gate posed to the small-HUD
+    tests, answered the same way: this test is about the spread.
     """
     monkeypatch.setattr(digits, "CLOCK_TIGHT_SPREAD", digits.WHITE_MAX_SPREAD)
+    monkeypatch.setattr(digits, "HOLLOW_HALF_INK", digits.BAR_INK)
 
     assert digits.read_clock_seconds(
         band(TERRAIN), templates, SMALL_GLYPH_WIDTH)[0] is None
@@ -305,5 +371,9 @@ def test_the_tight_pass_is_tried_before_the_loose_one(templates):
              if spread == digits.WHITE_MAX_SPREAD]
     assert tight and loose, passes
     assert max(tight) < min(loose)
-    # And every brightness gate is still tried, at both spreads.
-    assert len(passes) == 2 * len(digits.WHITE_PASSES)
+    # Every brightness gate is still tried at both spreads - and the neck
+    # gate ONLY at the tight one, on purpose: at that brightness a loose
+    # spread would admit warm terrain mid-tones as ink.
+    assert len(tight) == len(digits.WHITE_PASSES) + 1
+    assert len(loose) == len(digits.WHITE_PASSES)
+    assert (digits.CLOCK_NECK_FAINT, digits.WHITE_MAX_SPREAD) not in passes

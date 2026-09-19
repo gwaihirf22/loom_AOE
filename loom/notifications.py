@@ -89,7 +89,7 @@ import os
 import cv2
 import numpy as np
 
-from . import paths
+from . import glyphs, paths
 
 # Where the feed lives, as fractions of the frame: the left quarter of the
 # screen, below the resource bar. Generous on purpose - the panel's exact
@@ -251,15 +251,19 @@ EXTRA_QUIET_SECONDS = 60
 SCALE_BRACKET = (-0.02, -0.01, 0.0, 0.01, 0.02)
 
 
-def _ink_rows(panel_gray):
+def _ink_rows(panel_gray, scale=1.0):
     """How many outlined-bright pixels each row of the panel holds.
 
     Bright NEXT TO near-black, not merely bright: sunlit terrain behind a
-    translucent panel is as bright as the font, but it has no outline.
+    translucent panel is as bright as the font, but it has no outline. How
+    far "next to" reaches follows the rendering - glyphs.outline_reach
+    carries the geometry and the measurements, and sharing it is what
+    keeps the two feed readers from answering that question differently.
     """
     bright = (panel_gray > TEXT_BRIGHT).astype("uint8")
     dark = (panel_gray < TEXT_OUTLINE_DARK).astype("uint8")
-    near_dark = cv2.dilate(dark, np.ones((3, 3), "uint8"))
+    size = 2 * glyphs.outline_reach(scale) + 1
+    near_dark = cv2.dilate(dark, np.ones((size, size), "uint8"))
     return (bright & near_dark).sum(axis=1)
 
 
@@ -320,7 +324,7 @@ def text_line_bands(panel_gray, scale=1.0):
     would mint phantom events, so it is the one answer never to guess at.
     """
     pitch = LINE_PITCH * scale
-    rows = _ink_rows(panel_gray)
+    rows = _ink_rows(panel_gray, scale)
     floor = max(2, int(round(panel_gray.shape[1] * MIN_LINE_INK_FRACTION)))
     inky = np.where(rows >= floor)[0]
     if len(inky) == 0:

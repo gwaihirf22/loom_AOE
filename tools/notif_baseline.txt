@@ -3,13 +3,12 @@ run_20260820_153531_annehk: 12 labelled | read 12/12 | understood 12/12 | event 
 run_20260821_133330_unknown: 97 labelled | read 97/97 | understood 95/97 | event 97/97 | wrong 0
     line_0439.png  [one-sub   ]  '--Onager Created--'  read '--onager Created--'
     line_0580.png  [one-sub   ]  '--Plate Mail Armor Research Complete--'  read '--plate Mail Armor Research Complete--'
-run_20260821_144613_annehk: 275 labelled | read 275/275 | understood 161/275 | event 242/275 | wrong 0
+run_20260821_144613_annehk: 275 labelled | read 275/275 | understood 163/275 | event 245/275 | wrong 0
     line_0002.png  [split     ]  '--Mill Built--'  read '--Mill liuilt--'
     line_0022.png  [split     ]  '--Outpost Built--'  read '--Outpoast lluilt--'
     line_0030.png  [merge     ]  '--Fishing Ship Created--'  read '--l ishing Ship Creaed--'
     line_0032.png  [split     ]  '--Fishing Ship Created--'  read '--Fishing Ship Coreaetl--'
-    line_0042.png  [merge     ]  '--Spearman Created--'  read '--Spearman Creaed--'
-    line_0081.png  [merge     ]  '--Arson Research Complete--'  read '--Aron Researle Complate--'
+    line_0081.png  [multi-sub ]  '--Arson Research Complete--'  read '--Arson Researle Complete--'
     line_0085.png  [merge     ]  '--Fire Galley Created--'  read '--Fire Galley Creaed--'
     line_0089.png  [merge     ]  '--Fire Galley Created--'  read '--Fire Galley Crated--'
     line_0092.png  [merge     ]  '--Fire Galley Created--'  read '--Fire Galley Crated--'
@@ -76,7 +75,6 @@ run_20260821_144613_annehk: 275 labelled | read 275/275 | understood 161/275 | e
     line_0529.png  [merge     ]  '--Careening Research Complete--'  read '--Careening Research Complae--'
     line_0537.png  [multi-sub ]  '--Arbalester Research Complete--'  read '--Arbalester Researle Complete--'
     line_0538.png  [merge     ]  '--Scorpion Created--'  read '--Scorpion Craaed--'
-    line_0542.png  [merge     ]  '--Arbalester Created--'  read '--Arbaleser Created--'
     line_0555.png  [merge     ]  '--Scorpion Created--'  read '--Scorpion Crated--'
     line_0563.png  [multi-sub ]  '--Arrowslits Research Complete--'  read '--Arrowslits Researle Complale--'
     line_0585.png  [one-sub   ]  '--Galleon Created--'  read '--Galleon Crealed--'
@@ -118,27 +116,23 @@ run_20260821_144613_annehk: 275 labelled | read 275/275 | understood 161/275 | e
     line_0860.png  [merge     ]  '--Onager Created--'  read '--Onager Craaed--'
     line_0868.png  [multi-sub ]  '--Onager Created--'  read '--Onager Craaetl--'
     line_0869.png  [split     ]  '--Spearman Created--'  read '--Siega Rane Created--'
-run_20260821_154249_annehk: 453 labelled | read 453/453 | understood 438/453 | event 445/453 | wrong 0
+run_20260821_154249_annehk: 453 labelled | read 453/453 | understood 441/453 | event 447/453 | wrong 0
     line_0008.png  [merge     ]  '--Dock Built--'  read '--Dock Buik--'
     line_0012.png  [merge     ]  '--Villager Created--'  read '--ViBager Created--'
     line_0032.png  [one-sub   ]  '--Feudal Age Research Complete--'  read '--Feodal Age Research Complete--'
-    line_0047.png  [merge     ]  '--Market Built--'  read '--Markd Built--'
     line_0066.png  [merge     ]  '--Galley Created--'  read '--GaBey Created--'
     line_0088.png  [split     ]  '--War Galley Created--'  read '--Pire Galley Created--'
     line_0115.png  [merge     ]  '--Villager Created--'  read '--ViBager Created--'
     line_0203.png  [one-sub   ]  '--Cavalry Archer Created--'  read '--Cayalry Archer Created--'
     line_0301.png  [merge     ]  '--War Galley Created--'  read '--War GaBey Created--'
-    line_0331.png  [merge     ]  '--Petard Created--'  read '--Pnard Created--'
-    line_0336.png  [merge     ]  '--University Built--'  read '--Unwersity Built--'
     line_0361.png  [one-sub   ]  '--Cavalry Archer Created--'  read '--Cayalry Archer Created--'
     line_0520.png  [multi-sub ]  '--Galley Created--'  read '--GaBeon Created--'
     line_0622.png  [one-sub   ]  '--Cavalier Created--'  read '--CaValier Created--'
     line_0676.png  [merge     ]  '--Keep Built--'  read '--Keep Buik--'
-run_20260822_142010_stock: 40 labelled | read 39/40 | understood 38/40 | event 39/40 | wrong 0
-    line_0024.png  [merge     ]  '--Mining Camp Built--'  read '--Minng Camp Built--'
-    line_0039.png  [merge     ]  '--Double-Bit Axe Research Complete--'  read ''
-run_20260822_160811_stock: 2 labelled | read 1/2 | understood 1/2 | event 1/2 | wrong 0
-    line_0002.png  [merge     ]  '--Double-Bit Axe Research Complete--'  read ''
+run_20260822_142010_stock: 40 labelled | read 40/40 | understood 39/40 | event 40/40 | wrong 0
+    line_0039.png  [multi-sub ]  '--Double-Bit Axe Research Complete--'  read '--Bouble-Bit Ave Research Complete--'
+run_20260822_160811_stock: 2 labelled | read 2/2 | understood 1/2 | event 2/2 | wrong 0
+    line_0002.png  [multi-sub ]  '--Double-Bit Axe Research Complete--'  read '--Bouble-Bit Ave Research Complete--'
 run_20260823_010603_annehk_1080p-all-3-mods-anchor-loss: 24 labelled | read 21/24 | understood 14/24 | event 19/24 | wrong 0
     line_0008.png  [split     ]  '--Lumber Camp Built--'  read ''
     line_0009.png  [split     ]  '--Lumber Camp Built--'  read '--Lumber Camp lluilt--'

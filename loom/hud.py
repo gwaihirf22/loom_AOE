@@ -139,7 +139,31 @@ ANNEHK = HudProfile(
     name="annehk",
     pop_icon=paths.POP_ICON_TEMPLATE,
     wood_icon=paths.TEMPLATES_DIR / "wood_icon.png",
-    villager_region=(14, 31, 60, 56),
+    # The right edge is 55 and not 60, and the five pixels matter.
+    #
+    # Measured on frames at HUD slider 115% and 125%: the count itself
+    # occupies reference x 30-51 whether it reads "3" or "22" - it is
+    # right-aligned and grows LEFTWARD - while a sliver of the bar's own
+    # art sits at reference x 58.2-60.0, flush against the old edge and
+    # clipped by it to two pixels.
+    #
+    # Two pixels wide and as tall as a digit, so the height test that
+    # skips colons cannot see it. classify_glyph called it a "9" at 0.637
+    # and appended it to every reading: 22 villagers came back as 229.
+    # At 125% the same sliver scored 0.537, under MIN_MATCH_SCORE, and
+    # read_binary abandoned the whole band - one intruder, a wrong number
+    # at one scale and no number at the next.
+    #
+    # It is at a FIXED reference position, so this is not a scale bug in
+    # the arithmetic; the band was simply cut wide enough to include it
+    # and only large HUDs drew it darkly enough to threshold. 55 is the
+    # midpoint of the gap: four reference pixels clear of the number,
+    # three clear of the sliver, at every scale.
+    #
+    # Trimming the RIGHT edge is what makes this safe. The number grows
+    # left, so the left edge is the one that must stay generous - cutting
+    # that is what once clipped the leading digit of "12" and reported 2.
+    villager_region=(14, 31, 55, 56),
     age_band=(236, -6, 292, 40),
     age_bar_band=(298, -4, 470, 38),
     clock_band=(545, -8, 810, 30),

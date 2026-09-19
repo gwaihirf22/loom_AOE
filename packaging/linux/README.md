@@ -50,15 +50,29 @@ entry that carries the icon.
 `python3-deps.yml` is not committed until `generate-deps.sh` has been run on
 Linux — it needs `pip download` against the runtime's own Python version.
 
+On an atomic distribution (Bazzite, Silverblue) `flatpak-builder` is not a
+host binary and layering it costs a reboot. `org.flatpak.Builder` is the same
+program packaged as a Flatpak, and the commands below use it.
+
+**Add a `--user` flathub remote first, or the installs do nothing and say so
+only in passing.** Bazzite ships flathub as `system,filtered`; there is no
+`--user` counterpart until one is added, and `flatpak install --user flathub
+<ref>` then prints `error: No remote refs found for 'flathub'` and **exits
+0**. Nothing is installed and the return code reports success.
+
 ```sh
-flatpak install flathub org.kde.Platform//6.11 org.kde.Sdk//6.11
-flatpak install flathub com.riverbankcomputing.PyQt.BaseApp//6.11
+flatpak remote-add --user --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo
+
+flatpak install --user flathub org.flatpak.Builder
+flatpak install --user flathub org.kde.Platform//6.11 org.kde.Sdk//6.11
+flatpak install --user flathub com.riverbankcomputing.PyQt.BaseApp//6.11
 
 cd packaging/linux
 ./generate-deps.sh                      # once, and after any requirements change
 
 cd ../..
-flatpak-builder --user --install --force-clean \
+flatpak run org.flatpak.Builder --user --install --force-clean \
     build-dir packaging/linux/io.github.gwaihirf22.loom_AOE.yml
 flatpak run io.github.gwaihirf22.loom_AOE
 ```
@@ -66,9 +80,9 @@ flatpak run io.github.gwaihirf22.loom_AOE
 A single-file bundle for the GitHub Release:
 
 ```sh
-flatpak-builder --repo=repo --force-clean \
+flatpak run org.flatpak.Builder --repo=repo --force-clean \
     build-dir packaging/linux/io.github.gwaihirf22.loom_AOE.yml
-flatpak build-bundle repo Loom-1.0.7-x86_64.flatpak io.github.gwaihirf22.loom_AOE
+flatpak build-bundle repo Loom-X.Y.Z-x86_64.flatpak io.github.gwaihirf22.loom_AOE
 ```
 
 Validate the metadata before publishing either:

@@ -41,7 +41,7 @@ already scrolled past.
 
 import re
 
-from . import build_order, glyphs, queue
+from . import build_order, durations, glyphs, queue
 
 # Castle Age, numbered as the build format numbers ages. Not imported from
 # loom.age to keep this module free of cv2 - the number is the format's.
@@ -767,6 +767,121 @@ class HouseEvidence:
 
     def reset(self):
         self.__init__()
+
+
+def queue_researched(episode):
+    """`researched:<subject>` if this episode PROVES a technology completed.
+
+    The queue says QUEUED, the feed says COMPLETE, and the recorded game
+    says ORDERED - three clocks on three different moments, and collapsing
+    them is the mistake this project has a rule about. So one thing turns
+    the first into the second and it is worth naming: research does NOT
+    divide among villagers the way a building does, so its listed time is a
+    hard floor, and a research that was cancelled vacates its cell early.
+    An item that held a producing cell for at least its listed time
+    therefore finished.
+
+    Everything else here refuses toward silence:
+
+      * an episode whose vote REFUSED reports no identity, and a refusal is
+        not evidence - it is the never-guess rule where episodes.py already
+        applies it;
+      * a subject with no listed time cannot be judged at all, so it is not
+        judged;
+      * an episode the clock could not time has no duration to compare;
+      * an AGE never comes through here. The crest reads every transition
+        in every capture with not one frame unread, it already reaches the
+        checklist through merged_age_events, and two channels for one fact
+        is exactly what the reconcile rule exists to prevent.
+    """
+    subject = episode.identity
+    if subject is None or not queue.counted_as_technology(subject):
+        return None
+    base = (subject[:-len(queue.UPGRADE_SUFFIX)]
+            if subject.endswith(queue.UPGRADE_SUFFIX) else subject)
+    if base in AGE_SUBJECTS:
+        return None
+    needed = durations.build_or_research_time(base)
+    if needed is None:
+        return None
+    if episode.started is None or episode.ended is None:
+        return None
+    if episode.ended - episode.started < needed:
+        return None
+    return f"researched:{base}"
+
+
+def _researched_subject(event):
+    """The technology a `researched:x` event is about, or None."""
+    kind, separator, subject = str(event).partition(":")
+    if kind != "researched" or not separator:
+        return None
+    return subject or None
+
+
+class TechEvidence:
+    """Technologies evidenced by the notification feed OR the queue.
+
+    The third second-witness on this module, after the age crest and the
+    population cap, and it exists for the reason merged_age_events already
+    states about the crest: the feed's "...Research Complete" line often
+    never reads. Measured over the 924-line labelled corpus, the letter
+    reader is right on 99% of lines at the full-size rendering and 59% at
+    1080p, and Loom's own line was additionally one no repair could ever
+    recover. The author researched Loom, the queue watched it for
+    thirty-three seconds, and the item sat amber all game.
+
+    A queue sighting is a READING, not an assumption - the same standing
+    the crest has, and the reason a tick from here is honestly OBSERVED.
+
+    RECONCILED, NEVER ADDED, which is the whole job. One research produces
+    a queue episode AND a feed line, on different polls, and a technology
+    completes at most once in a game. Crediting both would green a second
+    item naming the same technology - the exact bug merged_house_events
+    exists for, which the author watched happen with one house and
+    "Build 2 House". So a subject is credited once, by whichever witness
+    speaks first, and the ledger is kept for the whole game.
+
+    That dedup catches something else worth having. The notification
+    watcher once returned four spellings of one Hand Cart research across
+    four looks; twelve technologies were duplicated in a single game that
+    way. A technology arriving twice is always wrong, whatever produced it.
+
+    Ages pass through untouched: the crest owns them, through
+    merged_age_events.
+    """
+
+    def __init__(self):
+        self._credited = set()
+
+    def update(self, game_events, finished_episodes=()):
+        """One poll: the feed's events and the episodes that ENDED now.
+
+        Returns the event list to hand the checklist.
+        """
+        kept = []
+        for event in game_events or ():
+            subject = _researched_subject(event)
+            if subject is None or subject in AGE_SUBJECTS:
+                kept.append(event)
+                continue
+            if subject in self._credited:
+                continue
+            self._credited.add(subject)
+            kept.append(event)
+        for episode in finished_episodes or ():
+            event = queue_researched(episode)
+            if event is None:
+                continue
+            subject = _researched_subject(event)
+            if subject in self._credited:
+                continue
+            self._credited.add(subject)
+            kept.append(event)
+        return kept
+
+    def reset(self):
+        self._credited.clear()
 
 
 # The feed's own age-completion events, which the crest supersedes.

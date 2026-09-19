@@ -6,6 +6,229 @@ All notable changes to Loom are recorded here. The format follows
 promise: **1.0.0 is the first release that also runs on Windows** — kept
 on 2026-08-18.
 
+## 1.0.9 — 2026-09-19
+
+### Added
+
+- **The production queue is a third witness for the step checklist.** A
+  technology the queue watched produce for at least its listed research
+  time crosses its build item off, green, whether or not the notification
+  feed ever printed the line. That is a READING and not an assumption, so
+  it earns the same OBSERVED tick the age crest already does — and it is
+  the third second-witness on this module for the same reason as the other
+  two: the feed misses things, structurally, at some renderings. Research
+  does not divide among villagers the way a building does, so its listed
+  time is a hard floor and a cancelled research vacates its cell early;
+  that is the one thing turning the queue's *queued* into the feed's
+  *complete*, and nothing weaker would do. Reconciled and never added, like
+  houses and ages before it: a technology completes at most once in a game,
+  so it is credited by whichever witness speaks first and the other's copy
+  is dropped. Replayed against the game that prompted it, the Loom item
+  goes from "unconfirmed" to observed and nothing else on the card moves.
+- **`notif_report --runs`** prints every corpus miss as PIXELS — the mask
+  as ASCII, the run boundaries the reader chose, and what each run
+  classified as on its own. A merge and an over-split are each obvious at a
+  glance there and indistinguishable in the read text, which only ever says
+  the letters came out wrong. It is this project's oldest debugging lesson
+  as a command.
+- **The forensic log records what the feed REFUSED**, not only what it
+  accepted. A poll with a clean feed and a poll where the reader saw a line
+  and could not name it used to print identically, so "why did that never
+  tick" was unanswerable after the fact — the absence-is-not-refusal rule
+  missing from the project's own diary. Newly-refused lines only, so a
+  line lingering unreadable for a minute says so once.
+
+- **Global hotkeys work on macOS.** `loom/hotkeys/macos.py`, on Carbon's
+  `RegisterEventHotKey` through ctypes — nothing to install, no permission
+  to grant, and the same registered-id shape as the Windows backend: the
+  OS does the matching, so Loom cannot learn a key it did not register.
+  Measured live: the five shipped defaults register, a combination another
+  program owns is refused with a named reason, and a five-second hold
+  fires once — macOS does not auto-repeat hotkey events, so the "next
+  step" key cannot race through a build order the way an unguarded
+  Windows registration could. Two Mac facts are handled rather than
+  suffered: Qt swaps Control and Meta on macOS, so the capture field
+  un-swaps them and a saved binding names the key actually pressed
+  ("Ctrl" is ⌃, "Win" is ⌘ — the Hotkeys tab says so); and F21–F24 and
+  Insert have no Mac key code, so a binding naming one is refused per
+  binding instead of saving a key that never fires.
+- **Recorded games are found automatically on the native macOS port.** The
+  port keeps a Windows-shaped user tree inside its own VFS
+  (`…/Feral Interactive/Age Of Empires II/VFS/User/Games/…/savegame`,
+  confirmed on disk with 23 real records in it), and `replay.search_paths`
+  now names it. CrossOver bottles stay env-var only — bottle names vary
+  per install, and `LOOM_RECORDS_DIR` remains the documented answer there.
+
+- **The overlay's centre note scrolls instead of overlapping.** The header's
+  middle slot was centred on the whole panel with no knowledge of what sat
+  either side of it, which is invisible while the note is short and wrong
+  the moment it is not: "BUILD DONE · Ctrl+Shift+W for the report" was
+  drawn straight through the villager count and the pace text, and all
+  three became unreadable together. It is bounded by them now — a note that
+  fits is centred in the gap between them, so every normal frame is exactly
+  as it was, and one too long scrolls within that gap, holding still at
+  each end rather than wrapping. Its cut edges dissolve rather than being
+  sliced mid-letter, and they fade to *nothing* rather than to a colour,
+  which is the only thing that can be right on a card that is translucent
+  over the game with an opacity the player sets. The scroll speed follows
+  the overlay size like every other measurement, and the repaint timer runs
+  at 20fps and only while something is genuinely too long — this panel sits
+  on top of a game, and a repaint it does not need is a frame the game does
+  not get. Which knob provokes it is worth stating, because it is a design
+  choice rather than an accident: the text slider owns the fonts and never
+  the width, so raising it grows the note inside a panel that stays the
+  same size.
+
+### Fixed
+
+- **The notification reader lost two thirds of its 1080p misses to
+  segmentation, not to the font.** Counted off the labelled corpus's own
+  miss classes: at 21px line height the reader misses 15 lines of 453; at
+  15px it misses 114 of 275, and over-splitting alone runs 41 against 1.
+  `MERGED_RUN_FRACTION` — how wide a run must be before it is worth trying
+  to split as two touching letters — was measured at the full-size
+  rendering and does not survive the small one. Swept across all 924
+  labelled lines it has a clear knee at 0.75 (876 → 882), with nothing
+  invented at any setting: the refusal that protects a wide single letter
+  is not that bound at all but `_read_split`'s rule that every piece must
+  classify, and a genuine "O" cut in half scores 0.72 and 0.61. Every one
+  of the nine lines recovered is a `merge`, and two of them read as
+  *nothing at all* before — both `--Double-Bit Axe Research Complete--`,
+  which across the author's own games is the technology the feed misses
+  most.
+  Measuring the same bound against the LINE instead does not work and the
+  negative is recorded in the source: a merged "te", a real "m" and a real
+  "O" are 11, 11 and 12px in one 16px line, so the populations overlap in
+  the line's own units exactly as they do in the height's.
+- **The whole-line analyser carried sentences the game cannot print, and
+  one of them made Loom unrecoverable.** The candidate universe crossed
+  every icon in the library with every phrasing — 3,918 lines, including
+  `--Wood Research Complete--`, `--Barracks Research Complete--` and
+  `--Goat Research Complete--`. Each is a *rival*, and a rival within the
+  margin refuses a real line: `--Wood Research Complete--` sits two edits
+  from `--Loom Research Complete--`, so the Loom line was refused even
+  from a PERFECT read — the one research line in the whole table that no
+  repair could ever recover. The universe is now constrained by what the
+  game's own object table says a subject IS (2,467 lines), and a
+  resource-folder icon that table cannot name at all is dropped. Derived,
+  not curated, and the villager survives it: `villager` is filed under
+  `resource/` beside wood and stone, and `--Villager Created--` is the
+  commonest line in the corpus. Real ambiguities still refuse — Hussar
+  against Huskarl, Caravan against Caravel.
+  Together with the segmentation fix: **876 → 883 of 924 labelled lines,
+  with `wrong` still zero on every run.**
+
+- **Villager counts ending in zero spiked tenfold on the macOS renderer —
+  20 read as 211, 60 as 611 — and held there, so the repeat filter
+  believed them.** The hollow-zero merge existed for exactly this split
+  (the "10/15 as 111/15" story) but was wired into the clock and
+  population paths only — the third "simply never wired in over here" —
+  and its bar test was tuned on a renderer whose split zeros leave
+  straight stems (ink 0.7+). This renderer keeps the curve: the arcs
+  measure 0.52–0.67 and the merge refused them. `read_binary` now merges
+  too, and the merge asks its own question — `_is_hollow_half`, the same
+  aspect and height gates with an ink floor at 0.40, open water between
+  the slash (≤0.27) and the faintest arc (0.52) — while the population
+  band's strict bar-means-"1" test is untouched. Measured across the
+  454-frame run that showed the spikes: all 23 spike readings corrected,
+  zero other readings changed, and yesterday's run's population coverage
+  rose from 21.6% to 52.3% as a side effect (its zeros split the same
+  way). A pleasant casualty: the ten-hour-misread band now reads its
+  true 6s on EVERY mask pass — the old test's own tripwire ("this test
+  is moot") fired, and it now pins the stronger fact.
+- **The notification feed found no lines at all on the macOS windowed
+  rendering — the dark-adjacency reach was a pixel constant.** Both feed
+  readers prove ink by brightness NEXT TO the font's near-black outline,
+  and "next to" was a fixed 3×3 dilation. At scale 1.48 the strokes are
+  4–6px thick, most of their ink sits farther than one pixel from the
+  outline, and the row counts collapsed under the line-finding threshold:
+  not one line band in a 116-frame run while lines sat legibly on screen,
+  so the feed read nothing and the checklist ticked nothing. The reach
+  now follows the rendering (`glyphs.outline_reach`, shared by both
+  readers so they cannot answer differently): measured at 1.48, reach 2
+  finds every line (236 bands across 99 frames, from zero) and reach 3
+  adds nothing. Every corpus-proven rendering — 1080p and 1440p, where
+  the feed works well on Windows — stays on exactly the 3×3 kernel it
+  was measured with, live scale jitter included. Reading the LETTERS at
+  this rendering still needs a font harvest (none exists above scale
+  0.76); the finder fix is what lets the watcher save unread lines, so
+  the harvest corpus now accumulates during ordinary play.
+- **`notif_report --check` passed on a machine that holds no corpus** —
+  the same repair `digit_report` got: exit non-zero with "CHECK DID NOT
+  RUN" instead of reading as "no regression" where nothing was measured.
+- **The clock vanished for ten seconds of every minute on the macOS
+  renderer, and the culprit was the neck of a "2".** Whenever the seconds
+  showed 2X, Loom lost sight of the game — measured live: reads to 07:19,
+  `raw -` on every poll through 07:2X, tracking lost mid-window, instant
+  recovery at 07:30. The pixels told the story: this renderer's
+  antialiasing draws the joint between the seconds-tens "2"'s diagonal
+  and its bottom bar at grey 139–146, under even the faintest 170 gate,
+  while the same frame's minutes "2" stays above it. The orphaned bottom
+  bar failed the mask's shape filter as a glint, and a topless "2" is a
+  "7" — refused, correctly, every time. A fourth clock brightness gate
+  (140, tight spread only) closes the tight block: swept at
+  160/150/140/130/120 over 210 bands from three runs, 150 rescued
+  nothing, 140 took the windowed run from 90 to 109 reads with the
+  impossible-step count unchanged, and looser bought nothing — so the
+  most selective value that works is the one kept. The failing band is a
+  committed fixture now, with a test that removes the gate and watches
+  the read die.
+- **Windowed macOS capture arrived at half detail, and one number was the
+  whole story.** `SCDisplay.width()` returns POINTS on current macOS, not
+  pixels — measured across three attached displays, ratio 1.0 on all of
+  them including the 2× Retina panels — so the capture scale was 1.0
+  everywhere and every windowed frame was captured at point size. Clock
+  strokes thinned until hollow zeros split down the middle, a half-zero
+  classified as a confident "6", and the impossible-clock gate rightly
+  refused every parse: clock 0.0% across a 112-frame session while
+  villagers read 92.5%, so a match never started. Fullscreen never
+  noticed, because it switches the display to a native 1× mode where
+  points and pixels agree — which is why July's fullscreen runs score
+  clock 100% on the same renderer with the same "(Normal - 1.7)" suffix.
+  The backing factor now comes from the screen's own
+  `backingScaleFactor`, joined to the window's display by id; the join is
+  a pure function with tests, because it has now been wrong twice.
+- **`digit_report --check` passed on a machine that holds none of the
+  baseline's runs.** The corpus lives on one machine and the repo is
+  developed on three; the gate now exits non-zero with "CHECK DID NOT
+  RUN" instead of reading as "no regression" where nothing was measured.
+- **The launcher no longer makes Qt hunt for Consolas on a Mac.** The
+  fixed-width family list is ordered per platform — the same families,
+  with the one the machine actually has first — which removes the
+  61 ms "Populating font family aliases… missing font family Consolas"
+  stall at every launch.
+
+- **The release snapshot published the bytecode its own test run left
+  behind.** `check_snapshot_runs` executes pytest inside the export and
+  `git add -A -f` then commits the `__pycache__` it just wrote. The `-f` is
+  right and so was its comment — "git archive only emits tracked files, so
+  forcing here cannot drag in scratch work" — until a step that *writes
+  files* was inserted between the archive and the add. Neither half was
+  wrong alone and nothing raised: v1.0.8 went out carrying 162 `.pyc`, 5.4MB
+  of another machine's bytecode, inert in a runtime shipping a different
+  Python, and copied into the Flatpak bundle on top of that. The export is
+  swept between the two steps now, and a test pins the call *order*, because
+  order is the whole bug.
+- **The Flatpak could ship what the release strips.** The same shape in a new
+  place: two places answer "is this private" and only one was being asked.
+  `release.py` removes its exclusion list on the way out; the manifest copied
+  `tools` and `tests` wholesale back in. Four files — the release pipeline
+  itself and its three tests, and through the exclusion list the *names* of
+  everything else private. The manifest deletes them again after the copy,
+  and a test asserts the property rather than the line, so it still answers
+  when either side is rewritten.
+- **Three statistics tests were measuring the font rasteriser, not the
+  chart.** `ubuntu-latest` and `macos-latest` had been red since 30 August
+  while `windows-latest` passed, and the chart was drawn correctly the whole
+  time. The tests counted pixels *exactly* equal to a label's colour — but at
+  this size FreeType antialiases every stroke so that no pixel of the text
+  reaches the pure colour, while Windows produces solid glyph cores. The
+  per-age labels could never have passed anywhere by that rule, differing
+  from the full-strength colour only in alpha. A pixel is attributed to
+  whichever colour it is *nearest* now, which is what "drawn in that line's
+  colour" means and is as true of a half-covered glyph edge as of a solid
+  core.
+
 ## 1.0.8 — 2026-08-30
 
 ### Added

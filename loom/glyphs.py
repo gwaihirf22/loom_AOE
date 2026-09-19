@@ -304,6 +304,30 @@ BAND_PAD_FRACTION = 0.18
 DESCENDER_TAIL_FRACTION = 0.20
 
 
+def outline_reach(scale):
+    """How far, in pixels, a text pixel may sit from the font's outline.
+
+    Both feed readers prove ink by dark ADJACENCY - bright pixels next to
+    the font's near-black outline - and the reach of that adjacency is
+    stroke geometry: about half a stroke width, which follows the
+    rendering scale. Reach 1 (the 3x3 kernel both tests shipped with) is
+    corpus-proven at the 1080p and 1440p renderings (scales 0.72-1.0). At
+    the macOS windowed rendering, scale 1.48, the strokes are 4-6px thick,
+    most of their ink sits farther than one pixel from the outline, and
+    the row counts collapsed to a fifth of a line's rows - not one line
+    band was found in a whole run while every line sat legibly on screen,
+    so the feed read NOTHING and the checklist ticked nothing. Measured
+    there: reach 2 finds every line and reach 3 adds nothing beyond it.
+
+    The quarter slack keeps every corpus-proven rendering - live scale
+    jitter included - on exactly the kernel it was measured with; only
+    the sizes nothing had ever proven get the reach the geometry asks
+    for. Shared by notifications._ink_rows so the two feed readers cannot
+    answer the one question differently.
+    """
+    return max(1, int(np.ceil(scale - 0.25)))
+
+
 def find_lines(panel_bgr, min_height=10, scale=1.0):
     """Text-line bands in the notification panel: [(y1, y2), ...].
 
@@ -334,7 +358,8 @@ def find_lines(panel_bgr, min_height=10, scale=1.0):
     # test is how the phrase watcher's band finder stays clean, and it is
     # the same trick here - terrain highlights have no outline behind them.
     dark = (gray < DARK_LEVEL).astype(np.uint8)
-    near_dark = cv2.dilate(dark, np.ones((3, 3), np.uint8))
+    size = 2 * outline_reach(scale) + 1
+    near_dark = cv2.dilate(dark, np.ones((size, size), np.uint8))
     outlined = mask & (near_dark * 255)
     rows = outlined.sum(axis=1) // 255
     coarse = []
@@ -468,9 +493,41 @@ def segment_line(line_bgr):
 # A run wider than this fraction of line height is suspected of being two
 # touching letters. Wide single glyphs stay under it: "m" and the joined
 # "--" both measure ~0.65 of the height; merged pairs measure 0.85+.
-MERGED_RUN_FRACTION = 0.85
+#
+# 0.85 was measured at the full-size rendering and does not survive the
+# small one. Swept across the whole 924-line labelled corpus:
+#
+#     0.85   876/924   (small 273/311, large 603/613)
+#     0.80   879/924
+#     0.75   882/924   (small 275/311, large 607/613)   <- the knee
+#     0.70   879/924
+#     0.65   870/924
+#     0.60   850/924
+#
+# Nothing INVENTED at any setting - `wrong` stayed 0 throughout - because
+# the refusal that protects a wide single letter is not this bound at all:
+# _read_split accepts a split only when every piece classifies confidently,
+# and a genuine "O" cut in half scores 0.72 and 0.61. This bound only
+# decides what is worth TRYING, which is why it can be loosened on
+# measurement rather than on nerve. Below 0.70 real letters start splitting
+# into pieces that both read, which is the "colnplete" failure.
+MERGED_RUN_FRACTION = 0.75
 
-
+# MEASURING THIS AGAINST THE LINE INSTEAD DOES NOT WORK, and the negative
+# is worth keeping so nobody spends the afternoon I did on it. The idea is
+# sound on its face and it is space_gap_for's own trick - measure from the
+# line rather than from a fraction of its height - because in one 16px line
+# a merged "te" is 11px where that line's real letters are 6-7px. But a
+# genuine "m" in the same line is 11px too and a genuine "O" is 12, so the
+# populations overlap in the line's units exactly as they do in the
+# height's. Swept as min(height * 0.75, median_run * N):
+#
+#     N >= 1.8   882/924   identical to no bound at all
+#     N = 1.6    860/924   real letters splitting
+#
+# There is no setting between "no effect" and "harmful". Width cannot
+# separate a merge from a wide letter at this rendering by any route, which
+# is why the refusal that matters lives in _read_split's piece scores.
 def _pinch_split(mask, start, end, height):
     """Split a suspiciously wide run at its thinnest column, recursively.
 
@@ -1792,6 +1849,21 @@ class TextWatcher:
 
     def __init__(self, save_unread=True):
         self.font = load_font()
+        # What this look REFUSED, for the forensic log: lines that produced
+        # no text at all ("?<digest>") and lines that read but resolved to
+        # no event (the text itself). Only what is NEW since the last look,
+        # because a line lingers for many polls and repeating it every poll
+        # would bury the log it exists to make readable - the same reason
+        # arrivals are counted by position rather than by a timer.
+        #
+        # This exists because a refused read used to leave NO evidence
+        # anywhere. A 1080p game researched Loom, the build item never
+        # ticked, and the thirty-nine polls spanning the completion said
+        # nothing at all - not whether the reader saw a wrong line, a
+        # fragment, or blank pixels. That is this project's own "absence is
+        # not refusal" rule missing from its own diary.
+        self.refused = []
+        self._refused_last = set()
         self._last_fired = {}
         # value -> (place, since, last): where this line sat, when it
         # first held that place, and when I last saw it. The whole
@@ -1860,6 +1932,7 @@ class TextWatcher:
         """
         if not self.font or panel_bgr is None or panel_bgr.size == 0 \
                 or game_time is None:
+            self.refused = []
             return []
 
         bands = find_lines(panel_bgr, scale=scale)
@@ -1924,6 +1997,18 @@ class TextWatcher:
                     self._log_repair(read, repaired, game_time)
                 if event is not None:
                     events.append(event)
+
+        # What was on screen and could not be turned into an event. Two
+        # different failures, kept apart: a band that produced no text at
+        # all, and text that produced no event.
+        refused_now = set()
+        for kind, value in stack:
+            if kind == "pixels":
+                refused_now.add("?" + str(value)[:8])
+            elif resolved.get(self._identify(value)[0], (None,) * 3)[1] is None:
+                refused_now.add(repr(value))
+        self.refused = sorted(refused_now - self._refused_last)
+        self._refused_last = refused_now
 
         self._last_texts = seen_now
         self._read_everything_last = not any(kind == "pixels"

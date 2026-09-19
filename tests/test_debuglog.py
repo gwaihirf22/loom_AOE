@@ -47,6 +47,29 @@ def test_events_and_alerts_ride_the_line():
     assert "alert TC IDLE:full" in line
 
 
+def test_a_refused_feed_read_rides_the_line_too():
+    """The evidence this log could not carry, and the cost of that.
+
+    A 1080p game researched Loom, the build item never ticked, and the
+    thirty-nine polls spanning the completion said nothing at all - an
+    accepted event and an empty feed printed identically here, so "did the
+    reader see a wrong line, a fragment, or blank pixels" was unanswerable
+    afterwards. That is this project's own rule about absence, missing
+    from its own diary.
+    """
+    line = debuglog.describe_reading(
+        make_reading(feed_refused=["'--Loom Researcli Coppleie--'",
+                                   "?9f2ab1c0"]))
+    assert "refused '--Loom Researcli Coppleie--'" in line
+    assert "refused ?9f2ab1c0" in line
+
+
+def test_a_quiet_feed_says_nothing_about_refusals():
+    """Nothing refused is not a refusal of nothing. A poll with a clean
+    feed must not grow a column."""
+    assert "refused" not in debuglog.describe_reading(make_reading())
+
+
 def test_an_unreadable_poll_still_makes_a_line():
     line = debuglog.describe_reading(
         make_reading(villagers=None, game_time=None, raw_villagers=None,

@@ -16,8 +16,10 @@ tests.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
-from loom.overlay import (ALERT_BAND_HEIGHT, ALERT_GAP, MAX_ALERT_BANDS,
-                          OverlayLayout, PANEL_HEIGHT, PANEL_WIDTH)
+from loom.overlay import (ALERT_BAND_HEIGHT, ALERT_GAP, MARQUEE_PAUSE,
+                          MARQUEE_SPEED, MAX_ALERT_BANDS, OverlayLayout,
+                          PANEL_HEIGHT, PANEL_WIDTH, marquee_fade_edges,
+                          marquee_offset, marquee_span, note_window)
 
 
 def test_default_scales_reproduce_the_designed_layout():
@@ -351,3 +353,89 @@ def test_a_stale_count_says_so_and_for_how_long():
     from loom.overlay import describe_staleness
     text, _ = describe_staleness(24)
     assert text == "VILLAGERS UNREAD · 24s"
+
+
+# The header's centre note, which used to be centred on the whole panel
+# regardless of what sat either side of it. Short notes never noticed;
+# "BUILD DONE · Ctrl+Shift+W for the report" ran straight through both the
+# villager count and the pace text on a small screen.
+
+def test_the_note_window_is_the_gap_between_its_neighbours():
+    # Clock ends at 128, pace begins at 436, ten pixels of clearance each.
+    assert note_window(128, 436, 10) == (138, 426)
+
+
+def test_the_note_window_can_close_completely():
+    # The two ends have met. Reported as-is rather than clamped, so the
+    # caller can decline to draw: a note laid over the clock and the pace
+    # costs two readable things to show one.
+    left, right = note_window(300, 290, 10)
+    assert right - left < 0
+
+
+def test_a_note_that_fits_does_not_scroll():
+    # The normal frame, and the one that must not change: no span means no
+    # movement, no timer, and the note simply sits still.
+    assert marquee_span(244, 288) == 0
+    assert marquee_offset(0, elapsed=99.0) == 0
+
+
+def test_a_note_too_long_travels_exactly_its_overflow():
+    assert marquee_span(326, 220) == 106
+
+
+def test_the_note_holds_still_at_both_ends():
+    # The hold is the point: a wrap snaps back to the start at the moment
+    # somebody finishes reading to the end.
+    span, speed = 100, MARQUEE_SPEED
+    travel = span / speed
+    assert marquee_offset(span, 0.0) == 0
+    assert marquee_offset(span, MARQUEE_PAUSE - 0.01) == 0
+    assert marquee_offset(span, MARQUEE_PAUSE + travel + 0.01) == span
+    assert marquee_offset(span, MARQUEE_PAUSE + travel
+                          + MARQUEE_PAUSE - 0.01) == span
+
+
+def test_the_note_scrolls_out_and_comes_back():
+    span = 100
+    travel = span / MARQUEE_SPEED
+    midway = marquee_offset(span, MARQUEE_PAUSE + travel / 2)
+    assert 0 < midway < span
+    # The same distance into the return leg is the same distance back.
+    back = marquee_offset(span, MARQUEE_PAUSE + travel + MARQUEE_PAUSE
+                          + travel / 2)
+    assert back == span - midway
+
+
+def test_the_cycle_repeats_and_never_leaves_the_window():
+    span = 100
+    cycle = 2 * (span / MARQUEE_SPEED + MARQUEE_PAUSE)
+    assert marquee_offset(span, 3.0) == marquee_offset(span, 3.0 + cycle)
+    # Whatever the phase, the note is never scrolled past either edge -
+    # which is what stops it appearing to run off into its neighbours even
+    # before the clip rect is asked to prove it.
+    for step in range(0, 400):
+        offset = marquee_offset(span, step * cycle / 400)
+        assert 0 <= offset <= span
+
+
+def test_the_scroll_speed_scales_with_the_overlay():
+    # The pixel-constant rule, in an animation. A speed in raw pixels would
+    # crawl at 200% and race at 50%, because everything it moves past has
+    # grown or shrunk around it.
+    assert OverlayLayout(overlay_scale=2.0).x(MARQUEE_SPEED) == 2 * MARQUEE_SPEED
+    assert OverlayLayout(overlay_scale=0.5).x(MARQUEE_SPEED) == MARQUEE_SPEED // 2
+
+
+def test_only_an_edge_with_more_text_beyond_it_is_faded():
+    # Held at the start: the note begins exactly at the left edge and there
+    # is nothing off to the left, so dimming it there would wash out the B
+    # of BUILD to hint at something that is not there.
+    assert marquee_fade_edges(0, 100) == (False, True)
+    # Held at the end, the mirror image.
+    assert marquee_fade_edges(100, 100) == (True, False)
+    # Mid-scroll, text continues both ways.
+    assert marquee_fade_edges(50, 100) == (True, True)
+    # A note that fits never scrolls, and so is never cut at either end.
+    assert marquee_fade_edges(0, 0) == (False, False)
+

@@ -161,12 +161,16 @@ class GameRecorder:
                 alerts_list=None, age_events=()):
         """One usable poll's worth of believed state.
 
+        Returns the production episodes that ENDED on this poll, which is
+        the moment each one's vote is decided. The caller feeds those to
+        the checklist; nothing here needs them.
+
         tracker is the ProductionTracker, or None when there is none (demo
         mode) - the timeline and pace still record, the queue-derived
         accumulators just stay empty.
         """
         if game_time is None:
-            return
+            return ()
         moment = int(game_time)
 
         # Integrals over elapsed game time, with the same guard BuildReport
@@ -255,7 +259,13 @@ class GameRecorder:
         # ignored - a waiting item has produced nothing - and an episode
         # nobody watched long enough reports no identity rather than its
         # best guess.
-        self._episodes.update(moment, slots)
+        # The return is not thrown away: an episode ENDING is the moment its
+        # vote is decided, and the checklist wants those the same poll the
+        # feed's events arrive. One tracker answers that question for both
+        # the statistics and the panel - a second one in the overlay would
+        # be the same question answered in two places, which is how a
+        # feature ends up half-wired.
+        finished = self._episodes.update(moment, slots)
 
         # Alerts as transitions: the moment a warning APPEARS is the story;
         # re-recording it every poll would just be the poll rate.
@@ -277,6 +287,8 @@ class GameRecorder:
             self.idle_tcs.append(tracker.idle_tcs if tracker else 0)
             self.pop.append(population[0] if population else None)
             self.pop_cap.append(population[1] if population else None)
+
+        return finished
 
     def snapshot_build(self, report, build):
         """Freeze the build verdict at completion. Idempotent."""

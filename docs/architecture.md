@@ -35,6 +35,7 @@ flowchart LR
     digits --> glyphs
     glyphs --> lines
     lines --> glyphs
+    queue --> lines
     capture --> reader
     anchor --> reader
     digits --> reader
@@ -56,6 +57,16 @@ why a pixel constant that does not scale with the anchor is a latent bug.
 notification font letter by letter; `lines` holds the enumerated universe of
 lines the game can print and snaps a wobbly reading onto the nearest real
 one. Neither is complete alone.
+
+`queue --> lines` looks odd until you ask what that universe is made of.
+Crossing every icon in the library with every phrasing invents sentences
+the game cannot draw — `--Barracks Research Complete--`, `--Goat Built--` —
+and each one is a **rival** that can refuse a real read. `queue` owns the
+one table that says what a subject IS, so it is what keeps the universe to
+sentences the game can actually print. That mattered exactly once and
+badly: the phantom `--Wood Research Complete--` sat two edits from
+`--Loom Research Complete--`, which made Loom the one research line no
+repair could ever recover.
 
 `filters` is the gate that turns a reading into a belief, and `session`
 decides whether this is the same game as last time.
@@ -153,6 +164,7 @@ against a possibly-wrong identity, and an identity it cannot name yields
 flowchart LR
     build_order --> checklist
     glyphs --> checklist
+    durations --> checklist
     age --> alerts
     build_order --> alerts
     production --> alerts
@@ -167,6 +179,8 @@ flowchart LR
     production --> report
     age --> gamestats
     episodes --> gamestats
+    events --> techtimeline
+    techtimeline --> statsview
     filters --> debuglog
     apm --> apmwin
     statefeed --> apmwin
@@ -196,6 +210,25 @@ it owns the poll loop and wires everything else together.
 `checklist` is where OBSERVED and ASSUMED are kept apart — it takes
 `build_order` for what a step expects and `glyphs` for what the game
 actually announced, and never lets the second look like the first.
+
+**It has three witnesses now, not one, and all three are readings.** The
+notification feed is right about 99% of lines at the full-size rendering
+and 59% at 1080p, so a single-witness tick is only as good as the
+rendering the player happens to run:
+
+| witness | stands in for | reconciled by |
+|---|---|---|
+| the notification feed | — | — |
+| the age crest (`age`) | a `...Research Complete` line that wraps and often never reads | `merged_age_events` |
+| the population cap | houses built too close together for the feed to print twice | `merged_house_events` |
+| the production queue (`episodes`) | any technology the feed missed | `TechEvidence` |
+
+Every one of them reconciles by **replacement, never addition**: one real
+event produces two signals, and crediting both greens a second item naming
+the same thing. `durations --> checklist` is the arrow that makes the last
+row honest — the queue says *queued* and the feed says *complete*, and the
+only thing bridging them is that research does not divide among villagers,
+so an item that held a producing cell for its full listed time finished.
 
 `follow` exists so the panel can say on its face when a hotkey has moved the
 step by hand and it is no longer following the game.

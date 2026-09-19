@@ -1,0 +1,131 @@
+# Dependabot configuration for automated dependency updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# New file. Unlike the three web repos, nothing here deploys: releases are built
+# by hand via tools/release.py and PyInstaller, so the blast radius of a bad
+# update is a red test run, not an outage.
+#
+# Grouping still matters here, for a different reason. tests.yml triggers on
+# `push: branches: ["**"]`, so EVERY Dependabot branch runs the full pytest
+# matrix across ubuntu, windows and macos. Ungrouped, a dozen bumps is three
+# dozen CI jobs.
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    groups:
+      # As in the other repos: "applies-to ... When undefined, defaults to
+      # version updates", so a normal group does not cover security updates and
+      # each advisory would arrive as its own PR. Grouping does not delay them.
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+      # THE ONE FAMILY THAT CANNOT ARRIVE ONE PACKAGE AT A TIME, and it is
+      # listed before minor-and-patch so it always wins the match.
+      #
+      # requirements.txt pins all four pyobjc packages to the same version,
+      # because a pyobjc-framework-* release requires the pyobjc-core of its
+      # own version. So a PR bumping ONE of them to 12.2.2 while the other
+      # three stay pinned at 11.1 is not merely unreviewed, it is
+      # unsatisfiable -- pip cannot resolve it and the macOS leg dies at the
+      # Install step before a single test runs:
+      #
+      #     ERROR: Cannot install -r requirements.txt (line 31) and
+      #     pyobjc-core==11.1 because these package versions have conflicting
+      #     dependencies.  ERROR: ResolutionImpossible
+      #
+      # Measured: four such PRs (#4-#7, opened 2026-09-13) all red for
+      # exactly that reason, and no amount of review could have merged any
+      # of them.
+      #
+      # MAJORS ARE INCLUDED HERE, against the rule below, and the exception
+      # is narrow. Majors fall through individually so a human looks at them,
+      # which is right when the individual PR is REVIEWABLE. This one cannot
+      # be. The PyQt6 pair solves the same lockstep problem by ignoring
+      # majors outright, and the reason given there does not transfer: that
+      # is about the frozen bundle, which NO CI JOB BUILDS. pyobjc is
+      # macOS-only and macos-latest is in the matrix, so CI can actually
+      # answer whether this bump is good. Let it.
+      pyobjc:
+        patterns:
+          - "pyobjc*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+
+      # Deliberately NOT split by dependency-type, unlike the npm repos. This
+      # project declares its dependencies in bare requirements.txt /
+      # requirements-dev.txt files, which give Dependabot no reliable
+      # development-vs-production distinction to filter on -- so a
+      # `dependency-type` filter here risks matching nothing and silently
+      # emitting one PR per package.
+      #
+      # Majors deliberately fall through this group and arrive individually.
+      # That is the wanted behaviour: numpy, opencv and PyQt6 majors are exactly
+      # the ones to look at on their own. The pyobjc family above is the
+      # documented exception, excluded here as well as matched there so this
+      # does not rest on remembering that the first matching group wins.
+      minor-and-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "pyobjc*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "automated"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore(dev)"
+      include: "scope"
+    # Majors for these are reviewed by hand. Each has a specific reason:
+    ignore:
+      # Lockstep pair -- the bindings and the Qt runtime must move together, and
+      # a PyQt6 major is the most likely thing to break the PyInstaller frozen
+      # bundle, which no CI job builds. Bump these together, locally, and
+      # re-package before merging.
+      - dependency-name: "PyQt6"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "PyQt6-Qt6"
+        update-types: ["version-update:semver-major"]
+      # The frame reader is pixel math end to end, so a major in either of these
+      # can change results silently rather than crashing. numpy 2.x already
+      # moved the C ABI once.
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "opencv-python-headless"
+        update-types: ["version-update:semver-major"]
+    # Note: `mgz` is a direct VCS requirement
+    # (git+https://github.com/gwaihirf22/aoc-mgz.git@support-save-version-67-2).
+    # Dependabot's pip ecosystem does not update git references, so its absence
+    # from any PR is expected behaviour, not a misconfiguration. Track it via
+    # docs/mgz-upstream.md instead.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    # Only two actions are used (checkout, setup-python), but grouping keeps it
+    # to one PR and one CI matrix run rather than two.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"

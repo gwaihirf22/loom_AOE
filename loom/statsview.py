@@ -46,6 +46,7 @@ from PyQt6.QtCore import Qt, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import (QColor, QFont, QKeySequence, QPainter, QPen,
                          QPixmap, QPolygonF, QShortcut)
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication,
+                             QSizePolicy,
                              QCheckBox, QFileDialog,
                              QSplitter,
                              QHBoxLayout,
@@ -54,7 +55,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication,
                              QPushButton, QScrollArea, QScrollBar,
                              QTabWidget, QVBoxLayout, QWidget)
 
-from . import config, events, gamestats, paths, placement, replay
+from . import (config, events, gamestats, paths, placement, replay,
+               techtimeline)
 from .age import CASTLE as AGE_CASTLE, DARK as AGE_DARK
 from .age import FEUDAL as AGE_FEUDAL, FILE_NAMES as AGE_FILE_NAMES
 from .age import IMPERIAL as AGE_IMPERIAL, NAMES as AGE_NAMES
@@ -167,6 +169,10 @@ CHART_SERIES = {
 # while that witness is switched on.
 RECORD_SERIES = {
     "villagers": ("queued",),
+    # eAPM is the record's number, so it is read out only while that
+    # witness is switched on - the same rule the line on the chart
+    # follows. A file with no record never mentions it at all.
+    "apm": ("eapm",),
 }
 
 
@@ -218,6 +224,11 @@ def hover_summary(values, keys=None):
         parts.append(f"{values['idle_tcs']} idle TCs")
     if wanted("apm") and values.get("apm") is not None:
         parts.append(f"{values['apm']:.0f} APM")
+    # Named eAPM here as on the key, the checkbox and the labels. The two
+    # numbers are close enough in kind that an unlabelled pair would read
+    # as one quantity twice.
+    if wanted("eapm") and values.get("eapm") is not None:
+        parts.append(f"{values['eapm']:.0f} eAPM")
     return " · ".join(parts)
 
 
@@ -380,6 +391,46 @@ def crest_source(which):
                     (paths.TEMPLATES_DIR / "age").glob(f"{stem}*.png")):
                 return path
     return None
+
+
+_subject_icon_cache = {}
+
+
+def subject_pixmap(subject, size):
+    """The picture for one technology or unit, or None.
+
+    THE QUEUE READER'S OWN TEMPLATES, which is a second use of an asset
+    cut for a first purpose, and worth saying why it is allowed here when
+    crest_source explicitly prefers the icon library.
+
+    That preference exists because a matching template is tight and
+    carries whatever HUD shading helped a correlation score, and "it looks
+    exactly like what it is when ENLARGED on a graph". These are going the
+    other way: 40px assets drawn at 22, so the shading that would show at
+    crest size does not survive the shrink.
+
+    And there is no alternative that is not worse. The icon library is
+    keyed by build-order TOKEN - a folder and filename like
+    "town_center/LoomDE.webp" - while a sighting is a slug like
+    "wheelbarrow", and the table mapping one to the other lives in a
+    development tool that loom/ must not import. Loom already owns a
+    picture of every subject it can name, filed under exactly that slug.
+
+    None when there is no picture, and the caller falls back to a plain
+    mark - the same contract load_step_icon has.
+    """
+    key = (subject, size)
+    if key in _subject_icon_cache:
+        return _subject_icon_cache[key]
+    found = None
+    path = paths.TEMPLATES_DIR / "queue" / f"{subject}.png"
+    if path.is_file():
+        loaded = QPixmap(str(path))
+        if not loaded.isNull():
+            found = loaded.scaledToHeight(
+                size, Qt.TransformationMode.SmoothTransformation)
+    _subject_icon_cache[key] = found
+    return found
 
 
 def crest_pixmap(which, size=CREST_SIZE):
@@ -895,7 +946,61 @@ FROM_RECORD = "record"  # the game's own log of what it was told to do
 # slightly behind, red late, and the greys are population and cap.
 RECORD_COLOR = QColor(190, 140, 235)
 
+# What TWO INDEPENDENT WITNESSES agreeing looks like. Loom's readers watch
+# the screen; the recorded game is the match's own command log, read after
+# it ended. A technology both of them name is a stronger fact than one
+# either names alone, and until the technology timeline nothing anywhere a
+# person looks said so.
+#
+# Teal because every other hue is spoken for: green is on pace, blue ahead,
+# amber slightly behind, red late, violet the record, and the greys are
+# population and cap. A colour that already means something else would make
+# agreement read as a verdict about timing, which it is not.
+AGREED_COLOR = QColor(90, 205, 195)
+
+# Loom having seen it and the record not naming it. Amber is free HERE and
+# only here - this chart draws no pace verdict, so nothing on it can be
+# confused with "slightly behind".
+LOOM_ONLY_COLOR = QColor(230, 180, 90)
+
+# The per-age averages written along the chart wear the ink of the line
+# they average. That was cosmetic while there was one line and one row of
+# numbers; with two of each it is the only thing saying WHICH line a row
+# belongs to - a green 133 and a violet 61 under the same age are not two
+# opinions about one quantity, they are two different quantities.
+#
+# Faint for the ages and full strength for the whole-game summary, which
+# is the hierarchy the plain FAINT_TEXT/TEXT pair already had. Only the
+# hue is new; the weighting is the author's and is left alone.
+APM_LABEL_TEXT = QColor(APM_COLOR)
+APM_LABEL_FAINT = QColor(APM_COLOR.red(), APM_COLOR.green(),
+                         APM_COLOR.blue(), 170)
+EAPM_LABEL_TEXT = QColor(RECORD_COLOR)
+EAPM_LABEL_FAINT = QColor(RECORD_COLOR.red(), RECORD_COLOR.green(),
+                          RECORD_COLOR.blue(), 170)
+
 WITNESS_LABELS = {SCREEN: "Loom read", FROM_RECORD: "recorded game"}
+
+# The colour of everything that says "these files are one match" - the
+# bracket down the history and the strip above the tabs alike.
+#
+# RECORD_COLOR, because grouping is the record's doing. Nothing is
+# grouped until a record is attached, and the record's own name is the
+# only evidence that groups it, so violet is the meaning the player has
+# already learned rather than a second one. It also reads usefully in
+# reverse: a history with no violet in it is a history nobody has
+# attached records to yet.
+#
+# ONE constant for both, so the bracket and the strip cannot end up
+# describing the same relationship in two colours.
+PARTS_COLOR = RECORD_COLOR
+
+# How thick the bracket is. The one measurement here that is NOT taken
+# off the font: a hairline is a hairline at any size, and scaling it
+# would make it a bar on a large font rather than a bracket.
+BRACKET_WIDTH = 2
+
+
 
 
 
@@ -1439,6 +1544,274 @@ def comparison_rows(data):
 
 
 
+# ---- one match, several files -------------------------------------------
+
+# One file's place in a match that Loom watched in more than one sitting.
+#
+# `first` and `last` are that PART's own clock, never the match's, and
+# either may be None when the file cannot say. None here means exactly
+# "this file cannot tell me", which is not the same answer as 0:00 and
+# must never arrive dressed as one - the fault classify_tint had, where
+# one value carried three meanings and the caller spent it as whichever
+# it liked.
+Part = namedtuple("Part", "record number total first last")
+
+
+def _part_clock(data):
+    """(first, last) game clock for one stats file. Either may be None.
+
+    The timeline first, because every file has one - 170 of the author's
+    283 predate game["observed"] and would come back blank if the
+    arithmetic were the source rather than the fallback. That is the
+    pixel-constant rule in a new medium: a derivation tuned on the files
+    in front of me, silently empty on the older ones.
+
+    t[0] and t[-1] LITERALLY, not min() and max(). A file whose clock
+    jumped is marked by clock_faults and deliberately never mended, and
+    taking the extremes here would be mending it in a second place.
+    """
+    timeline = data.get("timeline")
+    moments = timeline.get("t") if isinstance(timeline, dict) else None
+    if isinstance(moments, list) and moments:
+        return moments[0], moments[-1]
+
+    game = data.get("game") or {}
+    last = game.get("duration")
+    observed = game.get("observed")
+    if last is None:
+        return None, None
+    if observed is None:
+        # Knows where it ended and not where it began. Said as None
+        # rather than guessed at 0, because "started at the beginning"
+        # is precisely the claim this file cannot support.
+        return None, last
+    return last - observed, last
+
+
+def match_parts(rows):
+    """Which of these files are parts of ONE match: {str(path): Part}.
+
+    `rows` is what list_stats() collects - (path, label, data-or-None).
+    A file that is not provably one of SEVERAL is simply absent.
+
+    KEYED ON THE RECORD'S OWN NAME AND NOTHING ELSE. That name was
+    written by record_section from the file the record actually came
+    from, so it is evidence rather than a resemblance.
+
+    The tempting alternative is to group by resemblance - same build,
+    clock ranges that run on from each other, a few minutes apart on the
+    wall clock. Measured over the author's 283 files that finds 43
+    candidate pairs where 3 are provable. The other 40 are the issue #12
+    shape, runs like 21:02:28 -> 21:04:18 -> 21:05:32 from before the
+    wobble guard, and folding those into "one match" would invent history
+    in forty places to catch three. So: exact evidence, never adjacency,
+    never a matching build name, never nearness in time.
+
+    Nothing here touches the disk. The record folder is never listed, so
+    this answers on a machine with no savegame folder at all.
+
+    A record claimed by ONE file returns nothing. "Part 1 of 1" would be
+    a claim that no other part exists, and the only evidence available is
+    that no other file in this folder names that record - which a deleted
+    file, or one recorded on the other boot, makes into a lie. "Part 2 of
+    3" is a claim about files that are present and is exactly as strong
+    as its evidence.
+    """
+    claimed = {}
+    for path, _label, data in rows:
+        if not isinstance(data, dict):
+            continue                    # unreadable, and it stays that way
+        record = data.get("record")
+        if not isinstance(record, dict):
+            continue
+        name = record.get("path")
+        if not isinstance(name, str) or not name:
+            continue
+        claimed.setdefault(name, []).append((path, _part_clock(data)))
+
+    parts = {}
+    for name, found in claimed.items():
+        if len(found) < 2:
+            continue
+        # Ordered by the first game clock, which is what "part 1" means -
+        # the filename agrees today and is not the rule. The key is TOTAL
+        # so the numbering cannot flip between refreshes: two parts that
+        # overlap (one record attached to the wrong file, which only a
+        # bad clock read can cause) still number stably rather than
+        # swapping places every time the window is opened.
+        found.sort(key=lambda row: (row[1][0] is None, row[1][0],
+                                    row[1][1] is None, row[1][1],
+                                    pathlib.Path(row[0]).name))
+        for number, (path, (first, last)) in enumerate(found, start=1):
+            parts[str(path)] = Part(name, number, len(found), first, last)
+    return parts
+
+
+# The rows of one match are indented under their bracket, and the bracket
+# is drawn in the room that makes.
+#
+# SPACES rather than a pixel gutter, and that is the pixel-constant rule
+# rather than laziness: a space is measured in the row's own font, so the
+# indent grows with the font instead of being a number tuned against
+# whatever the font was on the day. Measured offscreen, a row is 12px
+# tall with the stub font and will not be on a desktop - anything fixed
+# here would be wrong on one of them.
+PART_INDENT = "     "
+
+# Which item data carries the record a row belongs to. The bracket needs
+# to know only whether two neighbours are the same match, so the record's
+# name is the whole of it - no need to put a Part in an item.
+PART_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+def bracket_shape(tags, row):
+    """(join upwards, join downwards) for one row of the history.
+
+    `tags` is one entry per visible row: the record a row belongs to, or
+    None. Pure, and separate from the painting on purpose - the offscreen
+    platform's font is a stub, so a test can measure this and cannot
+    measure where a glyph landed.
+
+    The bracket joins ADJACENT rows of one match and nothing else. It
+    cannot assume the parts are next to each other: they are in all three
+    real splits, because no other match can be played between two parts
+    of one, but a filter can hide the row in between and adjacency was
+    never the rule. So a part whose neighbours are strangers gets a tick
+    and no line, which says "this belongs to something" without drawing a
+    bracket around a row that is not in it.
+    """
+    mine = tags[row]
+    if mine is None:
+        return False, False
+    above = tags[row - 1] if row > 0 else None
+    below = tags[row + 1] if row + 1 < len(tags) else None
+    return above == mine, below == mine
+
+
+def part_note(part):
+    """The part's suffix on its history row.
+
+    Goes in the LABEL rather than being painted, so the row, its tooltip
+    and matches_filter cannot end up saying different things - and so
+    typing "part" in the filter box brings back every split match at
+    once, which is the set most worth auditing. Not "part 2": the filter
+    is order-free and word-based, so the "2" is satisfied by the "of 2"
+    every part carries.
+
+    The range is dropped whole when the file cannot say, never drawn as
+    0:00 or --:--.
+    """
+    note = f"  · part {part.number} of {part.total}"
+    if part.first is None or part.last is None:
+        return note
+    return f"{note} · {format_time(part.first)}–{format_time(part.last)}"
+
+
+# What a file's recorded game is: one definition, two consumers.
+#
+# The button on the Reader accuracy tab and the line in the status bar
+# both have to know this, and it is exactly the shape that gets answered
+# twice and then differently - the button saying a record is attached
+# while the bar still asks for one. So neither of them tests the file:
+# both switch on this.
+RECORD_MISSING = "missing"      # nothing attached
+RECORD_PARTIAL = "partial"      # attached by a build that knew less
+RECORD_COMPLETE = "complete"    # nothing left to read
+
+
+def record_state(data):
+    """Which of the three states this file's recorded game is in.
+
+    None for a file that could not be read at all, which is not a
+    statement about its record - nobody has seen one either way.
+    """
+    if data is None:
+        return None
+    if record_is_complete(data):
+        return RECORD_COMPLETE
+    if data.get("record"):
+        return RECORD_PARTIAL
+    return RECORD_MISSING
+
+
+# What the bar says about a record, and what its button would do.
+RECORD_SAID = {
+    RECORD_MISSING: ("No recorded game is attached, so nothing on these"
+                     " charts has a second witness.", "Add recorded game"),
+    RECORD_PARTIAL: ("This game's recorded game was read by an older"
+                     " version of Loom, so some of it is missing.",
+                     "Finish reading it"),
+}
+
+
+def message_for(state, part, siblings=()):
+    """The one line the status bar shows: (html, button text, tooltip).
+
+    ONE LINE, and one message at a time. The bar is always on screen at
+    a fixed height, so nothing it says can push the rest of the window
+    around - which is what two stacked bars appearing and disappearing
+    on every selection change did. The price is a line's worth of room,
+    and it is only worth paying if the message fits in it.
+
+    THE ACTIONABLE ONE WINS. A missing record has a button and something
+    a person can do about it; a part is a caveat, and the row's own
+    label and the bracket beside it are already saying it. The two
+    barely collide in practice - grouping needs a record and this speaks
+    up when one is missing - so the only real overlap is a record
+    attached by an older build to a game that is also split.
+
+    The tooltip is the same thing in plain text, because a line too long
+    for the window is clipped rather than wrapped.
+    """
+    if state in RECORD_SAID:
+        said, action = RECORD_SAID[state]
+        return (f"<span style='color: {css_rgb(RECORD_COLOR)};'>{said}"
+                f"</span>", action, said)
+    if part is None:
+        return "", None, ""
+    return part_line(part, siblings)
+
+
+def part_line(part, siblings=()):
+    """(html, None, tooltip) for a file that is one part of a match.
+
+    Short, because it is now the smallest of three things saying it: the
+    bracket down the list draws the grouping and the row's own label
+    carries "part 2 of 2" and the clock range. What neither can say is
+    what is left here - that this file's numbers describe a piece of the
+    match rather than the match.
+
+    AND THE TWO PIECES FAIL DIFFERENTLY, so they are not told the same
+    way. Part 1 watched the opening and stopped early, so its counts are
+    real and merely stop where it does. A later part started its
+    trackers COLD: its Town Centre count begins again from nothing and
+    its idle seconds begin from a standstill, which is how part 3 of the
+    author's own three-part match came to report its whole span as idle.
+    Telling those two the same way would be the assumed-dressed-as-
+    observed fault, since one of them really did read what it reports.
+    """
+    if part.number == 1:
+        said = (f"Part 1 of {part.total} of this match — its numbers stop"
+                f" where this part does.")
+    elif part.first is None:
+        said = (f"Part {part.number} of {part.total} of this match — its"
+                f" Town Centre count, idle time and build report describe"
+                f" this part only.")
+    else:
+        said = (f"Part {part.number} of {part.total} of this match. Loom"
+                f" joined at {format_time(part.first)}, so its Town Centre"
+                f" count, idle time and build report describe this part"
+                f" only.")
+    links = " · ".join(
+        f"<a href='{name}' style='color: {css_rgb(PARTS_COLOR)};'>"
+        f"part {other.number}</a>" for name, other in siblings)
+    named = ", ".join(f"part {other.number}" for _, other in siblings)
+    also = f"  Also on disk: {links}." if links else ""
+    plain = said + (f"  Also on disk: {named}." if named else "")
+    return (f"<span style='color: {css_rgb(PARTS_COLOR)};'>{said}</span>"
+            f"{also}", None, plain)
+
+
 def list_stats():
     """Every stats file, newest first: [(path, label, data-or-None)].
 
@@ -1447,7 +1820,11 @@ def list_stats():
     """
     if not paths.STATS_DIR.exists():
         return []
-    rows = []
+    # Two passes, because the part number is a fact about the WHOLE
+    # folder: nothing can say "2 of 3" until every file has been read.
+    # So the first pass keeps each row's label in two halves and the
+    # second puts the part between them.
+    building = []
     for path in sorted(paths.STATS_DIR.glob("*.json"), reverse=True):
         # Demo replays write a stats file too - deliberately, so the whole
         # pipeline can be exercised with no game - but they are rehearsals,
@@ -1456,23 +1833,39 @@ def list_stats():
             continue
         data = load_stats(path)
         if data is None:
-            rows.append((path, f"{path.name} — unreadable", None))
+            building.append((path, f"{path.name} — unreadable", "", None))
             continue
         label = game_label(data.get("meta", {}), data.get("game", {}))
+        marks = ""
         # Marked, not mended. A file whose clock misread keeps every number
         # it recorded and wears a warning, because the gap between what
         # Loom read and what happened is the evidence that finds reader
         # bugs - and a repaired corpus has none of it.
         if clock_faults(data):
-            label += "  ⚠ check clock"
+            marks += "  ⚠ check clock"
         # A won game and a lost one must not look identical in a history.
         # Only ever from the record - nothing on the HUD says who won -
         # and silent when no record is attached, because "not known" and
         # "lost" are different answers.
         outcome = game_outcome(data)
         if outcome:
-            label += f"  {outcome}"
-        rows.append((path, label, data))
+            marks += f"  {outcome}"
+        building.append((path, label, marks, data))
+
+    # The part sits BEFORE those two markers so the eye keeps finding
+    # them at the end of every row, wherever the note varies in length.
+    parts = match_parts([(path, label, data)
+                         for path, label, _marks, data in building])
+    rows = []
+    for path, label, marks, data in building:
+        part = parts.get(str(path))
+        if part is not None:
+            # Indented as well as labelled. The indent is what the
+            # bracket is drawn in, and it reads as nesting on its own -
+            # so the rows still look like one match in a screenshot,
+            # where a painted line does not survive being pasted as text.
+            label = PART_INDENT + label + part_note(part)
+        rows.append((path, label + marks, data))
     return rows
 
 
@@ -2283,7 +2676,8 @@ KIND_NOTE = (
 
 
 class GameList(QListWidget):
-    """The history, with a horizontal scroll for names too long to fit.
+    """The history, with a horizontal scroll for names too long to fit,
+    and a bracket joining the files of a match watched in several parts.
 
     Qt elides a list item that overflows and offers no way to see the
     rest, which is why every row also carries a tooltip. That is a poor
@@ -2291,6 +2685,50 @@ class GameList(QListWidget):
     shift+wheel walks along them - the same gesture the charts already
     use for panning, so there is one thing to learn rather than two.
     """
+
+    def paintEvent(self, event):
+        """The rows, then a violet bracket down each match split in two.
+
+        Painted rather than spelled with box-drawing characters, because
+        the bracket has to be the RECORD's colour to mean anything - a
+        character in the label would wear the row's own colour, and the
+        one thing the mark has to say is which witness joined these rows.
+
+        Drawn AFTER the rows so it sits over the selection highlight
+        rather than under it; a bracket that vanishes on the row you are
+        looking at is worse than none.
+        """
+        super().paintEvent(event)
+        tags = [self.item(row).data(PART_ROLE) for row in range(self.count())]
+        if not any(tags):
+            return                      # the usual case: nothing to draw
+
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(QPen(PARTS_COLOR, BRACKET_WIDTH))
+        # Every measurement comes off the row's own font, so the bracket
+        # grows with it. A row is 12px tall under the offscreen stub font
+        # and taller on any real desktop; a number tuned against either
+        # would be wrong on the other.
+        step = self.fontMetrics().horizontalAdvance(" ") or 4
+        visible = self.viewport().rect()
+        for row, tag in enumerate(tags):
+            if tag is None:
+                continue
+            rect = self.visualItemRect(self.item(row))
+            if not rect.intersects(visible):
+                continue
+            up, down = bracket_shape(tags, row)
+            # rect.left() rather than a fixed column, so the bracket
+            # travels with its row when shift+wheel pans the names.
+            x = rect.left() + step * 2
+            middle = rect.center().y()
+            painter.drawLine(x, middle, x + step, middle)
+            if up:
+                painter.drawLine(x, rect.top(), x, middle)
+            if down:
+                painter.drawLine(x, middle, x, rect.bottom())
+        painter.end()
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -2328,6 +2766,8 @@ class ChartView(QWidget):
         "plan": ("the build order, said and done", "_draw_plan"),
         "military": ("military population", "_draw_military"),
         "apm": ("APM", "_draw_apm"),
+        "technology": ("technologies, and who saw them",
+                       "_draw_technology"),
     }
 
     # What each chart is, in a sentence, for the checkbox that switches
@@ -2354,6 +2794,9 @@ class ChartView(QWidget):
         "apm": "Actions per minute. Two of them, and they are not the"
                " same quantity: what Loom counted at your keyboard, and"
                " what the game actually acted on.",
+        "technology": "Every technology, where it landed in the game, and"
+                      " WHICH WITNESSES saw it. Teal is both agreeing,"
+                      " which is a stronger fact than either alone.",
     }
 
     # Which witnesses each chart can honestly draw. A chart missing from
@@ -2416,6 +2859,22 @@ class ChartView(QWidget):
                           " own record. The gap below the green line is"
                           " input that went nowhere - a hotkey pressed"
                           " twice, a click on a unit already selected."),
+        },
+        # The first chart whose POINT is the pair. Every other chart draws
+        # a witness per series and compares the lines; this one draws one
+        # mark per technology and colours it by who vouched for it, so
+        # turning a witness off asks "what would I know without this
+        # one" - which is the question the three colours exist to answer.
+        "technology": {
+            SCREEN: ("Loom read",
+                     "Technologies Loom watched happen - the production"
+                     " queue showed the research, or the game announced"
+                     " it complete in its own message feed."),
+            FROM_RECORD: ("recorded game",
+                          "Technologies the match was told to research."
+                          " Orders, so a research abandoned partway is"
+                          " still here - which is why one witness alone"
+                          " is weaker than both."),
         },
     }
 
@@ -2519,6 +2978,13 @@ class ChartView(QWidget):
         self.apm_smooth = (
             rolling_median(self.apm["t"], self.apm["apm"], APM_SMOOTHING)
             if self.apm and self.apm.get("t") else [])
+        # The record's line, smoothed the same way and for the same
+        # reason: the readout must say what the bold line says, and
+        # _draw_apm was already recomputing this per paint to draw it.
+        commanded = self._record_apm()
+        self.eapm_smooth = (
+            rolling_median(commanded["t"], commanded["apm"], APM_SMOOTHING)
+            if commanded else [])
         self._full = None
         # A new game is a new clock: keeping the old window would open a
         # forty-minute match zoomed into a minute of a game that is gone.
@@ -2966,6 +3432,17 @@ class ChartView(QWidget):
             # auto-repeat artefact and not anything the player did.
             if index < len(self.apm_smooth):
                 found["apm"] = self.apm_smooth[index]
+        # The record keeps its own clock, so it is sampled against its own
+        # times rather than reusing the index above. The two series start
+        # together and need not end together - a part that stopped early
+        # has fewer buckets than the match has seconds.
+        commanded = self._record_apm()
+        if commanded and self.eapm_smooth:
+            times = commanded["t"]
+            index = min(range(len(times)),
+                        key=lambda i: abs(times[i] - moment))
+            if index < len(self.eapm_smooth):
+                found["eapm"] = self.eapm_smooth[index]
         return found
 
     # Each chart: a titled box with a time axis and one or two series.
@@ -3485,7 +3962,23 @@ class ChartView(QWidget):
         pen.setWidth(2)
         painter.setPen(pen)
         where = done if done is not None else said
-        icon = load_step_icon(row.token, PLAN_ICON) if row.token else None
+        self._icon_mark(painter, where, y, row.token, colour, faded)
+
+    def _icon_mark(self, painter, where, y, token, colour, faded=False,
+                   icon=None):
+        """One picture on a timeline, in a coloured box.
+
+        Shared by the build order and the technology timeline, because
+        they draw the same thing and differ only in what the colour
+        MEANS - a pace verdict there, which witnesses vouched for it
+        here. Two copies would drift the moment one of them learned
+        something about drawing.
+        """
+        pen = QPen(colour)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        if icon is None:
+            icon = load_step_icon(token, PLAN_ICON) if token else None
         if icon is None:
             # No picture in the library: a filled mark, the same way the
             # overlay's step rows fall back to words.
@@ -3502,6 +3995,80 @@ class ChartView(QWidget):
         painter.drawRect(int(where) - icon.width() // 2 - 1,
                          int(y) - icon.height() // 2 - 1,
                          icon.width() + 1, icon.height() + 1)
+
+    # The three states, named rather than legended elsewhere, because none
+    # of them is guessable from its colour alone.
+    TECH_KEY = ((AGREED_COLOR, 2, "both witnesses"),
+                (LOOM_ONLY_COLOR, 2, "Loom only"),
+                (RECORD_COLOR, 2, "recorded game only"))
+
+    def _tech_marks(self):
+        """Every technology worth drawing, decided by techtimeline.
+
+        The reasoning lives in loom/techtimeline.py rather than here: what
+        counts as agreement, and the difference between "the record does
+        not name it" and "the record disagrees", are facts about the
+        witnesses and not about drawing. A chart is hard to test and that
+        module is not.
+        """
+        if not self.data:
+            return []
+        section = (self.data or {}).get("record")
+        sightings = events.with_record(
+            (self.data.get("game") or {}),
+            truth_from_section(section) if section else None)
+        wanted = self.witnesses
+        keep = []
+        for mark in techtimeline.marks(sightings, replay.QUEUE_KNOWN):
+            # A witness switched off is a question - "what would I know
+            # without this one" - so a mark only that witness saw goes
+            # away, and one BOTH saw stays, because the other still
+            # vouches for it.
+            if mark.state == techtimeline.RECORD_ONLY                     and FROM_RECORD not in wanted:
+                continue
+            if mark.state == techtimeline.LOOM_ONLY and SCREEN not in wanted:
+                continue
+            keep.append(mark)
+        return keep
+
+    TECH_COLOURS = {techtimeline.BOTH: AGREED_COLOR,
+                    techtimeline.LOOM_ONLY: LOOM_ONLY_COLOR,
+                    techtimeline.RECORD_ONLY: RECORD_COLOR}
+
+    def _draw_technology(self, painter, x, y, width, height, title):
+        plot = self._frame(painter, x, y, width, height, title,
+                           list(self.TECH_KEY))
+        self._time_axis(painter, *plot)
+        self._draw_age_rules(painter, plot)
+        marks = self._tech_marks()
+        if not marks:
+            painter.setPen(FAINT_TEXT)
+            painter.setFont(readout_font())
+            painter.drawText(plot[0] + 6, plot[1] + 16,
+                             "no technology this game's witnesses can place"
+                             " in time")
+            return
+        # Lanes, not a row each - the same packing the build order uses,
+        # for the same reason: research clusters, and a row per item makes
+        # a short game unreadable.
+        plot_x, plot_y, plot_w, plot_h = plot
+        lanes = []
+        painter.save()
+        painter.setClipRect(plot_x, plot_y, plot_w, plot_h)
+        for mark in marks:
+            where = self._x(mark.when, plot)
+            index = next((n for n, edge in enumerate(lanes)
+                          if edge <= where - PLAN_ICON), len(lanes))
+            if index == len(lanes):
+                lanes.append(where + PLAN_ICON)
+            else:
+                lanes[index] = where + PLAN_ICON
+            usable = max(1, int(plot_h // PLAN_LANE))
+            row_y = plot_y + PLAN_LANE * (index % usable) + PLAN_LANE / 2
+            self._icon_mark(painter, where, row_y, mark.subject,
+                            self.TECH_COLOURS[mark.state],
+                            icon=subject_pixmap(mark.subject, PLAN_ICON))
+        painter.restore()
 
     def _draw_military(self, painter, x, y, width, height, title):
         """Population minus villagers - the author's definition, and the
@@ -3747,6 +4314,7 @@ class ChartView(QWidget):
             self._draw_series(painter, zip(commanded["t"], commanded_smooth),
                               RECORD_COLOR, plot, 0, hi)
         self._apm_span_labels(painter, plot)
+        self._eapm_span_labels(painter, plot)
 
     def _record_apm(self):
         """The recorded game's own actions per minute, or None.
@@ -3760,7 +4328,8 @@ class ChartView(QWidget):
         found = section.get("apm")
         return found if found and found.get("t") else None
 
-    def _draw_span_labels(self, painter, plot, text_for, whole=None):
+    def _draw_span_labels(self, painter, plot, text_for, whole=None,
+                          faint=None, summary=None, at_top=False):
         """One number per age, centred over the stretch that age occupied.
 
         The author's layout, and the reason it is worth the trouble: the
@@ -3773,7 +4342,20 @@ class ChartView(QWidget):
         zoomed in, or an age that lasted a minute - because a number
         overflowing into its neighbour's stretch would credit it to the
         wrong age.
+
+        `at_top` puts the row along the ceiling instead of the floor, for
+        a chart with two of them. The comment below argues against the
+        ceiling and was right when it was written; the APM chart now
+        scales its axis to 1.1x the peak, so the highest line sits at
+        about 91% of the height and the ceiling is the emptiest band on
+        it. Checked in _draw_apm rather than assumed - a chart WITHOUT
+        that headroom must not pass at_top.
+
+        `faint` and `summary` are the two inks. Defaulted rather than
+        required so every other chart keeps the plain-text pair it has.
         """
+        faint = FAINT_TEXT if faint is None else faint
+        summary = TEXT if summary is None else summary
         plot_x, plot_y, plot_w, plot_h = plot
         painter.setFont(key_font())
         metrics = painter.fontMetrics()
@@ -3781,7 +4363,8 @@ class ChartView(QWidget):
         # Along the FLOOR of the plot, not its ceiling. At the top these
         # shared a row with the age crests and with the build chart's
         # first lane of icons, three things on one line.
-        baseline = plot_y + plot_h - metrics.descent() - 2
+        baseline = (plot_y + metrics.ascent() + 2 if at_top
+                    else plot_y + plot_h - metrics.descent() - 2)
         reserved = (metrics.horizontalAdvance(whole) + 12) if whole else 0
         for age, start, end in age_spans(self.ages, self.full_span()):
             if end <= low or start >= high:
@@ -3801,11 +4384,11 @@ class ChartView(QWidget):
             if right - left < width + 8:
                 continue
             self._label_chip(painter, int((left + right - width) / 2),
-                             baseline, text, metrics, FAINT_TEXT)
+                             baseline, text, metrics, faint)
         if whole:
             self._label_chip(
                 painter, plot_x + plot_w - metrics.horizontalAdvance(whole),
-                baseline, whole, metrics, TEXT)
+                baseline, whole, metrics, summary)
 
     def _label_chip(self, painter, x, baseline, text, metrics, colour):
         """A number written on its own patch of background.
@@ -3840,7 +4423,38 @@ class ChartView(QWidget):
 
         whole = span_average(times, values, 0, self.full_span() + 1)
         self._draw_span_labels(painter, plot, text_for,
-                               None if whole is None else f"game {whole:.0f}")
+                               None if whole is None else f"game {whole:.0f}",
+                               faint=APM_LABEL_FAINT,
+                               summary=APM_LABEL_TEXT, at_top=True)
+
+    def _eapm_span_labels(self, painter, plot):
+        """The same numbers for the recorded game, along the floor.
+
+        Only when a record is attached, which is the same condition the
+        violet line is drawn under - a row of averages for a line that is
+        not on the chart would be a number with nothing to check it
+        against.
+
+        A MEAN of the record's own buckets, computed exactly as the APM
+        row is. The two rows have to be the same statistic or the gap
+        between them means nothing, and that gap is the whole point:
+        actions that went nowhere.
+        """
+        commanded = self._record_apm()
+        if not commanded or FROM_RECORD not in self.witnesses:
+            return
+        times, values = commanded["t"], commanded["apm"]
+
+        def text_for(age, start, end):
+            average = span_average(times, values, start, end)
+            return (None if average is None
+                    else f"{AGE_NAMES.get(age, '?')} {average:.0f}")
+
+        whole = span_average(times, values, 0, self.full_span() + 1)
+        self._draw_span_labels(painter, plot, text_for,
+                               None if whole is None else f"game {whole:.0f}",
+                               faint=EAPM_LABEL_FAINT,
+                               summary=EAPM_LABEL_TEXT)
 
 
 
@@ -4275,7 +4889,16 @@ class StatsWindow(QWidget):
         self.military_tab = self._label_tab()
         self.military_charts = ChartTab(("military",))
         self._wire_popout(self.military_charts, "Military")
-        self.tabs.addTab(self.tech_tab["scroll"], "Technology")
+        self.tech_charts = ChartTab(("technology",))
+        self._wire_popout(self.tech_charts, "Technology")
+        # Chart above the table, the way Military already does it: the
+        # timeline answers "when did these land and who saw them" at a
+        # glance, and the rows below keep every technology that has no
+        # time to plot.
+        self.tabs.addTab(self._stacked(self.tech_charts,
+                                       self.tech_tab["scroll"],
+                                       name="technology"),
+                         "Technology")
         self.tabs.addTab(self._stacked(self.military_charts,
                                        self.military_tab["scroll"]),
                          "Military")
@@ -4332,29 +4955,62 @@ class StatsWindow(QWidget):
         # a different hat. Proportions from setSizes are kept by Qt on
         # their own.
 
-        # The banner sits ABOVE the tab strip rather than on a tab, so it
-        # is visible whichever tab is open. That is the point of it: a
-        # missing record is missing from every chart at once, and a
+        # ONE message bar, along the bottom, ALWAYS THERE.
+        #
+        # It used to be two stacked strips above the tab strip that each
+        # showed and hid themselves as the selection changed - so clicking
+        # between games added and removed up to five lines at the top and
+        # shoved the tabs, the charts and everything else down the window.
+        # The placement was not the fault: a bar that appears and
+        # disappears reflows whichever end it lives at. What fixes it is a
+        # FIXED HEIGHT that is always occupied, so only the words inside
+        # it ever change.
+        #
+        # It is still full width and still outside the tabs, for the
+        # reason the old banner gave and which has not changed: what it
+        # says is true of the whole file rather than of one chart, and a
         # control that lives on the tenth tab is a control nobody finds.
-        # One banner, not a second button per tab - `_show_record_button`
-        # drives it and the Reader accuracy button together, so the two
-        # cannot end up saying different things about the same game.
-        self.banner = QWidget()
-        banner_row = QHBoxLayout(self.banner)
-        banner_row.setContentsMargins(8, 4, 8, 4)
-        self.banner_label = QLabel()
-        self.banner_label.setWordWrap(True)
-        self.banner_label.setStyleSheet(f"color: {css_rgb(RECORD_COLOR)};")
+        self.message = QWidget()
+        message_row = QHBoxLayout(self.message)
+        message_row.setContentsMargins(8, 2, 8, 2)
+        self.message_label = QLabel()
+        # No wrapping, deliberately. Wrapping is what varies the height,
+        # and the height is the whole problem - so a line too long for
+        # the window is clipped and the tooltip carries it in full.
+        self.message_label.setWordWrap(False)
+        self.message_label.setTextFormat(Qt.TextFormat.RichText)
+        # Ignored horizontally so a long line asks the window for no
+        # room: without it the label's own sizeHint sets a minimum width
+        # and a wordy message widens the whole window.
+        self.message_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Fixed)
+        # The links go to _show_part rather than to a browser: they name
+        # a stats file, not a web page.
+        self.message_label.setOpenExternalLinks(False)
+        self.message_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.message_label.linkActivated.connect(self._show_part)
         self.banner_button = QPushButton("Add recorded game")
         self.banner_button.clicked.connect(self._add_record)
-        banner_row.addWidget(self.banner_label, 1)
-        banner_row.addWidget(self.banner_button)
-        self.banner.hide()
+        message_row.addWidget(self.message_label, 1)
+        message_row.addWidget(self.banner_button)
+        # Measured off the row's own font rather than set in pixels, so
+        # the bar is one line at any font size. The button is the taller
+        # of the two and decides it.
+        self.message.setFixedHeight(
+            max(self.message_label.sizeHint().height(),
+                self.banner_button.sizeHint().height()) + 4)
+        self.message.setStyleSheet(
+            f"border-top: 1px solid {css_rgb(BORDER)};")
+        # Which files are parts of one match, rebuilt by refresh(). Empty
+        # until then, so a window that has not listed anything yet says
+        # nothing rather than raising.
+        self._parts = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.banner)
         layout.addWidget(self.split, 1)
+        layout.addWidget(self.message)
 
     # ---- managing the history ------------------------------------------
 
@@ -4515,7 +5171,7 @@ class StatsWindow(QWidget):
         else:
             split.setSizes(default)
 
-    def _stacked(self, chart, rows):
+    def _stacked(self, chart, rows, name="military"):
         """A chart over a list of rows, sharing one tab. The Military tab
         wants both: the shape of an army over time, and the sightings
         that name what was in it."""
@@ -4525,8 +5181,9 @@ class StatsWindow(QWidget):
         # A divider, not a fixed 3:2. Which half matters is a question
         # about what is being asked, not about the tab: reading the
         # sightings wants the rows, comparing two lines wants the chart.
-        split = self._splitter("military", Qt.Orientation.Vertical,
-                               [360, 240])
+        # NAMED, because the divider is remembered per name and two
+        # stacked tabs sharing one would drag each other about.
+        split = self._splitter(name, Qt.Orientation.Vertical, [360, 240])
         split.addWidget(chart)
         split.addWidget(rows)
         layout.addWidget(split)
@@ -4560,19 +5217,24 @@ class StatsWindow(QWidget):
         tab["label"].setText(coming_soon_html(name))
         return tab["scroll"]
 
-    def _show_record_button(self, data):
-        """Enable the button, and say what it would actually do.
+    def _show_record_state(self, stats_path, data):
+        """The accuracy tab's button and the bar, from ONE reading.
 
         Three states, not two. A game with no record can have one
         attached; a game whose record was read by an older build can be
         FINISHED, which is the state that had no way of being reached;
         and a complete one has nothing left to do.
+
+        Both consumers switch on record_state rather than testing the
+        file themselves. The old pair asked the same question twice and
+        the failure that invites is a button saying a record is attached
+        beside a bar still asking for one.
         """
-        if record_is_complete(data):
+        state = record_state(data)
+        if state == RECORD_COMPLETE:
             self.add_record_button.setEnabled(False)
             self.add_record_button.setText("Recorded game attached")
-            self.banner.hide()
-        elif (data or {}).get("record"):
+        elif state == RECORD_PARTIAL:
             self.add_record_button.setEnabled(True)
             self.add_record_button.setText("Finish reading recorded game")
             self.add_record_button.setToolTip(wrapped(
@@ -4580,29 +5242,30 @@ class StatsWindow(QWidget):
                 " Loom. Re-reading it adds what that version could not:"
                 " who won, both civilisations, and the actions the game"
                 " actually acted on."))
-            self._show_banner(
-                "This game's recorded game was read by an older version of"
-                " Loom, so some of it is missing.",
-                "Finish reading it")
         else:
-            self.add_record_button.setEnabled(True)
+            self.add_record_button.setEnabled(state is not None)
             self.add_record_button.setText("Add recorded game")
-            self._show_banner(
-                "No recorded game is attached, so nothing on these charts"
-                " has a second witness.",
-                "Add recorded game")
 
-    def _show_banner(self, message, action):
-        """Say what is missing, in the colour of the thing that is missing.
+        part = self._parts.get(str(stats_path or ""))
+        said, action, tip = message_for(state, part, self._siblings(part))
+        self.message_label.setText(said)
+        self.message_label.setToolTip(wrapped(tip) if tip else "")
+        # The bar itself never hides - only the button inside it does,
+        # and a button appearing costs no height because the bar's is
+        # fixed. That is the whole reason the window stopped jumping.
+        self.banner_button.setVisible(action is not None)
+        if action is not None:
+            self.banner_button.setText(action)
 
-        Violet, because what a missing record costs is every violet series
-        on every chart. A grey warning would describe the fault in a
-        colour that has nothing to do with it.
-        """
-        self.banner_label.setText(message)
-        self.banner_button.setText(action)
-        self.banner.show()
-
+    def _siblings(self, part):
+        """[(stats file name, Part)] for the OTHER parts of one match."""
+        if part is None:
+            return []
+        return sorted(
+            ((pathlib.Path(other).name, found)
+             for other, found in self._parts.items()
+             if found.record == part.record and found.number != part.number),
+            key=lambda row: row[1].number)
 
     def _add_record(self):
         """Attach the match's own recorded game to the selected file.
@@ -4763,7 +5426,12 @@ class StatsWindow(QWidget):
         query = self.filter_box.text().strip()
         self.games.clear()
         total = 0
-        for path, label, data in list_stats():
+        rows = list_stats()
+        # Asked again here rather than smuggled out of list_stats: two
+        # CALLS of one function cannot disagree, where two definitions of
+        # "which files are one match" certainly would.
+        self._parts = match_parts(rows)
+        for path, label, data in rows:
             total += 1
             if query and not matches_filter(label, query):
                 continue
@@ -4773,6 +5441,8 @@ class StatsWindow(QWidget):
             # there was no way at all to see the rest of it.
             item.setToolTip(wrapped(label))
             item.setData(Qt.ItemDataRole.UserRole, str(path))
+            part = self._parts.get(str(path))
+            item.setData(PART_ROLE, part.record if part else None)
             self.games.addItem(item)
             if keep == str(path):
                 self.games.setCurrentItem(item)
@@ -4841,10 +5511,39 @@ class StatsWindow(QWidget):
                           "quiet": True}
         QTimer.singleShot(SCAN_TICK_MS, self._scan_one)
 
+    def _show_part(self, name):
+        """Select another part of this match, by its stats file's name."""
+        item = self._row_named(name)
+        if item is None and self.filter_box.text().strip():
+            # Hidden by the filter the player typed earlier. Clearing it
+            # is the lesser surprise: they have just asked for that exact
+            # row, and a link that silently does nothing is worse than no
+            # link at all. textChanged runs refresh(), so the row is back
+            # by the time it is looked for again.
+            self.filter_box.clear()
+            item = self._row_named(name)
+        if item is None:
+            # Deleted from under us between one refresh and this click.
+            # Said rather than swallowed, and the selection left alone.
+            self.count_label.setText(f"{name} is no longer here")
+            return
+        self.games.setCurrentItem(item)
+        self.games.scrollToItem(item)
+
+    def _row_named(self, name):
+        """The list row for one stats file's basename, or None."""
+        for index in range(self.games.count()):
+            item = self.games.item(index)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path and pathlib.Path(path).name == name:
+                return item
+        return None
+
     def _show_selected(self, current, _previous):
         if current is None:
             return
-        data = load_stats(current.data(Qt.ItemDataRole.UserRole))
+        chosen = current.data(Qt.ItemDataRole.UserRole)
+        data = load_stats(chosen)
         if data is None:
             for tab in (self.build_tab, self.game_tab, self.tech_tab,
                         self.military_tab, self.accuracy_tab):
@@ -4854,9 +5553,11 @@ class StatsWindow(QWidget):
             # became a banner left on screen over an unreadable file the
             # moment it was not.
             self.add_record_button.setEnabled(False)
-            self.banner.hide()
+            # Said rather than left saying whatever the last game said.
+            self._show_record_state(chosen, None)
             for tab in (self.society, self.economy, self.apm_charts,
-                        self.pace_charts, self.military_charts):
+                        self.pace_charts, self.military_charts,
+                        self.tech_charts):
                 tab.show_game(None)
             return
 
@@ -4882,7 +5583,8 @@ class StatsWindow(QWidget):
             window.show_game(data)
         self.accuracy_tab["label"].setText(
             accuracy_html(data, self._selected_path))
-        self._show_record_button(data)
+        self._show_record_state(chosen, data)
         for tab in (self.society, self.economy, self.apm_charts,
-                    self.pace_charts, self.military_charts):
+                    self.pace_charts, self.military_charts,
+                    self.tech_charts):
             tab.show_game(data)

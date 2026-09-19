@@ -51,6 +51,14 @@ def describe_reading(reading, alerts_list=None):
         parts.append(f"EVENT {reading.event}")
     for game_event in reading.game_events:
         parts.append(f"feed {game_event}")
+    # A refused read is the evidence this log had no way to carry before.
+    # An accepted event and an empty line looked identical here, so "why
+    # did that never tick" was unanswerable after the fact - which is the
+    # project's own rule about absence, missing from its own diary. Only
+    # NEWLY refused lines arrive (see glyphs.TextWatcher.refused), so a
+    # line that lingers unreadable for a minute says so once.
+    for refused in getattr(reading, "feed_refused", ()):
+        parts.append(f"refused {refused}")
     if alerts_list:
         parts.append("alert " + ",".join(
             f"{text}:{severity}" for text, severity in alerts_list))

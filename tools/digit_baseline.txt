@@ -1,7 +1,23 @@
 run_20260824_124218_annehk: 285 scored | anchored 285 | clock 284/285 | villagers 246/285 | population 255/285 | impossible 1 | new games 0
     frame_0847.png: villagers SWUNG 99 -> 112
-run_20260824_131553_stock: 284 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 278/284 | impossible 0 | new games 0
-run_20260824_140510_unknown: 287 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 274/284 | impossible 0 | new games 0
+run_20260824_131553_stock: 284 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 278/284 | impossible 12 | new games 0
+    frame_0244.png: IMPOSSIBLE PAIR 26 villagers, population 2
+    frame_0490.png: IMPOSSIBLE PAIR 40 villagers, population 4
+    frame_0493.png: IMPOSSIBLE PAIR 40 villagers, population 4
+    frame_0547.png: IMPOSSIBLE PAIR 53 villagers, population 5
+    frame_0556.png: IMPOSSIBLE PAIR 56 villagers, population 5
+    frame_0559.png: IMPOSSIBLE PAIR 56 villagers, population 5
+    frame_0580.png: IMPOSSIBLE PAIR 64 villagers, population 0
+    frame_0583.png: IMPOSSIBLE PAIR 67 villagers, population 6
+run_20260824_140510_unknown: 287 scored | anchored 284 | clock 284/284 | villagers 284/284 | population 274/284 | impossible 14 | new games 0
+    frame_0138.png: IMPOSSIBLE PAIR 18 villagers, population 10
+    frame_0249.png: IMPOSSIBLE PAIR 26 villagers, population 2
+    frame_0252.png: IMPOSSIBLE PAIR 26 villagers, population 2
+    frame_0495.png: IMPOSSIBLE PAIR 40 villagers, population 4
+    frame_0498.png: IMPOSSIBLE PAIR 40 villagers, population 4
+    frame_0525.png: IMPOSSIBLE PAIR 49 villagers, population 5
+    frame_0561.png: IMPOSSIBLE PAIR 56 villagers, population 5
+    frame_0564.png: IMPOSSIBLE PAIR 56 villagers, population 5
 run_20260824_144115_annehk: 287 scored | anchored 287 | clock 287/287 | villagers 249/287 | population 253/287 | impossible 1 | new games 0
     frame_0853.png: villagers SWUNG 99 -> 112
 run_20260825_010702_unknown: 232 scored | anchored 231 | clock 230/231 | villagers 231/231 | population 209/231 | impossible 5 | new games 0
@@ -12,4 +28,8 @@ run_20260825_010702_unknown: 232 scored | anchored 231 | clock 230/231 | village
     frame_0142.png: population OVER CAP 19/5
 run_20260825_134104_annehk_bul20popmanatarms: 273 scored | anchored 273 | clock 273/273 | villagers 273/273 | population 273/273 | impossible 0 | new games 0
 run_20260825_151416_stock_bul20popmanatarms: 25 scored | anchored 25 | clock 25/25 | villagers 25/25 | population 25/25 | impossible 0 | new games 0
-run_20260825_155404_stock_bul20popmanatarms: 273 scored | anchored 273 | clock 272/273 | villagers 271/273 | population 264/273 | impossible 0 | new games 0
+run_20260825_155404_stock_bul20popmanatarms: 273 scored | anchored 273 | clock 272/273 | villagers 271/273 | population 264/273 | impossible 2 | new games 0
+    frame_0217.png: IMPOSSIBLE PAIR 24 villagers, population 2
+    frame_0232.png: IMPOSSIBLE PAIR 25 villagers, population 2
+run_20260830_224856_annehk_hud115: 36 scored | anchored 35 | clock 34/35 | villagers 34/35 | population 34/35 | impossible 0 | new games 0
+run_20260830_224314_annehk_hud125: 7 scored | anchored 7 | clock 6/7 | villagers 6/7 | population 6/7 | impossible 0 | new games 0

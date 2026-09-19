@@ -183,3 +183,83 @@ def test_the_stock_band_holds_the_digits_and_nothing_above_them():
     assert inked == list(range(inked[0], inked[-1] + 1)), (
         f"the band has ink on rows {inked} - a gap means it is taking in "
         "the banner art above the number")
+
+
+# ---- the band's RIGHT edge, and the bar art beyond it -------------------
+
+# One band cut from a real 2560x1440 frame at HUD slider 115%, anchor
+# scale 1.155, spanning REFERENCE x 14..70 - wider than either candidate
+# right edge, so one fixture can be asked both questions.
+WIDE_BAND = "annehk_at_1.155_ref14to70_22.png"
+BAND_SCALE = 1.155
+BAND_LEFT = 14                      # the reference x the crop starts at
+
+
+def wide_band_columns(right_edge):
+    """The 115% band cut to a candidate right edge, in reference pixels."""
+    image = cv2.imread(str(DATA / WIDE_BAND))
+    assert image is not None, f"missing fixture {WIDE_BAND}"
+    return image[:, :int((right_edge - BAND_LEFT) * BAND_SCALE)]
+
+
+def test_the_old_right_edge_took_in_the_bar_art():
+    """The bug, kept as a fixture so it cannot come back unnoticed.
+
+    A sliver of the bar's own art sits at reference x 58.2-60.0, and the
+    band used to end at 60 - so it was clipped to two columns and drawn
+    as tall as a digit. The height test that skips colons cannot see a
+    full-height sliver, and classify_glyph called it a "9".
+
+    Asserted as the FAULT rather than as a number nobody can check: 22
+    villagers read as 229, which is the reading the player actually got.
+    """
+    band = wide_band_columns(60)
+    templates = digits.load_digit_templates()
+    value, _score = digits.read_count(band, templates, 6)
+    assert value == 229, (
+        "this fixture exists to hold the misread; if it no longer "
+        "reproduces, the fixture has been replaced rather than the bug "
+        "fixed elsewhere")
+
+
+def test_the_band_ends_clear_of_the_bar_art():
+    """And the fix, on the same pixels.
+
+    Trimming the RIGHT edge is what makes this safe. The count is
+    right-aligned - measured on these frames it occupies reference x
+    30-51 whether it reads "3" or "22" - so it grows LEFTWARD and the
+    left edge is the one that must stay generous. Cutting that is what
+    once clipped the leading digit of "12" and reported 2.
+    """
+    templates = digits.load_digit_templates()
+    value, score = digits.read_count(
+        wide_band_columns(hud.ANNEHK.villager_region[2]), templates, 6)
+    assert value == 22
+    assert score >= digits.MIN_MATCH_SCORE
+
+
+def test_the_right_edge_sits_in_the_gap_rather_than_on_a_number():
+    """The rule, not the constant.
+
+    A right edge is right when it falls between the number and the art -
+    not because it is 55. Measured from the fixture itself: the number's
+    ink ends and the sliver's begins, and the profile's edge has to be
+    strictly between them with room on both sides. That still holds if
+    the band is ever re-cut, and fails the moment it creeps back.
+    """
+    image = cv2.imread(str(DATA / WIDE_BAND))
+    binary = digits.to_binary(image, digits.ICON_BOX_THRESHOLD)
+    runs = digits.find_column_runs(binary)
+    assert len(runs) >= 3, "the wide fixture should hold digits AND the art"
+
+    # In reference pixels, so the assertion is about the HUD rather than
+    # about this one frame's size.
+    number_ends = BAND_LEFT + runs[-2][1] / BAND_SCALE
+    art_begins = BAND_LEFT + runs[-1][0] / BAND_SCALE
+    edge = hud.ANNEHK.villager_region[2]
+    assert number_ends < edge < art_begins, (
+        f"the band's right edge {edge} is not in the gap between the "
+        f"number (ends {number_ends:.1f}) and the bar art "
+        f"(begins {art_begins:.1f})")
+    assert edge - number_ends >= 3, "too little room for the number"
+    assert art_begins - edge >= 3, "too little room before the art"

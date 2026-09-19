@@ -83,7 +83,14 @@ reports, and `--fragment` aims Loom's probe at it directly.
   there for you, after checking the file; **Open builds folder** shows
   you where.
 
-## Recorded games under CrossOver
+## Recorded games
+
+**On the native port they are found automatically** — the port keeps them
+inside its own files at
+`~/Library/Application Support/Feral Interactive/Age Of Empires II/VFS/User/Games/Age of Empires 2 DE/<steam-id>/savegame`,
+and Loom looks there on its own.
+
+### Under CrossOver
 
 The game inside a bottle writes its recorded games to the bottle's own
 Windows filesystem, where Loom's search does not look:
@@ -106,8 +113,11 @@ Without it, everything except the recorded-game features works; with it,
 
 - **No APM tracking** on either route — there is no macOS counter yet, and
   the launcher's toggle says so rather than counting nothing silently.
-- **No global hotkeys** on either route — the build order can only be
-  followed automatically.
+- **Hotkeys work**, with two Mac notes: the `Win` modifier is the Command
+  (⌘) key (the Hotkeys tab says so too), and F21–F24 and Insert cannot be
+  bound because Mac keyboards do not have them — the launcher reports a
+  binding naming one rather than saving a key that never fires. No extra
+  permission is needed.
 - **The game must be frontmost**, both routes.
 - **Latency under CrossOver looked fine in a real session** — at 4K with
   the stock HUD (Transparent UI mod on), the clock kept pace with the game

@@ -222,6 +222,16 @@ def search_paths(os_name=None):
         for steam in steams:
             found.extend(library / _PREFIX_TAIL
                          for library in steam_libraries(steam))
+        # The native macOS port keeps the whole Windows-shaped user tree
+        # inside its own VFS - confirmed on disk on the development Mac,
+        # holding that machine's real recorded games, with Feral's own
+        # capital-O "Age Of Empires II" spelling. Harmless on Linux, where
+        # the directory simply does not exist and is skipped unread. The
+        # CrossOver route is deliberately NOT guessed at: bottle names vary
+        # per install, and LOOM_RECORDS_DIR is the documented answer there.
+        found.append(home / "Library" / "Application Support"
+                     / "Feral Interactive" / "Age Of Empires II" / "VFS"
+                     / "User" / _GAMES_UNDER_HOME)
 
     # A library manifest lists its own Steam root, so the default libraries
     # come back twice on every ordinary install. De-duplicated by the path

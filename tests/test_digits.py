@@ -276,3 +276,66 @@ def test_a_phantom_digit_overshoot_is_a_misread():
     announced HOUSED five villagers early."""
     assert not digits._plausible_population(111, 15)
     assert not digits._plausible_population(200, 25)
+
+
+# ---- issue #14: the best mask pass wins, not the first ------------------
+
+def _clock_band(text, width=150, height=27):
+    """A clock band drawn the way the game draws one: white on dark."""
+    band = np.zeros((height, width, 3), np.uint8)
+    band[:] = (28, 26, 24)
+    cv2.putText(band, text, (14, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                (245, 245, 245), 1, cv2.LINE_AA)
+    return band
+
+
+def test_the_clock_takes_the_most_confident_pass_not_the_first(monkeypatch):
+    """The cause of issue #14, pinned as a rule rather than a frame.
+
+    read_clock_seconds tries several white-mask thresholds. It used to
+    return the FIRST that parsed - and on a 1080p stock HUD the strictest
+    one thinned the "4" of 00:04:00 until it classified as a "1". Six
+    digits still came out, so it still parsed, so it still won by being
+    first. The next pass read 04:00 and read it MORE confidently, and
+    that number was already being computed and thrown away.
+
+    A wrong clock is expensive out of all proportion to its pixels: his
+    went backwards, and a backward clock meant a new match, so one
+    thinned stroke restarted his build order forty-five times.
+    """
+    answers = iter([(60, 0.65), (240, 0.70), (240, 0.61),
+                    (60, 0.65), (240, 0.70), (240, 0.61)])
+    monkeypatch.setattr(digits, "_parse_clock",
+                        lambda *a, **k: next(answers))
+    seconds, score = digits.read_clock_seconds(
+        _clock_band("00:04:00"), [], 3)
+    assert seconds == 240, "the first pass won again"
+    assert score == pytest.approx(0.70)
+
+
+def test_two_passes_agreeing_stops_the_sweep():
+    """Two thresholds arriving at the same time independently is
+    corroboration, and a third can add nothing. That early exit is what
+    keeps this from costing six parses a poll."""
+    calls = []
+
+    def counted(mask, templates, width):
+        calls.append(1)
+        return 240, 0.7
+
+    import types
+    saved = digits._parse_clock
+    digits._parse_clock = counted
+    try:
+        digits.read_clock_seconds(_clock_band("00:04:00"), [], 3)
+    finally:
+        digits._parse_clock = saved
+    assert len(calls) == 2, f"swept {len(calls)} passes when two agreed"
+
+
+def test_a_band_nothing_can_read_is_still_no_reading():
+    """Every pass failing must stay None rather than becoming a zero -
+    "I could not read it" and "the clock says 0" are different facts."""
+    seconds, score = digits.read_clock_seconds(
+        np.zeros((27, 150, 3), np.uint8), digits.load_digit_templates(), 3)
+    assert seconds is None and score == 0.0

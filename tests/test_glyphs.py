@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import pytest
 
-from loom import glyphs
+from loom import glyphs, lines
 from loom.glyphs import TextWatcher, parse_event
 
 DATA = pathlib.Path(__file__).parent / "data" / "notifications"
@@ -864,3 +864,78 @@ def test_a_line_coming_back_no_lower_than_it_sat_is_the_same_line(monkeypatch):
     # it is the castle that was there the whole time.
     panel["lines"] = ["--Castle Built--", "--House Built--"]
     assert look(200) == []
+
+
+# ---- merged letters at the small rendering ---------------------------
+#
+# The other half of the segmentation story, and the one the corpus said
+# was worst. At 21px line height the reader misses 15 of 453 lines; at
+# 15px it misses 114 of 275, and two thirds of those are the letters
+# arriving in the wrong number of runs rather than matching the wrong
+# template. Nothing here is about the font.
+
+
+def test_two_touching_letters_are_split_at_the_small_rendering(font):
+    """The measured case. "Created" arrives with its t and e welded into
+    one 11px run at 16px line height, which reads back confidently as a
+    single "e" - so the line said "Creaed" and the event never fired.
+
+    A real "m" in the same line is also 11px and a real "O" is 12, so
+    WIDTH cannot tell the two apart at this rendering. What can is that a
+    split only counts when every piece classifies: the genuine O's halves
+    score 0.72 and 0.61 and are refused, while these score 0.98 and 0.80.
+    That is why the width bound is only a filter on what is worth trying,
+    and why loosening it costs nothing.
+    """
+    line = cv2.imread(str(DATA / "spearman_created_1080p_merged_te.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="annehk")
+    assert text == "--Spearman Created--"
+    assert parse_event(text) == "created:spearman"
+
+
+def test_a_line_that_read_as_nothing_at_all_now_reaches_its_event(font):
+    """The full-size rendering had merges too, and this one killed the
+    line outright - read_line returned "" and there was nothing for any
+    repair to work on.
+
+    It still does not read letter-perfectly; what it needs is exactly
+    what the layered readers are for. Segmentation gets it to text, and
+    the whole-line analyser takes "--Bouble-Bit Ave...--" to the one
+    sentence it can only have been. Double Bit Axe is worth pinning by
+    name: across the author's own games it is the technology the feed
+    misses most often.
+    """
+    line = cv2.imread(str(DATA / "double_bit_axe_merged_stock.png"))
+    assert line is not None
+    text, _score = glyphs.read_line(line, font, skin="stock")
+    assert text, "the line used to read as nothing at all"
+    matched = lines.nearest_line(text)
+    assert matched is not None and matched[1] == "researched:double_bit_axe"
+
+
+def test_the_width_bound_only_decides_what_is_worth_trying(font):
+    """The property that lets MERGED_RUN_FRACTION be loose, and the one
+    that must survive a future sweep of it.
+
+    _pinch_split is geometry and says nothing about letters; the refusal
+    lives one level up, where every piece has to classify. A wide single
+    letter cut in half produces halves that do not, so it comes back
+    whole however low the bound goes.
+    """
+    line = cv2.imread(str(DATA / "spearman_created_1080p_merged_te.png"))
+    mask, runs = glyphs.segment_line(line)
+    height = mask.shape[0]
+    wide = [(start, end) for start, end in runs
+            if end - start >= height * glyphs.MERGED_RUN_FRACTION]
+    assert wide, "no run wide enough to exercise the split"
+    for start, end in wide:
+        pieces = glyphs._pinch_split(mask, start, end, height)
+        if len(pieces) < 2:
+            continue
+        split = glyphs._read_split(mask, start, end, font, skin="annehk")
+        if split is None:
+            continue                    # refused on its pieces, as designed
+        chars, weakest = split
+        assert weakest >= glyphs.MIN_GLYPH_SCORE, \
+            "an accepted split must have every piece confident"

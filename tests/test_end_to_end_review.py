@@ -444,3 +444,249 @@ def test_completion_ticks_nothing_off_the_last_card(live, build):
 
     assert all(state is checklist.NOT_DONE for state in states), (
         f"completion credited work on the last card: {states}")
+
+
+# The header's centre note, asserted on the pixels rather than on the
+# arithmetic. tests/test_overlay_layout.py pins the scroll maths; this asks
+# the only question the player actually cares about - does the note ever
+# touch the clock or the pace - and it asks it of a real render.
+
+def _render_header(panel, layout, note, phase):
+    """Paint just the header strip and hand back the image."""
+    import time as _time
+
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QPainter, QPixmap
+
+    panel.header_note = note
+    panel._marquee_text = note
+    panel._marquee_started = _time.monotonic() - phase
+    image = QPixmap(panel.width(), layout.y(40))
+    image.fill(Qt.GlobalColor.black)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    panel._draw_header(painter)
+    painter.end()
+    return image.toImage()
+
+
+def _inked_columns(image, height):
+    """Which x columns have anything drawn in the top `height` rows.
+
+    Bounded above the separator rule on purpose. That line runs the whole
+    width of the card, so a column test over the full strip finds ink
+    everywhere and proves nothing - which is exactly what the first version
+    of this test did.
+    """
+    inked = set()
+    for x in range(image.width()):
+        for y in range(height):
+            if image.pixelColor(x, y).lightness() > 24:
+                inked.add(x)
+                break
+    return inked
+
+
+def test_a_long_header_note_never_touches_the_clock_or_the_pace(app):
+    """The bug the scrolling exists for.
+
+    The note used to be centred on the whole panel with no regard for its
+    neighbours, so "BUILD DONE - Ctrl+Shift+W for the report" was drawn
+    straight through the villager count and the pace text and all three
+    became unreadable together.
+
+    text_scale above 1.0 is what provokes it and that is by design, not a
+    quirk of this test: the text knob grows the fonts and deliberately never
+    the width, so the note outgrows a panel that stays the same size.
+
+    The assertion is a comparison rather than a coordinate: whatever columns
+    the clock and the pace ink WITHOUT a note must be untouched WITH one, at
+    every phase of the scroll. Nothing here has to know where the window is,
+    so it still answers if the layout moves.
+    """
+    layout = overlay.OverlayLayout(overlay_scale=1.0, text_scale=1.3)
+    panel = overlay.Overlay(layout=layout)
+    panel.have_reading = True
+    panel.status_line = "18:21   32 villagers"
+    panel.pace_text = "+1 VILLS > BUILD"
+    panel.pace_color = overlay.DIM_TEXT
+    panel.resize(layout.panel_width, layout.panel_height)
+
+    note = "BUILD DONE · Ctrl+Shift+W for the report"
+    # Everything above the separator rule, which is where all three texts
+    # sit and where an overlap would happen.
+    text_rows = layout.y(30)
+    bare = _render_header(panel, layout, "", 0.0)
+    neighbours = _inked_columns(bare, text_rows)
+    assert neighbours, "the clock and the pace drew nothing - test is blind"
+
+    cycle = 2 * (overlay.MARQUEE_SPEED + overlay.MARQUEE_PAUSE)
+    for step in range(12):
+        phase = step * cycle / 12
+        drawn = _render_header(panel, layout, note, phase)
+        for x in sorted(neighbours):
+            for y in range(text_rows):
+                assert drawn.pixelColor(x, y) == bare.pixelColor(x, y), (
+                    f"the note reached column {x} at phase {phase:.2f}s, "
+                    "where the clock or the pace is drawn")
+
+
+def test_the_marquee_timer_runs_only_while_something_is_moving(app):
+    """The normal frame costs nothing.
+
+    This panel sits on top of a game, so a repaint it does not need is a
+    frame the game does not get. The timer must start only when something
+    is genuinely too long to fit.
+
+    Nothing here depends on how wide any particular string measures, and
+    that is the point. The first version asked whether "MANUAL" fitted at
+    the designed panel width, which is a question about the platform's
+    font: "MANUAL" is short on Linux and the window it has to fit inside
+    is only whatever is left after the clock and the pace are drawn, so
+    the Windows leg went red on a test that was really measuring a font.
+    A single full stop fits any window worth drawing in, four hundred
+    characters fit none, and the panel is made wide enough that there is
+    certainly a gap between the two ends.
+    """
+    layout = overlay.OverlayLayout()
+    panel = overlay.Overlay(layout=layout)
+    panel.have_reading = True
+    panel.status_line = "0:00   0 villagers"
+    panel.pace_text = "ON PACE"
+    panel.pace_color = overlay.DIM_TEXT
+    panel.resize(1200, layout.panel_height)
+
+    _render_header(panel, layout, ".", 0.0)
+    assert not panel._marquee_timer.isActive(), (
+        "a note that fits started the repaint timer")
+
+    _render_header(panel, layout, "X" * 400, 0.0)
+    assert panel._marquee_timer.isActive(), (
+        "a note far too long to fit did not start the repaint timer")
+
+    # And it stops again when the long note goes away, rather than running
+    # for the life of the panel.
+    _render_header(panel, layout, ".", 0.0)
+    assert not panel._marquee_timer.isActive(), (
+        "the timer kept running after the long note was replaced")
+
+
+def test_the_scrolling_note_dissolves_at_the_edges_it_is_cut_at(
+        app, monkeypatch):
+    """The fade, measured rather than admired.
+
+    A clip rectangle is a binary mask, so it slices whichever letter
+    straddles the boundary down the middle. The note is drawn into a buffer
+    and its alpha multiplied by a gradient instead - and it fades to
+    NOTHING rather than to a colour, because this card is translucent over
+    the game and its opacity is the player's to set, so there is no colour
+    to fade to.
+
+    Every comparison here renders the SAME text at the SAME offset twice
+    and changes only which edges the gradient is told to dissolve. That is
+    the whole reason it is written this way: the first version compared two
+    different offsets and read a glyph's left side bearing as a fade, since
+    at offset 0 the leading M simply does not reach column 0.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QFont, QPainter, QPixmap
+
+    layout = overlay.OverlayLayout(overlay_scale=1.0, text_scale=1.3)
+    panel = overlay.Overlay(layout=layout)
+    panel.resize(layout.panel_width, layout.panel_height)
+
+    font = QFont("sans", layout.pt(9), QFont.Weight.Bold)
+    # A row of Ms, so every column carries ink and the gradient is the only
+    # thing that can vary between two renders.
+    text, window, span = "M" * 80, 220, 100
+    fade = layout.x(overlay.MARQUEE_FADE)
+
+    def strip(offset):
+        image = QPixmap(window, layout.y(34))
+        image.fill(Qt.GlobalColor.black)
+        painter = QPainter(image)
+        panel._blit_faded(painter, text, font, overlay.NOT_FOLLOWING_COLOR,
+                          0, window, offset, span)
+        painter.end()
+        return image.toImage()
+
+    def ink(image, columns):
+        return sum(image.pixelColor(x, y).lightness()
+                   for x in columns for y in range(image.height()))
+
+    left_edge = range(fade)
+    right_edge = range(window - fade, window)
+    middle = range(window // 2 - 10, window // 2 + 10)
+
+    def forced(edges):
+        monkeypatch.setattr(overlay, "marquee_fade_edges",
+                            lambda offset, span: edges)
+
+    # Mid-scroll: the note continues past both edges, so both dissolve.
+    halfway = span // 2
+    faded = strip(halfway)
+    forced((False, False))
+    plain = strip(halfway)
+
+    assert ink(plain, middle) > 0, "no ink at all - the test is blind"
+    assert ink(faded, middle) == ink(plain, middle), (
+        "the gradient reached the middle of the window")
+    assert ink(faded, left_edge) < ink(plain, left_edge)
+    assert ink(faded, right_edge) < ink(plain, right_edge)
+
+    # Held at the start, the left edge has nothing beyond it and must stay
+    # at full strength - the half of this a plain gradient gets wrong.
+    monkeypatch.undo()
+    crisp = strip(0)
+    forced((True, True))
+    dimmed = strip(0)
+    assert ink(crisp, left_edge) > ink(dimmed, left_edge)
+
+
+def test_a_narrow_window_still_has_a_readable_middle(app, monkeypatch):
+    """The clamp, which guards a failure with no symptom short of looking.
+
+    Both dissolves are measured in pixels and the window is not, so a
+    narrow enough window lets them meet. At one fade wide the stops land at
+    0, 1.00, 0.00, 1 - out of order, and each end is then set twice with
+    the later call winning. The gradient degenerates into a single ramp
+    across the whole window and NOTHING in it is at full strength: the note
+    does not look cramped, it looks dim and wrong everywhere.
+
+    Clamping the fade to a third of the window keeps a middle band opaque.
+    That band is what this asserts, by rendering the same text twice and
+    changing only whether the gradient is applied at all - the middle must
+    come out identical.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QFont, QPainter, QPixmap
+
+    layout = overlay.OverlayLayout()
+    panel = overlay.Overlay(layout=layout)
+    panel.resize(layout.panel_width, layout.panel_height)
+
+    window = layout.x(overlay.MARQUEE_FADE)      # one fade wide, not two
+    font = QFont("sans", layout.pt(9), QFont.Weight.Bold)
+
+    def strip():
+        image = QPixmap(window, layout.y(34))
+        image.fill(Qt.GlobalColor.black)
+        painter = QPainter(image)
+        panel._blit_faded(painter, "M" * 40, font,
+                          overlay.NOT_FOLLOWING_COLOR, 0, window, 20, 100)
+        painter.end()
+        return image.toImage()
+
+    def ink(image, columns):
+        return sum(image.pixelColor(x, y).lightness()
+                   for x in columns for y in range(image.height()))
+
+    faded = strip()
+    monkeypatch.setattr(overlay, "marquee_fade_edges",
+                        lambda offset, span: (False, False))
+    plain = strip()
+
+    middle = range(window // 3, window - window // 3)
+    assert ink(plain, middle) > 0, "no ink at all - the test is blind"
+    assert ink(faded, middle) == ink(plain, middle), (
+        "the dissolves met and left no band of the note at full strength")

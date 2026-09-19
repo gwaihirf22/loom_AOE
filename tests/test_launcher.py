@@ -24,6 +24,21 @@ from loom.launcher import (COACH_SCENARIOS, CONTROL_BUTTON_STYLE,
                            overlay_status_text)
 
 
+@pytest.fixture(autouse=True)
+def pc_keycaps(monkeypatch):
+    """Pin the capture-field tests to PC keycap naming on a Mac.
+
+    They press synthetic ControlModifier chords and expect "Ctrl+...";
+    qtkeys legitimately reads that flag as the ⌘ key on darwin (Qt swaps
+    Control and Meta there, and the un-swap is tested in test_qtkeys). Only
+    darwin is pinned, so the other platforms keep testing themselves.
+    """
+    import sys
+
+    if sys.platform == "darwin":
+        monkeypatch.setattr(sys, "platform", "linux")
+
+
 def argv_for(label, stem="scoutsrush18pop", scenario="behind"):
     for name, _prefix, build, _tip in DEV_COMMANDS:
         if name == label:

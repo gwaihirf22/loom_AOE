@@ -32,6 +32,24 @@ WIN = Qt.KeyboardModifier.MetaModifier
 NONE = Qt.KeyboardModifier.NoModifier
 
 
+@pytest.fixture(autouse=True)
+def pc_keycaps(monkeypatch):
+    """Pin the corpus below to PC keycap naming when the suite runs on a Mac.
+
+    Qt swaps Control and Meta on macOS and modifiers_of swaps them back, so
+    the same Qt flag set legitimately translates differently there. The
+    corpus is written in the PC naming; the mac swap has its own explicit
+    tests further down, which monkeypatch the platform the other way. Only
+    darwin is pinned - patching Windows to something else would quietly
+    stop the native-table branch from ever running on the machine it is
+    for.
+    """
+    import sys
+
+    if sys.platform == "darwin":
+        monkeypatch.setattr(sys, "platform", "linux")
+
+
 # ---- what a press turns into --------------------------------------------
 
 
@@ -58,6 +76,40 @@ def test_the_windows_key_is_called_win_not_meta():
     """Qt names its modifiers after the Mac; keyspec names them after the
     keycaps a Windows or Linux player is looking at."""
     assert qtkeys.binding_for(Qt.Key.Key_A.value, WIN) == "Win+A"
+
+
+def test_on_a_mac_the_qt_swap_is_undone_so_names_mean_keycaps(monkeypatch):
+    """Qt exchanges Control and Meta on macOS: a pressed ⌘ arrives as
+    ControlModifier and a pressed ⌃ as MetaModifier. keyspec means the
+    physical keycap and the macos backend registers it that way, so without
+    the un-swap the field would record the opposite modifier from the one
+    under the player's finger - and the registered chord would never match
+    their hands."""
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # Physical ⌃Control+Shift+Q: Qt reports MetaModifier.
+    assert qtkeys.binding_for(Qt.Key.Key_Q.value, WIN | SHIFT) == "Ctrl+Shift+Q"
+    # Physical ⌘Command+A: Qt reports ControlModifier.
+    assert qtkeys.binding_for(Qt.Key.Key_A.value, CTRL) == "Win+A"
+    # Alt and Shift are not part of the exchange.
+    assert qtkeys.binding_for(Qt.Key.Key_A.value, ALT | SHIFT) == "Alt+Shift+A"
+
+
+def test_on_a_mac_the_gathering_display_swaps_too(monkeypatch):
+    """The modifier KEY codes are exchanged exactly as the flags are - a
+    pressed ⌘ arrives as Key_Control - and describe() reads both, so a
+    display that swapped one but not the other would name the wrong key
+    while the player watched their chord being built."""
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # Physical ⌃ held: the flag set says Meta, the display must say Ctrl.
+    assert qtkeys.describe(WIN) == "Ctrl+..."
+    # Physical ⌘ just pressed: arrives as Key_Control, must show as Win.
+    assert qtkeys.describe(NONE, key=Qt.Key.Key_Control.value) == "Win+..."
 
 
 @pytest.mark.parametrize("key, expected", [

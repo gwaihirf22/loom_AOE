@@ -9,7 +9,7 @@ is drawn - that is visible the instant the window opens.
 # I used Anthropic's Claude to help with proper syntax, code organisation,
 # debugging and review. The design and code are my own work.
 
-from loom import checklist
+from loom import checklist, queue
 from loom.build_order import BuildOrder
 
 
@@ -783,3 +783,121 @@ def test_an_upgrade_ticks_a_step_named_for_the_unit():
     assert checklist._same_subject("crossbowman", upgrade_step) is None
     # An unrelated upgrade still matches nothing.
     assert checklist._same_subject("paladin_upgrade", step) is None
+
+
+# ---- the production queue as a third witness --------------------------
+
+
+class FakeEpisode:
+    """Only what queue_researched reads. The real one is
+    episodes.Episode, tested there; what matters here is the JUDGEMENT
+    made about it, which is pure arithmetic over four fields."""
+
+    def __init__(self, identity, started, ended):
+        self.identity = identity
+        self.started = started
+        self.ended = ended
+
+
+def test_a_technology_held_for_its_research_time_is_proof_it_finished():
+    """Loom is listed at 25 seconds; this one held a producing cell for
+    33. Research does not divide among villagers, so the listed time is a
+    hard floor - that is the one thing turning QUEUED into COMPLETED."""
+    assert checklist.queue_researched(FakeEpisode("loom", 508, 541)) \
+        == "researched:loom"
+
+
+def test_a_technology_cut_short_proves_nothing():
+    """A cancelled research vacates its cell early, and short of the
+    listed time the two are indistinguishable. Silence is the answer."""
+    assert checklist.queue_researched(FakeEpisode("loom", 508, 520)) is None
+
+
+def test_a_refused_episode_is_never_evidence():
+    """episodes.Episode.identity is None when the vote refused - too few
+    polls, or too little time on screen. A refusal is not a reading, and
+    it must not become one just because it lasted a while."""
+    assert checklist.queue_researched(FakeEpisode(None, 100, 400)) is None
+
+
+def test_an_episode_the_clock_could_not_time_is_not_judged():
+    assert checklist.queue_researched(FakeEpisode("loom", None, 541)) is None
+    assert checklist.queue_researched(FakeEpisode("loom", 508, None)) is None
+
+
+def test_a_unit_is_not_a_technology_however_long_it_took():
+    assert checklist.queue_researched(
+        FakeEpisode("villager_female", 0, 600)) is None
+
+
+def test_an_age_never_comes_through_the_queue():
+    """The crest reads every age transition in every capture with no frame
+    unread, and already reaches the checklist through merged_age_events.
+    Two channels for one fact is what the reconcile rule exists to
+    prevent."""
+    assert checklist.queue_researched(
+        FakeEpisode("feudal_age", 100, 500)) is None
+
+
+def test_an_upgrade_reports_the_name_the_build_order_uses():
+    """The queue holds "crossbowman the research" and "crossbowman the
+    unit" apart because they are two different pictures. A build order
+    asking for Crossbowman wants the research, and the event has to be
+    named the way the feed would name it."""
+    event = checklist.queue_researched(
+        FakeEpisode("crossbowman" + queue.UPGRADE_SUFFIX, 100, 300))
+    assert event == "researched:crossbowman"
+
+
+def test_one_research_ticks_one_item_whichever_witness_spoke():
+    """RECONCILED, never added - the bug merged_house_events exists for,
+    in its new place. The queue closes its episode on one poll and the
+    feed prints its line on another, and a technology completes at most
+    once in a game."""
+    evidence = checklist.TechEvidence()
+    queued = evidence.update([], [FakeEpisode("loom", 508, 541)])
+    assert queued == ["researched:loom"]
+    later = evidence.update(["researched:loom"], [])
+    assert later == [], "the feed's copy of a technology already credited"
+
+
+def test_the_feed_alone_still_speaks_once():
+    evidence = checklist.TechEvidence()
+    assert evidence.update(["researched:loom"], []) == ["researched:loom"]
+    assert evidence.update(["researched:loom"], []) == []
+
+
+def test_a_technology_read_under_four_spellings_arrives_once():
+    """The counter was never wrong - it was handed four names for one
+    thing. Identity is settled before the count, and a technology
+    completes at most once whatever produced the event."""
+    evidence = checklist.TechEvidence()
+    got = []
+    for _look in range(4):
+        got.extend(evidence.update(["researched:hand_cart"], []))
+    assert got == ["researched:hand_cart"]
+
+
+def test_everything_that_is_not_a_technology_passes_straight_through():
+    evidence = checklist.TechEvidence()
+    events = ["built:house", "created:villager", "attacked", "found:goat"]
+    assert evidence.update(events, []) == events
+    assert evidence.update(events, []) == events, "no ledger on these"
+
+
+def test_an_age_passes_through_untouched_however_often_it_arrives():
+    """The crest owns ages, through merged_age_events, and its REACHED
+    event fires on the poll the crest changes. Swallowing a repeat here
+    would silently disarm that."""
+    evidence = checklist.TechEvidence()
+    assert evidence.update(["researched:feudal_age"], []) \
+        == ["researched:feudal_age"]
+    assert evidence.update(["researched:feudal_age"], []) \
+        == ["researched:feudal_age"]
+
+
+def test_a_new_game_forgets_what_was_credited():
+    evidence = checklist.TechEvidence()
+    evidence.update(["researched:loom"], [])
+    evidence.reset()
+    assert evidence.update(["researched:loom"], []) == ["researched:loom"]

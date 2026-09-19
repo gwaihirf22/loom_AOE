@@ -153,6 +153,19 @@ def test_a_flatpak_steam_is_looked_in(monkeypatch):
                for path in replay.search_paths("posix")),         "a Flatpak'd Steam is not among the places looked in"
 
 
+def test_the_native_mac_ports_vfs_is_among_the_places_looked_in(monkeypatch):
+    """The native macOS port keeps a Windows-shaped user tree inside its own
+    VFS, confirmed on disk holding real records. Checked by parts, and note
+    the capital-O "Age Of Empires II" - Feral's spelling, which a
+    reasonable-looking correction would silently break."""
+    monkeypatch.delenv(replay.RECORDS_DIR_ENV, raising=False)
+
+    wanted = ("Feral Interactive", "Age Of Empires II", "VFS")
+    assert any(all(part in path.parts for part in wanted)
+               for path in replay.search_paths("posix")), \
+        "the native mac port's VFS is not among the places looked in"
+
+
 LIBRARY_MANIFEST = '''"libraryfolders"
 {
 \t"0"

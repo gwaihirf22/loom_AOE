@@ -149,6 +149,26 @@ modules:
         loom_app.py loom_overlay.py loom_coach.py loom_read.py
         requirements.txt /app/share/loom/
 
+      # `cp -r tools tests` above is wholesale, and my PRIVATE tree holds
+      # four files the public snapshot does not: tools/release.py and the
+      # three tests/test_release_*.py. Copying those into a bundle that is
+      # published on the public repo would ship the release pipeline, and
+      # through its EXCLUDE list the NAMES of everything else I keep
+      # private. On a Flathub build from the release tarball this line is a
+      # no-op - release.py stripped them before the tarball existed - so it
+      # exists for the local build from my working tree, which is the one I
+      # actually cut bundles with.
+      #
+      # Two places answer "is this private" and only one was being asked:
+      # release.py strips the list on the way out, the copy above puts it
+      # back. The patterns here are release.py's own, and they are AUDITED
+      # rather than trusted - if EXCLUDE grows an entry under tools/ or
+      # tests/, test_the_flatpak_cannot_ship_what_the_release_strips fails
+      # and names it. A hand-kept list with nothing checking it is the
+      # failure this project keeps paying for.
+      - rm -f /app/share/loom/tools/release.py
+        /app/share/loom/tests/test_release*.py
+
       # Flathub requires each module's licence under this path, and
       # tools/package_windows.py already refuses to build a Windows zip
       # without these two. Same rule, same reason: PyQt6 is GPL-3.0-only and

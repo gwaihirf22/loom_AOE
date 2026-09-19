@@ -189,6 +189,25 @@ WHITE_MAX_SPREAD = 45
 # different bands.
 CLOCK_TIGHT_SPREAD = 3
 
+# A fourth brightness, for the clock only and only at the tight spread.
+# The macOS renderer reran WHITE_FAINT's own story thirty grey-levels
+# lower: the NECK of a "2" - the joint between its diagonal and its bottom
+# bar - antialiased to 139-146 on the seconds-tens digit while the same
+# frame's minutes "2" stayed above 170. Under every existing gate the neck
+# dropped out, the orphaned bottom bar failed the shape filter's height
+# rule as a glint, and the topless "2" scored as a "7" - refused, so the
+# clock vanished for the ten seconds of every minute the seconds showed
+# 2X, which read from outside as Loom losing sight of the game once a
+# minute. Swept at 160/150/140/130/120 over this machine's three runs
+# (111 mac-windowed bands + 99 July 4K): 150 rescued nothing, 140 took
+# the windowed run from 90 to 109 reads with the impossible-step count
+# unchanged, and 130/120 added nothing over 140 - so the most selective
+# value that works is the one kept. Tight spread only: at this brightness
+# the loose spread would admit warm terrain mid-tones, and the whole
+# point of the spread ladder is that colorless ink is the clock's one
+# reliable property.
+CLOCK_NECK_FAINT = 140
+
 # The clock's passes, tried in order: three colorless ones, then the three
 # the rest of the reader uses. Brightness alone was the ladder before, and
 # it could not answer both corpora at once - the live Transparent UI runs
@@ -208,10 +227,18 @@ CLOCK_TIGHT_SPREAD = 3
 # removes a gate from it to prove that gate is load-bearing, and a snapshot
 # taken at import would make that test quietly vacuous instead of failing.
 def clock_passes():
-    """Every (brightness gate, colour spread) the clock tries, in order."""
-    return tuple((gate, spread)
-                 for spread in (CLOCK_TIGHT_SPREAD, WHITE_MAX_SPREAD)
-                 for gate in WHITE_PASSES)
+    """Every (brightness gate, colour spread) the clock tries, in order.
+
+    The neck-faint gate closes the tight block rather than trailing the
+    whole ladder: the tight passes stay strictly before the loose ones -
+    an ordering a test pins as load-bearing - and within a block the
+    brightness only ever descends. A band the faint gate reaches still
+    faces every validation rule; a fallback can recover a reading but
+    never invent one.
+    """
+    tight = tuple(WHITE_PASSES) + (CLOCK_NECK_FAINT,)
+    return (tuple((gate, CLOCK_TIGHT_SPREAD) for gate in tight)
+            + tuple((gate, WHITE_MAX_SPREAD) for gate in WHITE_PASSES))
 
 
 def _white_pixels(band_bgr, min_channel=WHITE_STRICT,
@@ -405,6 +432,15 @@ def read_binary(binary, templates, min_glyph_width, max_runs=None):
     # The tallest run is the yardstick for "as tall as its neighbours", so
     # it is measured before anything is discarded.
     _boxes, tallest = _bar_context(binary, runs)
+    # Rejoin a hollow digit the threshold split down the middle - the same
+    # repair the clock and population paths already carry, and the third
+    # time it turned out to be "simply never wired in over here". The macOS
+    # renderer found it: every villager count ending in zero read with the
+    # "0" as two bars, each a confident "1", so 20 became 211 and 60 became
+    # 611 - and it HELD for as long as the count did, so the repeat filter
+    # believed it. The merge only joins runs closer than any real pair of
+    # digits ever sits, so a genuine "11" is untouched.
+    runs = _merge_hollow_pairs(binary, runs, tallest)
 
     digits = []
     weakest = 1.0
@@ -547,6 +583,30 @@ def _is_bar(box, tallest):
             and ink >= BAR_INK)
 
 
+# The ink floor for HALF A HOLLOW DIGIT, which is a different question from
+# "is this a 1" and gets its own gate on purpose: erring towards a merge
+# only ever hands the joined shape to the classifier, which still has to
+# believe it, while the strict bar floor silently refused the macOS
+# renderer's curved arcs and let 20 read as 211. Slashes - the one narrow
+# glyph that must never merge into a neighbour - top out at 0.27.
+HOLLOW_HALF_INK = 0.40
+
+
+def _is_hollow_half(box, tallest):
+    """Could this run be one side of a hollow digit the mask split?
+
+    _is_bar's aspect and height gates, with the looser ink floor: a split
+    zero's side is a straight stem on one renderer (ink 0.7+) and a curved
+    arc on another (0.52-0.67), and both are halves.
+    """
+    if box is None or not tallest:
+        return False
+    width, height, ink = box
+    return (height >= BAR_MIN_HEIGHT_FRACTION * tallest
+            and width / height <= BAR_ASPECT
+            and ink >= HOLLOW_HALF_INK)
+
+
 # Two bars this close together are one hollow digit's SIDES, not two "1"s.
 # Measured on the frame that taught it: a "0" eroded by the last-resort
 # brightness pass to its two side strokes, gaps of 2-3px against a text
@@ -609,8 +669,21 @@ def _merge_hollow_pairs(binary, runs, tallest):
     the 0 template on the same frame) or fails the match gate and reads as
     nothing - either of which beats a confident wrong number.
 
-    Only PAIRS of bars merge, and only across a sliver of a gap: two real
-    "1"s stand a whole digit-spacing apart and are untouched.
+    Only PAIRS of halves merge, and only across a sliver of a gap: two real
+    "1"s stand a whole digit-spacing apart and are untouched. What counts
+    as a HALF is deliberately looser than _is_bar: the Windows renderer's
+    split zeros left straight stems (bar-like, ink 0.7+), but the macOS
+    renderer keeps the curve, and its arcs measure ink 0.52-0.67 in their
+    boxes - under the bar floor, so nothing merged and every villager
+    count ending in zero read its "0" as two confident "1"s. 20 held on
+    screen as 211 for as long as the count did, which the repeat filter
+    then believed. The half test keeps the aspect and height gates (a
+    colon is short, a wide digit is wide) and floors ink at
+    HOLLOW_HALF_INK, which sits in open water between the slash
+    (0.22-0.27, measured on the stock corpus) and the faintest arc (0.52,
+    measured here). The gap stays the primary guard - measured on the
+    frames that failed: the arcs of one zero sit 1-3px apart, the real
+    digit beside them 7px, against a threshold of 6-7.
     """
     threshold = max(2, round(tallest * HOLLOW_GAP_FRACTION))
     merged = []
@@ -620,8 +693,10 @@ def _merge_hollow_pairs(binary, runs, tallest):
             start_a, end_a = runs[index]
             start_b, end_b = runs[index + 1]
             if (start_b - end_a <= threshold
-                    and _is_bar(_run_box(binary, start_a, end_a), tallest)
-                    and _is_bar(_run_box(binary, start_b, end_b), tallest)):
+                    and _is_hollow_half(_run_box(binary, start_a, end_a),
+                                        tallest)
+                    and _is_hollow_half(_run_box(binary, start_b, end_b),
+                                        tallest)):
                 merged.append((start_a, end_b))
                 index += 2
                 continue
@@ -884,13 +959,48 @@ def read_clock_seconds(band_bgr, templates, min_glyph_width):
     but warm.
     """
     band_bgr = _fit_clock_rows(band_bgr)
+    # THE BEST PASS, not the first one that answers.
+    #
+    # Taking the first was a real misread and it is issue #14's whole
+    # cause. On a 1080p stock HUD the strictest mask thins the "4" of
+    # 00:04:00 until it classifies as a "1" - and it still yields six
+    # digits, so it still parses, so it still won by being first. The
+    # very next pass read 04:00, and read it MORE confidently:
+    #
+    #     min_channel 220  ->  01:00  score 0.65   taken
+    #     min_channel 190  ->  04:00  score 0.70   correct
+    #
+    # The number that separates them was already being computed and
+    # thrown away. A wrong clock is expensive out of all proportion to
+    # the pixels it comes from - his went backwards, and a backward
+    # clock used to mean a new match, so one thinned stroke restarted
+    # his build order.
+    #
+    # This is `classify_glyph`'s own rule one level up: it already scores
+    # a glyph two ways and keeps whichever answers more confidently,
+    # because neither way wins everywhere. Neither does a threshold.
+    # Stopped early when two passes AGREE, which is what keeps this from
+    # costing six parses a poll. Two thresholds arriving at the same time
+    # independently is corroboration, and there is nothing a third can
+    # add; the frames worth spending the whole sweep on are exactly the
+    # ones where they disagree, which is where the misread lives. On a
+    # clean band that is two passes, and on his it was three.
+    best_value, best_score = None, -1.0
+    seen = set()
     for min_channel, max_spread in clock_passes():
         value, score = _parse_clock(
             white_mask(band_bgr, min_channel, max_spread),
             templates, min_glyph_width)
-        if value is not None:
-            return value, score
-    return None, 0.0
+        if value is None:
+            continue
+        if score > best_score:
+            best_value, best_score = value, score
+        if value in seen:
+            break
+        seen.add(value)
+    if best_value is None:
+        return None, 0.0
+    return best_value, best_score
 
 
 def _parse_clock(binary, templates, min_glyph_width):

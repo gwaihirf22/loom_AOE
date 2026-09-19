@@ -21,9 +21,9 @@ import math
 import time
 from pathlib import PurePosixPath
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter,
-                         QPainterPath, QPixmap)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage,
+                         QLinearGradient, QPainter, QPainterPath, QPixmap)
 from PyQt6.QtWidgets import QPushButton, QWidget
 
 from . import alerts, build_order, checklist, config, paths, steplayout
@@ -158,6 +158,30 @@ SLIGHTLY_BEHIND_SECONDS = 35
 
 PANEL_WIDTH = 560
 PANEL_HEIGHT = 186
+
+# The header's centre note scrolls when it does not fit between the status
+# line and the pace text. Base pixels and seconds, scaled through
+# OverlayLayout like every other measurement here - a speed written in raw
+# pixels would crawl at 200% and race at 50%, which is the pixel-constant
+# rule wearing an animation costume.
+#
+# The clearance either side is what stops the note touching its neighbours.
+# It is the whole point of the feature: the note used to be centred on the
+# panel regardless of what was beside it.
+MARQUEE_SPEED = 26          # pixels a second at 100%
+MARQUEE_PAUSE = 1.4         # seconds held still at each end
+MARQUEE_EDGE_GAP = 10       # clearance from the status line and the pace
+# 20 rather than 60. This panel sits on top of a game, and a repaint it does
+# not need is a frame the game does not get; a slow scroll reads no worse
+# for it. The timer runs ONLY while a note is actually too long, which is
+# rare - BUILD DONE, and the longer follow notes.
+MARQUEE_FPS = 20
+# How wide the dissolve at each edge is. A clip rectangle is a binary mask,
+# so it slices whichever letter straddles the boundary down the middle; this
+# fades the text out instead, and fades it to NOTHING rather than to a
+# colour, which is the only thing that can be right on a panel that is
+# translucent over the game and whose opacity is the player's to set.
+MARQUEE_FADE = 14
 
 # What a panel draws. Not the same question as `placing`, which is about how
 # the WINDOW behaves - a placing window can be in any of these modes, because
@@ -542,6 +566,16 @@ class Overlay(QWidget):
         # and the waiting banner before one is.
         self.header_note = ""
         self.header_note_color = NOT_FOLLOWING_COLOR
+        # The centre note scrolls when it is too long for the gap between
+        # the clock and the pace. All three are set at paint time, because
+        # whether a note overflows is a question about font metrics and
+        # those only exist once there is a painter - so the timer is started
+        # and stopped by _sync_marquee from inside paintEvent rather than by
+        # whoever set the text.
+        self._marquee_text = ""
+        self._marquee_started = 0.0
+        self._marquee_timer = QTimer(self)
+        self._marquee_timer.timeout.connect(self._tick_marquee)
         self.have_reading = False
         self.alerts = []            # [(text, severity)], most urgent first
         self.report_rows = None     # build-complete report, replaces the step
@@ -1079,12 +1113,17 @@ class Overlay(QWidget):
         painter.setPen(self._pen(DIM_TEXT))
         painter.drawText(L.x(16), L.y(24), self.status_line)
 
+        # Where the status line ends, so the centre note knows what it must
+        # clear. Measured with the font it was just drawn in, not guessed.
+        status_end = L.x(16) + painter.fontMetrics().horizontalAdvance(
+            self.status_line)
+
         painter.setFont(QFont("sans", L.pt(10), QFont.Weight.Bold))
         painter.setPen(self._pen(self.pace_color))
         metrics = painter.fontMetrics()
         width = metrics.horizontalAdvance(self.pace_text)
-        painter.drawText(self.width() - L.x(16) - width, L.y(24),
-                         self.pace_text)
+        pace_start = self.width() - L.x(16) - width
+        painter.drawText(pace_start, L.y(24), self.pace_text)
 
         # The header note sits in the gap between the two, which is empty
         # in every normal frame - the status line runs to about a quarter of
@@ -1099,23 +1138,143 @@ class Overlay(QWidget):
         # items were equalised - it used to hang off the right of the
         # headline row, and with no headline row there is nowhere for it to
         # hang, nor any row it belongs to more than the others.
+        scrolling = False
         if self.header_note:
-            painter.setFont(QFont("sans", L.pt(9), QFont.Weight.Bold))
-            painter.setPen(self._pen(self.header_note_color))
-            note_metrics = painter.fontMetrics()
-            note_width = note_metrics.horizontalAdvance(self.header_note)
-            painter.drawText((self.width() - note_width) // 2, L.y(24),
-                             self.header_note)
+            scrolling = self._draw_centre_note(
+                painter, self.header_note, self.header_note_color,
+                QFont("sans", L.pt(9), QFont.Weight.Bold),
+                status_end, pace_start)
         elif self.step_when:
-            painter.setFont(QFont("sans", L.pt(9)))
-            painter.setPen(self._pen(FAINT_TEXT))
-            when_width = (painter.fontMetrics()
-                          .horizontalAdvance(self.step_when))
-            painter.drawText((self.width() - when_width) // 2, L.y(24),
-                             self.step_when)
+            scrolling = self._draw_centre_note(
+                painter, self.step_when, FAINT_TEXT,
+                QFont("sans", L.pt(9)), status_end, pace_start)
+        self._sync_marquee(scrolling)
 
         painter.setPen(self._pen(QColor(255, 255, 255, 28)))
         painter.drawLine(L.x(14), L.y(34), self.width() - L.x(14), L.y(34))
+
+    def _draw_centre_note(self, painter, text, color, font,
+                          status_end, pace_start):
+        """Draw the header's centre note in the gap between its neighbours.
+
+        Returns whether it is scrolling, which is what decides if the
+        repaint timer needs to run.
+
+        Short notes are centred in that gap and never move, so every normal
+        frame looks exactly as it did. Only a note too long to fit scrolls,
+        and it is clipped to the gap, so it cannot touch the clock or the
+        pace at any point in the cycle - clipping rather than trusting the
+        arithmetic, because a clip is a fact about the pixels and an offset
+        is a claim about them.
+        """
+        L = self._layout
+        left, right = note_window(status_end, pace_start, L.x(MARQUEE_EDGE_GAP))
+        window = right - left
+        if window <= 0:
+            # The clock and the pace have met. See note_window: showing the
+            # note here would cost two readable things to show one.
+            return False
+
+        painter.setFont(font)
+        painter.setPen(self._pen(color))
+        text_width = painter.fontMetrics().horizontalAdvance(text)
+        span = marquee_span(text_width, window)
+        if span == 0:
+            painter.drawText(left + (window - text_width) // 2, L.y(24), text)
+            return False
+
+        offset = marquee_offset(span, self._marquee_elapsed(text),
+                                speed=L.x(MARQUEE_SPEED))
+        self._blit_faded(painter, text, font, color, left, window, offset, span)
+        return True
+
+    def _blit_faded(self, painter, text, font, color, left, window,
+                    offset, span):
+        """Draw the scrolling note with its cut edges dissolved.
+
+        The text goes into a buffer exactly the width of the window, so it
+        cannot reach the clock or the pace however far it is scrolled - the
+        buffer's own bounds are the guarantee the clip rectangle used to
+        be, and a surface that is the right size cannot be argued with.
+
+        Then the buffer's ALPHA is multiplied by a gradient. Fading to
+        transparent rather than painting a scrim in a background colour is
+        the whole point: this card is translucent over the game and its
+        opacity is a slider, so there is no colour to fade TO. A scrim
+        would be a smear that matched nothing underneath and changed
+        character every time the player moved that slider.
+
+        Measured against the clip it replaced: 0.093ms a frame against
+        0.100ms, because the text is drawn across the window rather than
+        across the whole card and then masked. It is not a cost.
+        """
+        L = self._layout
+        height = L.y(34)
+        # Both dissolves plus something left in the middle to read. A window
+        # narrow enough for them to meet would otherwise order the gradient
+        # stops backwards and fade the note away entirely.
+        fade = max(1, min(L.x(MARQUEE_FADE), window // 3))
+
+        buffer = QImage(window, height, QImage.Format.Format_ARGB32_Premultiplied)
+        buffer.fill(Qt.GlobalColor.transparent)
+        inner = QPainter(buffer)
+        inner.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        inner.setFont(font)
+        inner.setPen(self._pen(color))
+        inner.drawText(-offset, L.y(24), text)
+
+        fade_left, fade_right = marquee_fade_edges(offset, span)
+        gradient = QLinearGradient(0, 0, window, 0)
+        opaque = QColor(0, 0, 0)
+        clear = QColor(0, 0, 0, 0)
+        gradient.setColorAt(0.0, clear if fade_left else opaque)
+        gradient.setColorAt(fade / window, opaque)
+        gradient.setColorAt(1 - fade / window, opaque)
+        gradient.setColorAt(1.0, clear if fade_right else opaque)
+        # DestinationIn keeps the destination and multiplies its alpha by
+        # the source's - so this paints no colour at all, it only decides
+        # how much of what is already there survives.
+        inner.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_DestinationIn)
+        inner.fillRect(buffer.rect(), gradient)
+        inner.end()
+
+        # The panel's own content opacity is already on this painter, and
+        # the two alphas multiply, which is what a faded edge behind a
+        # faded panel should look like.
+        painter.drawImage(left, 0, buffer)
+
+    def _marquee_elapsed(self, text):
+        """Seconds this note has been on screen, restarting when it changes.
+
+        A new note begins at its own beginning: inheriting the previous
+        one's phase would drop the player into the middle of a sentence they
+        have not seen the start of.
+        """
+        if text != self._marquee_text:
+            self._marquee_text = text
+            self._marquee_started = time.monotonic()
+        return time.monotonic() - self._marquee_started
+
+    def _sync_marquee(self, scrolling):
+        """Run the repaint timer only while something is actually moving."""
+        if scrolling:
+            if not self._marquee_timer.isActive():
+                self._marquee_timer.start(round(1000 / MARQUEE_FPS))
+        elif self._marquee_timer.isActive():
+            self._marquee_timer.stop()
+
+    def _tick_marquee(self):
+        """Repaint for the scroll, and stop if nobody is looking.
+
+        A hidden panel never paints, so the paint-time stop above can never
+        fire for one - without this check the timer would spin for the life
+        of the process behind a panel the player has toggled off.
+        """
+        if self.isVisible():
+            self.update()
+        else:
+            self._marquee_timer.stop()
 
     def _draw_items(self, painter):
         """The step's instructions, as a checklist of equal items."""
@@ -1594,6 +1753,76 @@ def waiting_band(stage):
     """
     text, _color = describe_waiting(stage)
     return [(f"LOOM — {text}", alerts.SOFT)] if text else []
+
+
+def note_window(status_end, pace_start, gap):
+    """The x range the header's centre note may occupy.
+
+    Returns (left, right), the gap between what is drawn on either side,
+    minus `gap` of clearance at each edge.
+
+    The note used to be centred on the whole panel width with no regard for
+    its neighbours. That is invisible while the note is short - the status
+    line runs to about a quarter of the width and the pace is a few
+    characters right-aligned - and wrong the moment it is not: on a small
+    screen "BUILD DONE - Ctrl+Shift+W for the report" ran straight through
+    both of them and all three became unreadable at once.
+
+    A right below the left means the two ends have already met and there is
+    no room at all. It is returned as-is rather than clamped, so the caller
+    draws nothing: a note laid over the clock and the pace costs three
+    readable things to show one, and the pace is the one the player is
+    actually steering by.
+    """
+    return status_end + gap, pace_start - gap
+
+
+def marquee_span(text_width, window_width):
+    """How far the note has to travel to show all of itself. 0 when it fits."""
+    return max(0, text_width - window_width)
+
+
+def marquee_fade_edges(offset, span):
+    """Which edges of the window the note actually continues past.
+
+    Returns (fade_left, fade_right). Only an edge with more text beyond it
+    is faded: at the start of the cycle the note begins exactly at the left
+    edge, and dimming it there would wash out the B of BUILD to hint at
+    something that is not there.
+    """
+    return offset > 0, offset < span
+
+
+def marquee_offset(span, elapsed, speed=MARQUEE_SPEED, pause=MARQUEE_PAUSE):
+    """How far the note is scrolled left, in pixels, `elapsed` seconds in.
+
+    A ping-pong with a hold at each end, not a wrap. A wrap needs a gap and
+    a second copy of the text to look like anything, and it snaps back to
+    the start at the exact moment somebody has finished reading to the end.
+    Holding still at both ends means the beginning and the end are each
+    motionless for a moment, which is when they are actually read.
+
+    Pure arithmetic with the clock passed IN, so a test can pin every phase
+    without waiting for one. A wall clock is the right instrument here and
+    nowhere else in Loom - this measures an animation, not the game. The
+    rule that game time is never counted with a stopwatch is about readings
+    of the match, and this is not one.
+    """
+    if span <= 0:
+        return 0
+    travel = span / speed
+    cycle = 2 * (travel + pause)
+    at = elapsed % cycle
+    if at < pause:                      # held at the start
+        return 0
+    at -= pause
+    if at < travel:                     # scrolling towards the end
+        return round(at * speed)
+    at -= travel
+    if at < pause:                      # held at the end
+        return span
+    at -= pause
+    return round(span - at * speed)     # scrolling back to the start
 
 
 def describe_waiting(stage):

@@ -163,7 +163,8 @@ class Reading:
     def __init__(self, villagers, game_time, event, hud_visible,
                  raw_villagers=None, raw_clock=None, per_resource=None,
                  queue_slots=None, population=None, raw_population=None,
-                 game_events=None, age=None, villager_gap=None):
+                 game_events=None, age=None, villager_gap=None,
+                 feed_refused=None):
         # What Loom believes, after filtering.
         self.villagers = villagers
         self.game_time = game_time
@@ -197,6 +198,14 @@ class Reading:
         # poll ("town_center_built", ...). Each appears exactly once per
         # on-screen appearance - the watcher debounces the lingering text.
         self.game_events = game_events or []
+
+        # And what the feed reader looked at this poll and REFUSED - lines
+        # it could not read, and lines it read but could not resolve to an
+        # event. Newly refused only; a lingering unreadable line says so
+        # once. For the forensic log and nothing else: no logic may act on
+        # this, because a refusal is evidence about the reader and not
+        # about the game.
+        self.feed_refused = feed_refused or []
 
         # What the HUD says about the age: an age.AgeReading, or None
         # when it has not been looked at yet. Its own `.age` is None when
@@ -737,6 +746,7 @@ class HudReader:
         # on) and the glyph-path text watcher (the open vocabulary that
         # fills the statistics).
         game_events = []
+        feed_refused = []
         phrase_ready = (self._notifications is not None
                         and self._notifications.templates)
         text_ready = (self._text_watcher is not None
@@ -766,6 +776,10 @@ class HudReader:
                         self.hud["profile"].name):
                     if event not in claimed and event not in game_events:
                         game_events.append(event)
+                # Whatever the glyph path could not turn into an event.
+                # Carried to the log so a missing tick can be told apart
+                # from a line that was never printed.
+                feed_refused = list(self._text_watcher.refused)
 
         # The age, off the crest beside the resource bar. Only while the
         # HUD is up: the band is a fixed offset from the anchor, so with no
@@ -819,7 +833,7 @@ class HudReader:
         return Reading(villagers, game_time, event, hud_visible,
                        raw_villagers, raw_clock, per_resource, queue_slots,
                        population, raw_population, game_events, age_now,
-                       villager_gap)
+                       villager_gap, feed_refused)
 
     def _read_region(self, region):
         x1, y1, x2, y2 = region
