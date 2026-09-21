@@ -27,10 +27,10 @@ pywin32==312 ; sys_platform == "win32"
 # The macOS backend imports these and they were never declared, so a fresh
 # macOS install failed only when pixels were first asked for - a CaptureError
 # at the first poll rather than an honest failure at install time.
-pyobjc-core==11.1 ; sys_platform == "darwin"
-pyobjc-framework-Cocoa==11.1 ; sys_platform == "darwin"
-pyobjc-framework-Quartz==11.1 ; sys_platform == "darwin"
-pyobjc-framework-ScreenCaptureKit==11.1 ; sys_platform == "darwin"
+pyobjc-core==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-ScreenCaptureKit==12.2.2 ; sys_platform == "darwin"
 
 # Reading a recorded game after a match ends: loom/replay.py. This is the
 # only ruler Loom has that is not one of Loom's own readers, and it has
