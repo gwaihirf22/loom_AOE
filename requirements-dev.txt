@@ -32,7 +32,7 @@ pillow==12.3.0
 
 # For building the Windows bundle (pyinstaller loom.spec). Dev-only: the
 # artifact ships, the builder does not.
-pyinstaller==6.22.2
+pyinstaller==6.22.3
 
 # For tools/replay_truth.py: reading a recorded game (.aoe2record). This earns
 # its place because nothing else can say what the game ACTUALLY did - every

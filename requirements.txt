@@ -1,10 +1,10 @@
-numpy==2.5.1
+numpy==2.5.3
 # Headless on purpose: Loom draws with Qt and never calls a cv2 GUI
 # function (no imshow, no waitKey - checked), and the headless wheel keeps
 # OpenCV's own GUI stack out of the frozen bundle.
 opencv-python-headless==5.0.0.93
 PyQt6==6.11.0
-PyQt6-Qt6==6.11.1
+PyQt6-Qt6==6.11.2
 pytest==9.1.1
 
 # Capture is per-OS, so its dependencies are too. The markers keep a macOS
