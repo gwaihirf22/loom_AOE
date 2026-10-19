@@ -1,4 +1,4 @@
-numpy==2.5.3
+numpy==2.5.4
 # Headless on purpose: Loom draws with Qt and never calls a cv2 GUI
 # function (no imshow, no waitKey - checked), and the headless wheel keeps
 # OpenCV's own GUI stack out of the frozen bundle.
